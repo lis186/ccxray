@@ -25,6 +25,11 @@ Tests must not pass `process.env` to `getAgentLaunch('codex')`: OAuth-mode launc
 failure if any group fails. For a system Chrome install, use
 `PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome npm test`.
 
+`unknown-path.test.js` covers header-aware routing with synthetic gateway bearers,
+empty header values, and Grok `x-api-key` shapes. Its e2e companion checks separate
+Anthropic, OpenAI, and xAI fakes. Codex noise-path defaults use a ChatGPT-shaped
+bearer and account header; the Anthropic positive control keeps its own headers.
+
 ## Test hygiene
 
 A test must produce the same result on the author's machine and on a clean CI

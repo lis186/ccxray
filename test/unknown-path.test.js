@@ -152,7 +152,7 @@ it('provider header hygiene uses wire and attached client shapes', () => {
     }
   } finally { hub.lookupClientIdentityForRequest = original; }
   assert.equal(config.getProviderForRequest('/v1/files', { authorization: 'bEaReR sk-proj-synthetic' }), null);
-  assert.equal(config.getProviderForRequest('/v1/files', { authorization: 'bearer sk-proj-synthetic', 'anthropic-version': '2023-06-01' }), null);
+  assert.equal(config.getProviderForRequest('/v1/files', { authorization: 'bearer sk-proj-synthetic', 'anthropic-version': '2023-06-01' }), 'anthropic');
   assert.equal(config.getProviderForRequest('/v1/files', { authorization: 'bearer sk-ant-synthetic' }), 'anthropic');
 });
 
@@ -308,4 +308,59 @@ it('routing fix (#745): warning cap', () => {
     assert.equal(lines.length, 502);
     assert.equal(lines[0], '[ccxray] refused POST /v1/cap-0 (unknown route, not forwarded)');
   } finally { console.warn = originalWarn; Date.now = originalNow; }
+});
+
+it('routing fix (#745): gateway bearer with Anthropic headers', () => {
+  for (const scheme of ['Bearer', 'bearer', 'bEaReR']) {
+    for (const signal of [{'anthropic-version': '2023-06-01'}, {'anthropic-beta': 'synthetic'}, {'x-api-key': 'synthetic'}]) {
+      const headers = { authorization: `${scheme} sk-gw-123`, ...signal };
+      assert.equal(isOpenAISide(headers), false);
+      for (const url of ['/v1/messages', '/v1/models', '/v1/files']) {
+        const req = { method: 'POST', url, headers };
+        const upstream = config.getUpstreamForRequestAndHeaders(url, headers, req);
+        assert.equal(upstream, config.UPSTREAMS.anthropic);
+        assert.equal(checkHttpRoute(req, { writeHead() { assert.fail('routing fix (#745)'); }, end() {} }, upstream), true);
+      }
+    }
+  }
+});
+
+it('header-aware routing (#745): empty header values', () => {
+  for (const value of ['', '   ', undefined, null, [], ['']]) {
+    for (const name of ['anthropic-version', 'anthropic-beta', 'x-api-key']) {
+      const headers = { [name]: value, 'user-agent': 'codex_cli_rs/0.163.0' };
+      const req = { method: 'POST', url: '/v1/responses', headers };
+      const upstream = config.getUpstreamForRequestAndHeaders(req.url, headers, req);
+      assert.equal(upstream, config.UPSTREAMS.openai);
+      assert.equal(checkHttpRoute(req, { writeHead() {}, end() {} }, upstream), true);
+      assert.equal(config.getProviderForRequest('/v1/unlisted', { [name]: value }), null);
+    }
+    for (const name of ['chatgpt-account-id', 'openai-beta', 'x-openai-test', 'x-codex-turn-metadata', 'x-grok-client-version']) {
+      assert.equal(isOpenAISide({ [name]: value }), false);
+      assert.equal(config.getProviderForRequest('/v1/unlisted', { [name]: value }), null);
+    }
+  }
+});
+
+it('header-aware routing (#745): Grok x-api-key', () => {
+  const original = hub.lookupClientIdentityForRequest;
+  try {
+    for (const attached of [false, true]) {
+      hub.lookupClientIdentityForRequest = () => attached ? { agentType: 'grok' } : null;
+      for (const marker of attached ? [{}] : [{ 'user-agent': 'grok-shell/0.2.93' }, { 'x-grok-client-version': '0.2.93' }]) {
+        const headers = { 'x-api-key': 'xai-synthetic', ...marker };
+        for (const url of ['/v1/responses', '/v1/models', '/v1/settings']) {
+          const req = { method: 'POST', url, headers };
+          const upstream = config.getUpstreamForRequestAndHeaders(url, headers, req);
+          assert.equal(upstream, config.UPSTREAMS.xai);
+          assert.equal(checkHttpRoute(req, { writeHead() {}, end() {} }, upstream), true);
+          for (const signal of [{ 'anthropic-version': '2023-06-01' }, { 'anthropic-beta': 'synthetic' }, { authorization: 'Bearer sk-ant-synthetic' }]) {
+            assert.equal(config.getUpstreamForRequestAndHeaders(url, { ...headers, ...signal }, req), null);
+          }
+        }
+      }
+    }
+  } finally { hub.lookupClientIdentityForRequest = original; }
+  const headers = { 'x-api-key': 'xai-synthetic', 'user-agent': 'codex_cli_rs/0.163.0' };
+  assert.equal(config.getUpstreamForRequestAndHeaders('/v1/responses', headers), null);
 });

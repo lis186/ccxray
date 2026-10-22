@@ -71,7 +71,8 @@ function makeMock404Upstream(requests) {
 function fireRequest(port, method, urlPath, body, requestHeaders) {
   return new Promise((resolve, reject) => {
     const headers = requestHeaders ? { ...requestHeaders } : {
-      'x-api-key': 'sk-fake',
+      authorization: 'Bearer syntheticheader.payload.signature',
+      'user-agent': 'codex_cli_rs/0.163.0',
       'chatgpt-account-id': '11111111-2222-3333-4444-555555555555',
     };
     if (body) headers['content-type'] = 'application/json';

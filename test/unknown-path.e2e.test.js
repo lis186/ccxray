@@ -176,6 +176,22 @@ it('routing fix and provider header hygiene at fake upstreams', async t => {
       assert.equal((await request(port, '/', method)).status, 200);
       assert.equal((await request(port, '/', method, { 'anthropic-version': '2023-06-01' })).status, 200);
     }
+    await t.test('routing fix (#745): gateway bearer at Anthropic', async () => {
+      const openaiBefore = openaiReceived.length;
+      for (const [url, method] of [['/v1/messages', 'POST'], ['/v1/models', 'GET']]) {
+        const before = received.length;
+        const result = await request(port, url, method, {
+          'anthropic-version': '2023-06-01', authorization: 'Bearer sk-gw-123',
+        }, method === 'POST' ? '{}' : undefined);
+        assert.equal(result.status, 200);
+        assert.equal(received.length, before + 1);
+        assert.equal(received.at(-1).url, url);
+        assert.equal(received.at(-1).headers.authorization, 'Bearer sk-gw-123');
+        assert.equal(received.at(-1).headers['anthropic-version'], '2023-06-01');
+        assert.equal(openaiReceived.length - openaiBefore, 0);
+        assert.equal(xaiReceived.length, 0);
+      }
+    });
     await t.test('header-aware routing (#745)', async () => {
       const openaiBefore = openaiReceived.length;
       for (const headers of [claudeHeaders, { authorization: 'Bearer sk-ant-synthetic' }]) {
@@ -225,14 +241,30 @@ it('routing fix and provider header hygiene at fake upstreams', async t => {
         assert.equal(received.length, otherBefore);
       }
     }
+    await t.test('header-aware routing (#745): Grok x-api-key at xAI', async () => {
+      const before = received.length, otherBefore = openaiReceived.length;
+      for (const url of ['/v1/responses', '/v1/models', '/v1/settings']) {
+        const xaiBefore = xaiReceived.length;
+        assert.equal((await request(port, url, 'POST', {
+          'x-api-key': 'xai-synthetic', 'user-agent': 'grok-shell/0.2.93',
+        }, '{}')).status, 200);
+        assert.equal(xaiReceived.length, xaiBefore + 1);
+        assert.equal(xaiReceived.at(-1).url, url);
+        assert.equal(xaiReceived.at(-1).headers['x-api-key'], 'xai-synthetic');
+      }
+      assert.equal(received.length, before);
+      assert.equal(openaiReceived.length, otherBefore);
+    });
     await t.test('routing fix (#745): Grok hub identity at xAI', async () => {
       assert.equal((await registerClient(home, 'grok')).ok, true);
       const before = received.length, otherBefore = openaiReceived.length;
-      for (const url of ['/v1/responses', '/v1/alpha/title', '/v1/models']) {
-        const xaiBefore = xaiReceived.length;
-        assert.equal((await request(port, `/_ccxray/client/${process.pid}${url}`, 'POST', {}, '{}')).status, 200);
-        assert.equal(xaiReceived.length, xaiBefore + 1);
-        assert.equal(xaiReceived.at(-1).url, url);
+      for (const headers of [{}, { 'x-api-key': 'xai-synthetic' }]) {
+        for (const url of ['/v1/responses', '/v1/alpha/title', '/v1/models']) {
+          const xaiBefore = xaiReceived.length;
+          assert.equal((await request(port, `/_ccxray/client/${process.pid}${url}`, 'POST', headers, '{}')).status, 200);
+          assert.equal(xaiReceived.length, xaiBefore + 1);
+          assert.equal(xaiReceived.at(-1).url, url);
+        }
       }
       assert.equal((await request(port, `/_ccxray/client/${process.pid}/v1/messages`, 'POST', {}, '{}')).status, 421);
       assert.equal(received.length, before);

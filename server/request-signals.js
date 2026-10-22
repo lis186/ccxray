@@ -9,9 +9,11 @@ function clientAgentType(req) {
   return hub.lookupClientIdentityForRequest(req)?.agentType;
 }
 
-function matchOpenAIWireClient(headers) {
+function matchOpenAIWireClient(headers = {}) {
   providers ||= require('./providers');
-  return providers.matchOpenAIWireClient(headers);
+  return providers.matchOpenAIWireClient(Object.fromEntries(
+    Object.entries(headers).filter(([, value]) => hasHeaderValue(value))
+  ));
 }
 
 function isJwtShaped(authHeader) {
@@ -20,23 +22,31 @@ function isJwtShaped(authHeader) {
   return parts.length === 3 && parts[0].length > 10;
 }
 
-function hasAnthropicHeaders(headers) {
-  return ['anthropic-version', 'anthropic-beta', 'x-api-key'].some(key => key in headers)
+function hasHeaderValue(value) {
+  return Array.isArray(value) ? value.some(hasHeaderValue)
+    : typeof value === 'string' && value.trim().length > 0;
+}
+
+function hasAnthropicHeaders(headers, req) {
+  // Header-aware routing: Grok can supply x-api-key through extra_headers.
+  const grokClient = matchOpenAIWireClient(headers)?.id === 'grok' || clientAgentType(req) === 'grok';
+  return ['anthropic-version', 'anthropic-beta'].some(key => hasHeaderValue(headers[key]))
+    || (hasHeaderValue(headers['x-api-key']) && !grokClient)
     || /^Bearer sk-ant-/i.test(headers.authorization || '');
 }
 
 function isAnthropicSide(headers = {}, req) {
-  return hasAnthropicHeaders(headers) || clientAgentType(req) === 'claude';
+  return hasAnthropicHeaders(headers, req) || clientAgentType(req) === 'claude';
 }
 
 function isOpenAISide(headers = {}, req, includeBareBearer = true) {
-  return Object.keys(headers).some(key => key === 'chatgpt-account-id'
+  return Object.keys(headers).some(key => hasHeaderValue(headers[key]) && (key === 'chatgpt-account-id'
       || /^(openai-|x-openai-|x-codex-)/.test(key)
-      || (key === 'originator' && /^codex/i.test(String(headers[key]))))
+      || (key === 'originator' && /^codex/i.test(String(headers[key])))))
     || !!matchOpenAIWireClient(headers)
     || ['codex', 'grok'].includes(clientAgentType(req))
     || (includeBareBearer && /^Bearer sk-/i.test(headers.authorization || '')
-      && !/^Bearer sk-ant-/i.test(headers.authorization || ''));
+      && !hasAnthropicHeaders(headers, req));
 }
 
 module.exports = { clientAgentType, isJwtShaped, isOpenAISide, isAnthropicSide, matchOpenAIWireClient };
