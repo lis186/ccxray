@@ -231,6 +231,13 @@ const AGENT_PROVIDERS = Object.freeze({
     installHint: '  npm install -g @anthropic-ai/claude-code',
     createLaunch({ port, args, env }) {
       const launchEnv = { ...env, ANTHROPIC_BASE_URL: proxyBaseUrl(port, env) };
+      const userHeaderNames = [...new Set(String(env.ANTHROPIC_CUSTOM_HEADERS || '').split(/\r?\n/)
+        .filter(line => line.includes(':'))
+        .map(line => line.slice(0, line.indexOf(':')).trim().toLowerCase())
+        .filter(name => /^[!#$%&'*+.^_`|~0-9a-z-]+$/.test(name) && !name.startsWith('x-ccxray-')))];
+      if (userHeaderNames.length) {
+        appendAnthropicCustomHeader(launchEnv, `X-Ccxray-Forward-Headers: ${userHeaderNames.join(',')}`);
+      }
       // This secret belongs to the ccxray install, not the launched session.
       const token = getUpstreamToken();
       if (token) {

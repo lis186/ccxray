@@ -46,7 +46,7 @@ it('header allowlist: family names, prefixes, and foreign names', () => {
       'session_id', 'thread-id', 'thread_id', 'conversation_id', 'openai-organization',
       'openai-project', 'openai-extra', 'x-openai-extra', 'x-codex-extra', 'x-stainless-extra'],
     xai: ['authorization', 'x-api-key', 'x-grok-extra', 'x-stainless-extra', 'openai-extra',
-      'openai-organization', 'openai-project'],
+      'openai-organization', 'openai-project', 'x-openai-extra'],
   };
   const allNames = new Set([...common, ...Object.values(families).flat(), 'x-foo', 'cookie',
     'x-ccxray-future', 'accept-encoding', 'sec-websocket-key', 'upgrade', 'transfer-encoding']);
@@ -56,5 +56,77 @@ it('header allowlist: family names, prefixes, and foreign names', () => {
     assert.deepEqual(buildForwardHeaders(input, config.UPSTREAMS[key]), Object.fromEntries([
       ...new Set([...common, ...families[family]])].map(name => [name, 'synthetic'])
       .concat([['host', config.UPSTREAMS[key].host]])), key);
+  }
+});
+
+it('header allowlist: launcher declarations retain user names and omit foreign names', () => {
+  const input = {
+    'x-ccxray-forward-headers': ' X-User-Header, x-codex-turn-metadata, openai-project, chatgpt-account-id, originator, x-ccxray-extra, connection, sec-websocket-key',
+    'x-user-header': 'retained', 'x-codex-turn-metadata': 'foreign',
+    'openai-project': 'foreign', 'chatgpt-account-id': 'foreign', originator: 'foreign',
+    'x-ccxray-extra': 'internal', connection: 'upgrade', 'sec-websocket-key': 'handshake',
+  };
+  assert.deepEqual(buildForwardHeaders(input, config.UPSTREAMS.anthropic), {
+    'x-user-header': 'retained', host: config.UPSTREAMS.anthropic.host,
+  });
+  assert.equal(buildForwardHeaders({ 'x-user-header': 'omitted' }, config.UPSTREAMS.anthropic)['x-user-header'], undefined);
+});
+
+it('header allowlist: operator names apply per family with foreign names omitted', () => {
+  const { parseForwardHeaders } = require('../server/config');
+  const before = config.FORWARD_HEADERS;
+  try {
+    config.FORWARD_HEADERS = parseForwardHeaders('X-All, anthropic:X-Anthropic-Gateway, openai:x-platform-gateway, chatgpt:x-chatgpt-gateway, xai:x-xai-gateway, x-api-key, anthropic-extra, x-claude-extra, x-codex-extra, x-ccxray-future, connection, sec-websocket-key, bogus:x-no, x-bad value');
+    const names = ['x-all', 'x-anthropic-gateway', 'x-platform-gateway', 'x-chatgpt-gateway', 'x-xai-gateway', 'x-api-key', 'anthropic-extra', 'x-claude-extra', 'x-codex-extra', 'x-ccxray-future', 'connection', 'sec-websocket-key', 'x-no', 'x-bad value'];
+    for (const [key, allowed] of Object.entries({
+      anthropic: ['x-all', 'x-anthropic-gateway', 'x-api-key', 'anthropic-extra', 'x-claude-extra'],
+      openai: ['x-all', 'x-platform-gateway', 'x-codex-extra'],
+      openaiChatGPT: ['x-all', 'x-chatgpt-gateway', 'x-codex-extra'],
+      xai: ['x-all', 'x-xai-gateway', 'x-api-key', 'x-codex-extra'],
+    })) {
+      const input = Object.fromEntries(names.map(name => [name, 'synthetic']));
+      const actual = buildForwardHeaders(input, config.UPSTREAMS[key]);
+      assert.deepEqual(Object.keys(actual).sort(), [...allowed, 'host'].sort(), key);
+    }
+  } finally { config.FORWARD_HEADERS = before; }
+});
+
+it('header allowlist: WS uses the resolved family', () => {
+  const input = { 'x-grok-session-id': 'grok', 'x-openai-session-id': 'session',
+    'chatgpt-account-id': 'account', 'x-codex-turn-metadata': 'codex',
+    upgrade: 'websocket', 'sec-websocket-key': 'handshake' };
+  for (const key of ['openai', 'openaiChatGPT', 'xai']) {
+    assert.deepEqual(buildForwardHeaders(input, config.UPSTREAMS[key], { websocket: true }),
+      buildForwardHeaders(input, config.UPSTREAMS[key]), key);
+  }
+});
+
+it('header allowlist: Grok OpenAI-wire names', () => {
+  const names = ['x-openai-subagent', 'x-openai-session-id', 'x-openai-agent-type',
+    'x-grok-session-id', 'x-grok-conv-id', 'x-grok-turn-idx', 'x-grok-req-id',
+    'x-grok-model-override', 'x-grok-client-identifier', 'x-grok-agent-id',
+    'x-request-id', 'x-client-request-id'];
+  const input = Object.fromEntries(names.map(name => [name, 'synthetic']));
+  assert.deepEqual(buildForwardHeaders(input, config.UPSTREAMS.xai), { ...input, host: config.UPSTREAMS.xai.host });
+});
+
+it('header allowlist: config reads operator names once at startup', () => {
+  const modulePath = require.resolve('../server/config');
+  const cached = require.cache[modulePath];
+  const previous = process.env.CCXRAY_FORWARD_HEADERS;
+  try {
+    process.env.CCXRAY_FORWARD_HEADERS = 'X-All, anthropic:X-Gateway, chatgpt:X-Workspace, bogus:x-no, all:x-no, x-bad value';
+    delete require.cache[modulePath];
+    const fresh = require('../server/config');
+    assert.deepEqual([...fresh.FORWARD_HEADERS.all], ['x-all']);
+    assert.deepEqual([...fresh.FORWARD_HEADERS.anthropic], ['x-gateway']);
+    assert.deepEqual([...fresh.FORWARD_HEADERS.chatgpt], ['x-workspace']);
+    assert.equal(fresh.FORWARD_HEADERS.openai.size, 0);
+    process.env.CCXRAY_FORWARD_HEADERS = 'x-later';
+    assert.deepEqual([...fresh.FORWARD_HEADERS.all], ['x-all']);
+  } finally {
+    require.cache[modulePath] = cached;
+    if (previous === undefined) delete process.env.CCXRAY_FORWARD_HEADERS;
+    else process.env.CCXRAY_FORWARD_HEADERS = previous;
   }
 });

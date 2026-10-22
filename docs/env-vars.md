@@ -72,7 +72,8 @@ Unless noted, a variable is read once at process start. In hub mode the hub's ow
 | `CLAUDE_CONFIG_DIR` | `~` | Where the Claude launcher looks for `.claude.json` to read the launch account. | `server/providers.js` |
 | `OPENAI_API_KEY` | — | When set, `ccxray codex` routes through a `model_providers.ccxray` entry; otherwise through `openai_base_url` only (`chatgpt_base_url` is left at Codex's default so ChatGPT workspace discovery works, #671). | `server/providers.js` |
 | `CODEX_HOME` | `~/.codex` | Read-only: `ccxray codex` (ChatGPT-OAuth mode) warns if `config.toml` there points `chatgpt_base_url` at a loopback proxy (#671). Never written. | `server/providers.js` |
-| `ANTHROPIC_CUSTOM_HEADERS` | — | Not read as configuration: the Claude launcher appends ccxray headers to it in the agent's environment. | `server/providers.js` |
+| `ANTHROPIC_CUSTOM_HEADERS` | — | Newline-separated user headers. The Claude launcher and shell shim append `X-Ccxray-Forward-Headers` listing existing lowercase names only, excluding `x-ccxray-*`, so user gateway headers join the Anthropic header allowlist. Foreign family names remain omitted. | `server/providers.js`, `server/shim/ccxray-shim.sh` |
+| `CCXRAY_FORWARD_HEADERS` | — | Header allowlist additions, read once at server startup: comma-separated names, optionally prefixed with `anthropic:`, `openai:`, `chatgpt:`, or `xai:`. Unprefixed names apply to all families. Example: `x-gateway-id,anthropic:cf-aig-authorization`. Foreign family names, `x-ccxray-*`, hop-by-hop names, and WS handshake names remain omitted. | `server/config.js` |
 | `BROWSER` | — | `none` disables dashboard auto-open (as do `CI` and `SSH_TTY`). | `server/index.js` |
 | `CI`, `SSH_TTY` | — | Either set disables dashboard auto-open. | `server/index.js` |
 

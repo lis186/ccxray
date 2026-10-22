@@ -8,6 +8,20 @@ const { retentionDays, boundedDays } = require('./retention');
 // ── Config ──────────────────────────────────────────────────────────
 const PORT = parseInt(process.env.PROXY_PORT || '5577', 10);
 
+function parseForwardHeaders(value = '') {
+  const names = { all: new Set(), anthropic: new Set(), openai: new Set(), chatgpt: new Set(), xai: new Set() };
+  for (const entry of value.toLowerCase().split(',')) {
+    const parts = entry.trim().split(':');
+    const family = parts.length === 1 ? 'all' : parts[0].trim();
+    const name = parts.at(-1).trim();
+    if (parts.length > 2 || (parts.length === 2 && family === 'all') || !Object.hasOwn(names, family)
+      || !/^[!#$%&'*+.^_`|~0-9a-z-]+$/.test(name)) continue;
+    names[family].add(name);
+  }
+  return names;
+}
+const FORWARD_HEADERS = parseForwardHeaders(process.env.CCXRAY_FORWARD_HEADERS);
+
 /**
  * @internal – exported for testability only
  */
@@ -558,6 +572,8 @@ function inferMaxContext(model, system, usage, opts = {}) {
 // backend (S3/R2 never reads LOGS_DIR).
 
 module.exports = {
+  FORWARD_HEADERS,
+  parseForwardHeaders,
   PORT,
   ANTHROPIC_HOST,
   ANTHROPIC_PORT,

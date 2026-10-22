@@ -111,6 +111,19 @@ case $decision in
   "claude "*)
     url=${decision#claude }; print=${url#* }; url=${url% *}
     ANTHROPIC_BASE_URL=$url; export ANTHROPIC_BASE_URL
+    # Header allowlist: declare existing user names before adding ccxray headers.
+    names=$(printf '%s\n' "$ANTHROPIC_CUSTOM_HEADERS" | PATH=${CCXRAY_SHIM_SYSPATH:-/usr/bin:/bin} LC_ALL=C awk '
+      index($0, ":") {
+        name = tolower(substr($0, 1, index($0, ":") - 1))
+        gsub(/^[ \t]+|[ \t\r]+$/, "", name)
+        if (name ~ /^[!#$%&\047*+.^_`|~0-9a-z-]+$/ && name !~ /^x-ccxray-/ && !seen[name]++) {
+          printf "%s%s", sep, name; sep = ","
+        }
+      }')
+    if [ -n "$names" ]; then
+      ANTHROPIC_CUSTOM_HEADERS="${ANTHROPIC_CUSTOM_HEADERS:+$ANTHROPIC_CUSTOM_HEADERS
+}X-Ccxray-Forward-Headers: $names"; export ANTHROPIC_CUSTOM_HEADERS
+    fi
     if [ "$print" = 1 ]; then
       ANTHROPIC_CUSTOM_HEADERS="${ANTHROPIC_CUSTOM_HEADERS:+$ANTHROPIC_CUSTOM_HEADERS
 }X-Ccxray-Print-Mode: true"; export ANTHROPIC_CUSTOM_HEADERS

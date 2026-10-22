@@ -320,10 +320,13 @@ ccxray is a transparent HTTP proxy. It forwards requests to the upstream API (An
 | `CCXRAY_PLAN` | _(auto)_ | Override plan detection: `pro`, `max5x`, `max20x`, `api-key` |
 | `CCXRAY_DISABLE_TITLES` | _(unset)_ | Set to `1` to disable session title extraction (sessions fall back to short hash) |
 | `CCXRAY_MODEL_PREFIX` | _(unset)_ | Prepend a string to the model name before forwarding (e.g. `databricks-`). Useful when the upstream requires a vendor-prefixed model name but Claude Code only accepts standard names. |
+| `CCXRAY_FORWARD_HEADERS` | _(unset)_ | Header allowlist additions, read once at startup. Comma-separated names; optional `anthropic:`, `openai:`, `chatgpt:`, or `xai:` prefix selects one upstream family. Unprefixed names apply to all families. Example: `x-gateway-id,anthropic:cf-aig-authorization`. |
 | `HTTPS_PROXY` / `https_proxy` | _(unset)_ | Route outbound HTTPS traffic through a corporate proxy via HTTP CONNECT tunnel. |
 | `ANTHROPIC_BASE_URL` | — | Custom upstream Anthropic endpoint (e.g. a corporate gateway). Supports base paths — `https://host/serving-endpoints/anthropic` works as-is. `ANTHROPIC_TEST_*` take precedence when set. |
 
 Every environment variable, with its default and source file, is listed in [docs/env-vars.md](docs/env-vars.md).
+
+Header allowlist (follow-up to #745): for Claude, keep user gateway headers in newline-separated `ANTHROPIC_CUSTOM_HEADERS` entries (`Name: Value`). The ccxray launcher and shell shim add the internal `X-Ccxray-Forward-Headers` declaration containing existing lowercase names only, excluding `x-ccxray-*`; values stay in the original headers. Use `CCXRAY_FORWARD_HEADERS` for operator additions. Declarations cannot add foreign family names: Anthropic omits `chatgpt-account-id`, `originator`, `openai-*`, `x-openai-*`, and `x-codex-*`; OpenAI/ChatGPT/xAI omit additions of `x-api-key`, `anthropic-*`, and `x-claude-*`. Built-in xAI `x-api-key` remains allowed. Internal names, hop-by-hop names, and WS handshake names remain omitted. HTTP and WS both use the resolved upstream family.
 
 Raw request and response logs are stored locally in `LOGS_DIR` (by default `~/.ccxray/logs/`) as `{timestamp}_req.json` and `{timestamp}_res.json`. Upgrading from v1.0? Logs previously in `./logs/` are automatically migrated on first run.
 

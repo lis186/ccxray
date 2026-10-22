@@ -26,7 +26,7 @@ const ALLOWLISTS = {
   chatgpt: OPENAI,
   xai: {
     names: new Set(['authorization', 'x-api-key']),
-    prefixes: ['x-grok-', 'x-stainless-', 'openai-'],
+    prefixes: ['x-grok-', 'x-stainless-', 'openai-', 'x-openai-'],
   },
 };
 const HOP_BY_HOP = new Set([
@@ -50,15 +50,35 @@ function isAllowedHeader(name, family) {
     || list.prefixes.some(prefix => lower.startsWith(prefix)));
 }
 
-function buildForwardHeaders(clientHeaders, upstream, { websocket = false } = {}) {
-  const family = websocket ? 'openai' : upstreamFamily(upstream);
+function isForeignHeader(name, family) {
+  if (family === 'anthropic') {
+    return ['chatgpt-account-id', 'originator'].includes(name)
+      || ['openai-', 'x-openai-', 'x-codex-'].some(prefix => name.startsWith(prefix));
+  }
+  return ['openai', 'chatgpt', 'xai'].includes(family)
+    && (name === 'x-api-key' || ['anthropic-', 'x-claude-'].some(prefix => name.startsWith(prefix)));
+}
+
+// HTTP and WS share family selection; ws constructs its own handshake fields.
+function buildForwardHeaders(clientHeaders, upstream) {
+  const family = upstreamFamily(upstream);
+  const { FORWARD_HEADERS } = require('./config');
+  const declared = new Set([
+    ...FORWARD_HEADERS.all, ...(FORWARD_HEADERS[family] || []),
+    // Claude launchers declare user names for the Anthropic family only.
+    ...(family === 'anthropic' ? String(clientHeaders['x-ccxray-forward-headers'] || '')
+      .toLowerCase().split(',').map(name => name.trim()) : []),
+  ]);
   const connectionNames = new Set(String(clientHeaders.connection || '')
     .split(',').map(name => name.trim().toLowerCase()).filter(Boolean));
   const headers = {};
   for (const [name, value] of Object.entries(clientHeaders)) {
     const lower = name.toLowerCase();
     if (HOP_BY_HOP.has(lower) || connectionNames.has(lower)) continue;
-    if (!isAllowedHeader(lower, family)) continue;
+    if (isInternalHeader(lower) || lower.startsWith('sec-websocket-')) continue;
+    if (!isAllowedHeader(lower, family)
+      && !(ALLOWLISTS[family] && declared.has(lower) && !isForeignHeader(lower, family)
+        && /^[!#$%&'*+.^_`|~0-9a-z-]+$/.test(lower))) continue;
     headers[lower] = value;
   }
   headers.host = upstream.host;
