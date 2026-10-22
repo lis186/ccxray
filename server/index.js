@@ -173,6 +173,7 @@ const { forwardRequest, setStatusLineEnabled, getStatusLineEnabled, setSessionAn
 const { readSettings, hudStatusText } = require('./settings');
 const { broadcastSessionStatus, broadcastPendingRequest } = require('./sse-broadcast');
 const { dispatch, mintAutoOpenUrl, formatAutoOpenUrl, verifyDashboardWrite } = require('./auth');
+const { failRequest } = require('./routes/route-errors');
 const { findSharedPrefix } = require('./delta-helpers');
 const { extractPromptAgentType } = require('./system-prompt');
 const providers = require('./providers');
@@ -567,7 +568,8 @@ function handleHttpRequest(clientReq, clientRes) {
     }
     reqChunks.push(chunk);
   });
-  clientReq.on('end', () => {
+  clientReq.on('end', () => { try { onRequestBodyEnd(); } catch (err) { failRequest(clientRes, err); } });
+  function onRequestBodyEnd() {
     if (rejected) return;
     const rawBody = Buffer.concat(reqChunks);
     let parsedBody = null;
@@ -793,7 +795,7 @@ function handleHttpRequest(clientReq, clientRes) {
     }
 
     forwardRequest(ctx);
-  });
+  }
 }
 
 // A synchronous throw while routing answers 500 for that request only.
@@ -801,11 +803,7 @@ const server = http.createServer((clientReq, clientRes) => {
   try {
     handleHttpRequest(clientReq, clientRes);
   } catch (err) {
-    console.error('[ccxray] request handler error:', err && err.message);
-    try {
-      if (!clientRes.headersSent) clientRes.writeHead(500, { 'Content-Type': 'application/json' });
-      clientRes.end(JSON.stringify({ error: 'internal error' }));
-    } catch {}
+    failRequest(clientRes, err);
   }
 });
 

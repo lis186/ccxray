@@ -22,7 +22,7 @@ function request(port, url, { method = 'GET', headers = {}, body } = {}) {
   });
 }
 
-it('malformed escapes answer 400 and cross-site writes answer 403, server keeps serving', async () => {
+it('URL input validation and same-origin check for dashboard writes', async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-input-handling-'));
   const logs = path.join(home, 'logs');
   fs.mkdirSync(logs);
@@ -81,6 +81,15 @@ it('malformed escapes answer 400 and cross-site writes answer 403, server keeps 
     const sameOrigin = await request(port, '/_api/settings', { method: 'POST', body,
       headers: { ...json, Origin: `http://127.0.0.1:${port}`, 'Sec-Fetch-Site': 'same-origin' } });
     assert.equal(sameOrigin.status, 200);
+    const aliasOrigin = await request(port, '/_api/settings', { method: 'POST', body,
+      headers: { ...json, Origin: `http://localhost:${port}` } });
+    assert.equal(aliasOrigin.status, 200);
+    const otherPort = await request(port, '/_api/settings', { method: 'POST', body,
+      headers: { ...json, Origin: `http://127.0.0.1:${port + 1}` } });
+    assert.equal(otherPort.status, 403);
+    const tokenOtherPort = await request(port, '/_auth/bootstrap-token', { method: 'POST',
+      headers: { Origin: `http://localhost:${port + 1}` } });
+    assert.equal(tokenOtherPort.status, 403);
     assert.equal((await request(port, '/_api/health')).status, 200);
   } finally {
     await stop();

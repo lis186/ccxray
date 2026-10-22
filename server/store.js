@@ -430,11 +430,8 @@ function stripInjectedTags(text) {
 const sessionMeta = Object.create(null); // { sessionId: { cwd, configDir, lastSeenAt } }
 const activeRequests = Object.create(null); // sessionId → in-flight count
 
-const RESERVED_SESSION_IDS = new Set(['__proto__', 'constructor', 'prototype']);
 // Externally supplied ids with a reserved name are treated as "no session id".
-function sanitizeSessionId(id) {
-  return typeof id === 'string' && RESERVED_SESSION_IDS.has(id.trim()) ? null : id;
-}
+const { sanitizeSessionId } = require('./session-id');
 const sessionCosts = new Map(); // sessionId → accumulated cost
 
 // ── Version Index (cc_version → { reqId, b2Len, firstSeen }) ────────
@@ -571,7 +568,7 @@ function cacheConfigDir(sessionId, req) {
 
 function extractSessionId(req) {
   if (typeof req?.metadata?.session_id === 'string') return sanitizeSessionId(req.metadata.session_id);
-  const uid = req?.metadata?.user_id || '';
+  const uid = typeof req?.metadata?.user_id === 'string' ? req.metadata.user_id : '';
   // New format: user_id is JSON like {"session_id":"xxx-yyy"}
   const jsonMatch = uid.match(/"session_id"\s*:\s*"([a-f0-9-]+)"/);
   if (jsonMatch) return sanitizeSessionId(jsonMatch[1]);
@@ -780,7 +777,7 @@ function recordFirstUserMsg(sid, req) {
 
 // Monotonic session-title setter. Returns true when the stored value changed.
 function setSessionTitle(sid, title, reqTs) {
-  if (!sid || !title || typeof title !== 'string') return false;
+  if (!sid || sanitizeSessionId(sid) === null || !title || typeof title !== 'string') return false;
   const cleaned = stripInjectedTags(title);
   if (!cleaned) return false;
   title = cleaned;

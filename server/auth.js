@@ -441,10 +441,16 @@ function verifyUpstream(req, res) {
 
 // Dashboard state-changing requests (anything but GET/HEAD/OPTIONS): a request
 // that declares a browsing context must be same-origin. Sec-Fetch-Site, when
-// sent, decides (same-origin / none pass); otherwise an Origin header must name
-// the request's own Host or a loopback host. Requests carrying neither header
-// (CLI, curl, hub clients, tests) are unaffected. Applies to loopback peers too.
+// sent, decides (same-origin / none pass). Otherwise the parsed Origin must
+// equal the listener's own origin: same scheme, same effective port (the
+// socket's local port, not the Host header) and a loopback hostname. The three
+// loopback spellings (localhost, 127.0.0.1, [::1]) are treated as one host
+// because the dashboard is opened as http://localhost:<port> while the listener
+// binds 127.0.0.1; they never match across ports or schemes. Requests carrying
+// neither header (CLI, curl, hub clients, tests) are unaffected. Applies to
+// loopback peers too.
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+const LOOPBACK_ORIGIN_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 
 function passesDashboardWriteOrigin(req) {
   if (SAFE_METHODS.has(req.method)) return true;
@@ -454,9 +460,12 @@ function passesDashboardWriteOrigin(req) {
   if (origin === undefined) return true;
   let u;
   try { u = new URL(origin); } catch { return false; }
-  const host = req.headers.host;
-  if (host && u.host.toLowerCase() === String(host).toLowerCase()) return true;
-  return _isAllowedHost(u.host) && _isAllowedHost(host);
+  const scheme = req.socket && req.socket.encrypted ? 'https:' : 'http:';
+  if (u.protocol !== scheme) return false;
+  const localPort = req.socket && req.socket.localPort;
+  if (!Number.isInteger(localPort)) return false;
+  const originPort = u.port !== '' ? Number(u.port) : (scheme === 'https:' ? 443 : 80);
+  return originPort === localPort && LOOPBACK_ORIGIN_HOSTS.has(u.hostname.toLowerCase());
 }
 
 function verifyDashboardWrite(req, res) {

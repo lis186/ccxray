@@ -4,6 +4,7 @@ const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
 const config = require('./config');
+const { isReservedSessionId } = require('./session-id');
 const { isStaleCost, repricedCost } = require('./reprice');
 // #381: shared L1 agentKey classification — aligns the server window fold's
 // subagent gate with the client classification pipeline (ADR 0005 site table).
@@ -115,7 +116,7 @@ async function loadSessionIndex() {
       if (!line) continue;
       try {
         const s = JSON.parse(line);
-        if (s && s.sid) sessionIndex.set(s.sid, s);
+        if (s && s.sid && !isReservedSessionId(s.sid)) sessionIndex.set(s.sid, s);
       } catch {}
     }
     // #368/#420/#426/#475: force rebuild when sessions.json predates a derived

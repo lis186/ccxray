@@ -224,7 +224,7 @@ function handleApiRoutes(clientReq, clientRes) {
     (async () => {
       const targetSids = addChildSessions(new Set([sid]));
       const entries = await loadSessionEntriesFromIndex(targetSids, { hideImported: sesHideImported });
-      const sessionTitles = {};
+      const sessionTitles = Object.create(null);
       for (const s of targetSids) {
         const title = store.sessionMeta[s]?.title || sessionIdx.getAll().find(x => x.sid === s)?.title;
         if (title) sessionTitles[s] = title;

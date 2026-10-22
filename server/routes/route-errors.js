@@ -15,4 +15,15 @@ function unsupportedMediaType(res) {
   return true;
 }
 
-module.exports = { badEncoding, unsupportedMediaType };
+// 500 reply for an unexpected error while handling a request. Once headers are
+// out the response can no longer carry a JSON error, so it is destroyed instead.
+function failRequest(res, err) {
+  console.error('[ccxray] request handler error:', err && err.message);
+  try {
+    if (res.headersSent) { res.destroy(); return; }
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'internal error' }));
+  } catch {}
+}
+
+module.exports = { badEncoding, unsupportedMediaType, failRequest };

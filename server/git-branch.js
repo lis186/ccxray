@@ -27,12 +27,13 @@ const OPEN_FLAGS = fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK || 0);
 
 // Read a small regular file, or null. Opens first and fstats the same
 // descriptor (no pathname stat → no check/use gap); anything that is not a
-// regular file is refused unread, and at most MAX_GIT_FILE_BYTES are read.
+// regular file is refused unread, and a file larger than MAX_GIT_FILE_BYTES yields null.
 function readSmallRegularFile(file) {
   let fd;
   try {
     fd = fs.openSync(file, OPEN_FLAGS);
-    if (!fs.fstatSync(fd).isFile()) return null;
+    const st = fs.fstatSync(fd);
+    if (!st.isFile() || st.size > MAX_GIT_FILE_BYTES) return null;
     const buf = Buffer.alloc(MAX_GIT_FILE_BYTES);
     const n = fs.readSync(fd, buf, 0, MAX_GIT_FILE_BYTES, 0);
     return buf.toString('utf8', 0, n);

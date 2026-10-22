@@ -5,6 +5,7 @@ const path = require('path');
 const { randomBytes } = require('crypto');
 const { pipeline } = require('stream/promises');
 const config = require('./config');
+const { isReservedSessionId } = require('./session-id');
 const store = require('./store');
 const { applyReadTimePricing } = require('./reprice');
 const { extractAgentType, extractPromptAgentType, splitB2IntoBlocks, rawCoreHash, computeCoreHash } = require('./system-prompt');
@@ -131,6 +132,7 @@ function loadEntryReqRes(entry) {
 // Async: the #211 trustStored sysModelMarker lookup reads a shared file.
 // Boundary: openai _res.json re-parse is I/O-heavy and stays in the loop only.
 async function healMetaInPlace(meta) {
+  if (isReservedSessionId(meta.sessionId)) meta.sessionId = null;
   // #384: heal legacy openai lines imported without maxContext.
   if (!meta.maxContext && meta.provider === 'openai' && meta.model) {
     const ctx = config.getMaxContext(meta.model, null);
