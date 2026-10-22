@@ -12,6 +12,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
 const net = require('node:net');
+const http = require('node:http');
 const { spawn, spawnSync } = require('node:child_process');
 
 const SERVER_DIR = path.join(__dirname, '..', 'server');
@@ -33,15 +34,24 @@ function stubSpawn() {
   return child;
 }
 
+const hubErrors = [];
 function loadHub() {
   let source = fs.readFileSync(path.join(SERVER_DIR, 'hub.js'), 'utf8');
   for (const [from, to] of [
     ['const HUB_HEALTH_CHECK_MS = 5000;', 'const HUB_HEALTH_CHECK_MS = 20;'],
     ['const HUB_LOCK_CHECK_MS = 5000;', 'const HUB_LOCK_CHECK_MS = 20;'],
-    ['const READINESS_TIMEOUT_MS = 10000;', 'const READINESS_TIMEOUT_MS = 120;'],
-    // Barrier: lets a test act exactly when readiness waiting begins.
+    ['const READINESS_TIMEOUT_MS = 10000;', 'const READINESS_TIMEOUT_MS = process.__ccxReadinessTimeoutMs || 120;'],
+    // Barrier: a test hook may await (e.g. fully publish a hub) before polling
+    // begins, and the resolved lock is recorded so a test can prove which hub
+    // the readiness wait returned.
     ['function waitForHubReady(timeoutMs = READINESS_TIMEOUT_MS) {',
-     'function waitForHubReady(timeoutMs = READINESS_TIMEOUT_MS) {\n  if (process.__ccxReadinessHook) process.__ccxReadinessHook();'],
+     `function waitForHubReady(timeoutMs = READINESS_TIMEOUT_MS) {
+  const hook = process.__ccxReadinessHook;
+  return Promise.resolve(hook ? hook() : undefined)
+    .then(() => __realWaitForHubReady(timeoutMs))
+    .then(lock => { process.__ccxReadinessResolved = lock; return lock; });
+}
+function __realWaitForHubReady(timeoutMs) {`],
   ]) {
     assert.ok(source.includes(from), `${from} must be declared for harness timing`);
     source = source.replace(from, to);
@@ -54,7 +64,7 @@ function loadHub() {
   };
   const factory = vm.runInNewContext(
     `(function (require, module, exports, __dirname, __filename) {\n${source}\n})`,
-    { Buffer, clearInterval, clearTimeout, console: { error() {}, log() {}, warn() {} }, Date, process, setInterval, setTimeout },
+    { Buffer, clearInterval, clearTimeout, console: { error(...a) { hubErrors.push(a.join(' ')); }, log() {}, warn() {} }, Date, process, setInterval, setTimeout },
   );
   factory(localRequire, module, module.exports, SERVER_DIR, path.join(SERVER_DIR, 'hub.js'));
   return module.exports;
@@ -343,12 +353,18 @@ describe('client recovery (#730)', () => {
   it('a true non-acquiring waiter (discovery null, fork lock held elsewhere) never signals a hub that appears on another port', async () => {
     const other = liveForeignPid();
     const holder = liveForeignPid();
-    const reserve = () => new Promise(resolve => {
-      const srv = net.createServer();
-      srv.listen(0, '127.0.0.1', () => { const { port } = srv.address(); srv.close(() => resolve(port)); });
-    });
-    const ownPort = await reserve(); // closed: discovery's HTTP fallback finds nothing
-    const otherPort = await reserve();
+    // The client's own port stays occupied by a non-hub HTTP service for the
+    // whole test, so discovery's HTTP fallback deterministically finds no hub.
+    const decoy = http.createServer((req, res) => { res.statusCode = 404; res.end('{}'); });
+    decoy.on('error', () => {});
+    await new Promise(resolve => decoy.listen(0, '127.0.0.1', resolve));
+    const ownPort = decoy.address().port;
+    // B's "port" is only a number in the lock; its health is answered on the socket.
+    const probe = net.createServer();
+    await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve));
+    const otherPort = probe.address().port;
+    await new Promise(resolve => probe.close(resolve));
+    assert.notEqual(otherPort, ownPort);
     const kills = [];
     const realKill = process.kill;
     process.kill = (pid, sig) => {
@@ -356,31 +372,45 @@ describe('client recovery (#730)', () => {
       return realKill.call(process, pid, sig);
     };
     let failures = 0;
-    let waiting = false;
-    let published = null;
+    let hookRan = false;
+    hubErrors.length = 0;
+    // The timeout can never be the path taken: raised far above the test's reach.
+    process.__ccxReadinessTimeoutMs = 600000;
+    delete process.__ccxReadinessResolved;
     try {
       assert.equal(lockOnDisk(), null, 'no hub.json: discovery returns null');
-      // Another party holds a fresh fork lock, so this monitor cannot acquire it.
       fs.writeFileSync(path.join(HOME, 'hub.fork.lock'), JSON.stringify({ pid: holder.pid, at: Date.now() }));
-      process.__ccxReadinessHook = () => {
-        waiting = true;
-        // Publish only now that readiness waiting has started.
-        published = startHubB(otherPort).then(() => hub.writeHubLock(otherPort, other.pid, undefined, hub.SOCK_PATH));
+      process.__ccxReadinessHook = async () => {
+        hookRan = true;
+        // B becomes fully discoverable (socket + lock) BEFORE readiness polls.
+        await startHubB(otherPort);
+        hub.writeHubLock(otherPort, other.pid, undefined, hub.SOCK_PATH);
       };
       const monitor = hub.createHubMonitor(deadPid(), ownPort, () => true, () => { failures++; });
       await monitor.tick();
-      await published;
-      assert.equal(waiting, true, 'the readiness-wait branch ran');
+      assert.equal(hookRan, true, 'the readiness-wait branch ran');
+      const resolved = process.__ccxReadinessResolved;
+      assert.ok(resolved, 'readiness resolved (did not time out)');
+      assert.equal(resolved.pid, other.pid, 'readiness returned hub B');
+      assert.equal(resolved.port, otherPort);
       assert.equal(failures, 1, 'foreign-port hub reported as a failure');
+      assert.ok(
+        hubErrors.some(m => m.includes(`Hub found on port ${otherPort} but Claude is using port ${ownPort}`)),
+        `different-port diagnostic naming B's port; got: ${JSON.stringify(hubErrors)}`,
+      );
+      assert.ok(!hubErrors.some(m => /did not become ready/.test(m)), 'no readiness-timeout diagnostic');
       assert.equal(spawnCalls, 0, 'non-acquirer never forks');
       assert.deepEqual(kills, [], 'no signal sent to the other hub');
       assert.equal(other.exitCode, null);
       assert.equal(lockOnDisk().pid, other.pid, 'its lock untouched');
     } finally {
       delete process.__ccxReadinessHook;
+      delete process.__ccxReadinessTimeoutMs;
+      delete process.__ccxReadinessResolved;
       process.kill = realKill;
       try { fs.unlinkSync(path.join(HOME, 'hub.fork.lock')); } catch {}
       await stopHubB();
+      await new Promise(resolve => decoy.close(resolve));
     }
   });
 
