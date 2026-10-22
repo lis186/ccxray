@@ -1,0 +1,268 @@
+'use strict';
+
+const { describe, it, before, after } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const http = require('http');
+const net = require('net');
+const os = require('os');
+const path = require('path');
+
+// hub.js resolves CCXRAY_HOME at load; keep it on a throwaway directory.
+const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-listen-'));
+const originalHome = process.env.CCXRAY_HOME;
+const originalProxyHost = process.env.PROXY_HOST;
+process.env.CCXRAY_HOME = tmpHome;
+delete process.env.PROXY_HOST;
+
+const listen = require('../server/listen');
+const hub = require('../server/hub');
+
+after(() => {
+  if (originalHome !== undefined) process.env.CCXRAY_HOME = originalHome; else delete process.env.CCXRAY_HOME;
+  if (originalProxyHost !== undefined) process.env.PROXY_HOST = originalProxyHost; else delete process.env.PROXY_HOST;
+  fs.rmSync(tmpHome, { recursive: true, force: true });
+});
+
+function canListenOn(host) {
+  return new Promise(resolve => {
+    const s = net.createServer();
+    s.once('error', () => resolve(false));
+    s.listen(0, host, () => s.close(() => resolve(true)));
+  });
+}
+
+function closeServer(srv) {
+  return new Promise(resolve => {
+    if (!srv.listening) return resolve();
+    srv.close(() => resolve());
+    if (srv.closeAllConnections) srv.closeAllConnections();
+  });
+}
+
+function get(host, port, route = '/') {
+  return new Promise((resolve, reject) => {
+    const req = http.get({ host, port, path: route, agent: false }, res => {
+      let body = '';
+      res.on('data', c => { body += c; });
+      res.on('end', () => resolve({ status: res.statusCode, body }));
+    });
+    req.on('error', reject);
+    req.setTimeout(2000, () => req.destroy(new Error('timeout')));
+  });
+}
+
+function connectResult(host, port) {
+  return new Promise(resolve => {
+    const sock = net.connect({ host, port });
+    const done = r => { sock.destroy(); resolve(r); };
+    sock.once('connect', () => done('connected'));
+    sock.once('error', err => done(err.code));
+    sock.setTimeout(1000, () => done('timeout'));
+  });
+}
+
+function makeServer() {
+  return http.createServer((req, res) => {
+    res.end(JSON.stringify({ remote: req.socket.remoteAddress }));
+  });
+}
+
+function firstNonLoopbackIPv4() {
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const a of list || []) {
+      if (a.family === 'IPv4' && !a.internal) return a.address;
+    }
+  }
+  return null;
+}
+
+let hasV6Loopback = false;
+before(async () => { hasV6Loopback = await canListenOn('::1'); });
+
+describe('resolveListenHosts', () => {
+  it('defaults to 127.0.0.1 with ::1 as an optional extra', () => {
+    assert.deepEqual(listen.resolveListenHosts({}), { primary: '127.0.0.1', optional: ['::1'] });
+    assert.deepEqual(listen.resolveListenHosts({ PROXY_HOST: '  ' }), { primary: '127.0.0.1', optional: ['::1'] });
+  });
+
+  it('PROXY_HOST selects a single listener on that host', () => {
+    assert.deepEqual(listen.resolveListenHosts({ PROXY_HOST: '0.0.0.0' }), { primary: '0.0.0.0', optional: [] });
+    assert.deepEqual(listen.resolveListenHosts({ PROXY_HOST: '192.0.2.10' }), { primary: '192.0.2.10', optional: [] });
+  });
+
+  it('isLoopbackHost recognises loopback spellings only', () => {
+    for (const h of ['127.0.0.1', '127.0.0.2', '::1', '[::1]', 'localhost', '::ffff:127.0.0.1']) assert.equal(listen.isLoopbackHost(h), true, h);
+    for (const h of ['0.0.0.0', '::', '192.168.1.5', '', undefined]) assert.equal(listen.isLoopbackHost(h), false, String(h));
+  });
+});
+
+describe('default bind is loopback only', () => {
+  it('every listener address is loopback and both families share one port', async () => {
+    const srv = makeServer();
+    try {
+      const port = await hub.tryListen(srv, 0, 0);
+      const addrs = listen.listenAddresses(srv);
+      assert.ok(addrs.length >= 1);
+      for (const a of addrs) {
+        assert.ok(listen.isLoopbackHost(a.address), `unexpected bind address ${a.address}`);
+        assert.equal(a.port, port);
+      }
+      assert.equal(addrs[0].address, '127.0.0.1');
+      if (hasV6Loopback) assert.deepEqual(addrs.map(a => a.address), ['127.0.0.1', '::1']);
+    } finally {
+      await closeServer(srv);
+    }
+  });
+
+  it('requests over 127.0.0.1 and ::1 reach the same handler', async () => {
+    const srv = makeServer();
+    try {
+      const port = await hub.tryListen(srv, 0, 0);
+      const v4 = await get('127.0.0.1', port);
+      assert.equal(v4.status, 200);
+      assert.equal(JSON.parse(v4.body).remote, '127.0.0.1');
+      if (hasV6Loopback) {
+        const v6 = await get('::1', port);
+        assert.equal(v6.status, 200);
+        assert.equal(JSON.parse(v6.body).remote, '::1');
+      }
+    } finally {
+      await closeServer(srv);
+    }
+  });
+
+  it('an upgrade request over ::1 reaches the server upgrade handler', async t => {
+    if (!hasV6Loopback) return t.skip('no IPv6 loopback on this host');
+    const srv = makeServer();
+    const seen = [];
+    srv.on('upgrade', (req, socket) => {
+      seen.push(req.socket.remoteAddress);
+      socket.end('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n');
+    });
+    try {
+      const port = await hub.tryListen(srv, 0, 0);
+      const status = await new Promise((resolve, reject) => {
+        const req = http.request({ host: '::1', port, path: '/v1/responses', agent: false,
+          headers: { Connection: 'Upgrade', Upgrade: 'websocket' } });
+        req.on('upgrade', (res, socket) => { socket.destroy(); resolve(res.statusCode); });
+        req.on('error', reject);
+        req.end();
+      });
+      assert.equal(status, 101);
+      assert.deepEqual(seen, ['::1']);
+    } finally {
+      await closeServer(srv);
+    }
+  });
+
+  it('does not cover a non-loopback interface address', async t => {
+    const lan = firstNonLoopbackIPv4();
+    if (!lan) return t.skip('no non-loopback IPv4 interface on this host');
+    const srv = makeServer();
+    try {
+      const port = await hub.tryListen(srv, 0, 0);
+      // Binding the interface address on the same port succeeds only when
+      // nothing (e.g. a 0.0.0.0 listener) already covers it. Checked by bind
+      // rather than connect so the test needs no non-loopback traffic.
+      assert.equal(await canListenOnPort(lan, port), true);
+    } finally {
+      await closeServer(srv);
+    }
+  });
+
+  it('close() stops every listener', async () => {
+    const srv = makeServer();
+    const port = await hub.tryListen(srv, 0, 0);
+    await closeServer(srv);
+    assert.equal(await connectResult('127.0.0.1', port), 'ECONNREFUSED');
+    if (hasV6Loopback) assert.equal(await connectResult('::1', port), 'ECONNREFUSED');
+  });
+});
+
+describe('PROXY_HOST opt-in', () => {
+  it('binds only the given host', async () => {
+    process.env.PROXY_HOST = '0.0.0.0';
+    const srv = makeServer();
+    try {
+      const port = await hub.tryListen(srv, 0, 0);
+      const addrs = listen.listenAddresses(srv);
+      assert.equal(addrs.length, 1);
+      assert.equal(addrs[0].address, '0.0.0.0');
+      assert.equal((await get('127.0.0.1', port)).status, 200);
+      const lan = firstNonLoopbackIPv4();
+      if (lan) assert.equal(await canListenOnPort(lan, port), false);
+    } finally {
+      delete process.env.PROXY_HOST;
+      await closeServer(srv);
+    }
+  });
+
+  it('binds a specific loopback address without the ::1 extra', async () => {
+    process.env.PROXY_HOST = '127.0.0.1';
+    const srv = makeServer();
+    try {
+      await hub.tryListen(srv, 0, 0);
+      assert.deepEqual(listen.listenAddresses(srv).map(a => a.address), ['127.0.0.1']);
+    } finally {
+      delete process.env.PROXY_HOST;
+      await closeServer(srv);
+    }
+  });
+});
+
+describe('port in use on one loopback family', () => {
+  it('::1 taken while 127.0.0.1 is free → the whole port counts as in use', async t => {
+    if (!hasV6Loopback) return t.skip('no IPv6 loopback on this host');
+    const blocker = net.createServer();
+    await new Promise((resolve, reject) => { blocker.once('error', reject); blocker.listen(0, '::1', resolve); });
+    const port = blocker.address().port;
+    const srv = makeServer();
+    try {
+      await assert.rejects(hub.tryListen(srv, port, 0), err => err.code === 'EADDRINUSE');
+      assert.equal(srv.listening, false, 'the IPv4 listener must be released');
+      assert.equal(await canListenOnPort('127.0.0.1', port), true);
+    } finally {
+      await closeServer(srv);
+      await new Promise(r => blocker.close(() => r()));
+    }
+  });
+
+  it('port scan moves past a port whose ::1 side is taken', async t => {
+    if (!hasV6Loopback) return t.skip('no IPv6 loopback on this host');
+    const blocker = net.createServer();
+    await new Promise((resolve, reject) => { blocker.once('error', reject); blocker.listen(0, '::1', resolve); });
+    const port = blocker.address().port;
+    const srv = makeServer();
+    try {
+      const got = await hub.tryListen(srv, port, 5);
+      assert.ok(got > port && got <= port + 5, `expected a later port, got ${got}`);
+      assert.deepEqual(listen.listenAddresses(srv).map(a => [a.address, a.port]), [['127.0.0.1', got], ['::1', got]]);
+    } finally {
+      await closeServer(srv);
+      await new Promise(r => blocker.close(() => r()));
+    }
+  });
+
+  it('127.0.0.1 taken → EADDRINUSE without a retry budget', async () => {
+    const blocker = net.createServer();
+    await new Promise((resolve, reject) => { blocker.once('error', reject); blocker.listen(0, '127.0.0.1', resolve); });
+    const port = blocker.address().port;
+    const srv = makeServer();
+    try {
+      await assert.rejects(hub.tryListen(srv, port, 0), err => err.code === 'EADDRINUSE');
+      assert.equal(srv.listening, false);
+    } finally {
+      await closeServer(srv);
+      await new Promise(r => blocker.close(() => r()));
+    }
+  });
+});
+
+function canListenOnPort(host, port) {
+  return new Promise(resolve => {
+    const s = net.createServer();
+    s.once('error', () => resolve(false));
+    s.listen(port, host, () => s.close(() => resolve(true)));
+  });
+}

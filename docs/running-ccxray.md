@@ -17,6 +17,10 @@ Only one process can listen on a port, and it is one of two kinds:
 
 `GET /_api/health` also returns `version` and `gitSha` (the 40-hex commit the process started from when the package root is a git checkout, else `null`; captured at startup before the port accepts requests, public, no other git data; reftable repositories and symlinked or malformed git metadata report `null`) — use `gitSha` to confirm a restart picked up a merge.
 
+### Listen address
+
+Both kinds listen on loopback only by default: `127.0.0.1`, plus `::1` on the same port when the host has IPv6 loopback. A client on the same machine — or one arriving over an SSH reverse tunnel, which reaches ccxray from `127.0.0.1` — needs no change. To accept other hosts, set `PROXY_HOST` (for example `PROXY_HOST=0.0.0.0`); those clients must send a ccxray credential (see [SECURITY.md](../SECURITY.md)). In hub mode the hub inherits `PROXY_HOST` from the shell that forked it.
+
 ## Keeping a proxy up
 
 - A hub lives only while it has registered clients, plus 5 s. Pointing an agent at a hub's port with `ANTHROPIC_BASE_URL` (or the Codex/Grok equivalents below) does **not** register it, so it does not keep the hub alive: when the last `ccxray <agent>` client exits, the hub exits and the port closes.

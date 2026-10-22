@@ -1621,6 +1621,15 @@ async function startServer({ onListen } = {}) {
   }
   if (onListen) onListen(actualPort);
   hub.setIdentityPort(actualPort);
+  {
+    // Loopback is the default bind; say so when PROXY_HOST opted in to more.
+    const listen = require('./listen');
+    const host = listen.resolveListenHosts().primary;
+    if (!listen.isLoopbackHost(host)) {
+      const bound = listen.listenAddresses(server).map(listen.formatAddress).join(', ');
+      console.error(`${DISPLAY_NAME} listening on ${bound} (PROXY_HOST=${host}); non-loopback clients need a ccxray credential`);
+    }
+  }
   rebuildIndexHTML(actualPort);
 
   runPostListenStartupTasks();

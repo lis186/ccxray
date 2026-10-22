@@ -11,6 +11,7 @@ Unless noted, a variable is read once at process start. In hub mode the hub's ow
 | Variable | Default | Purpose | Defined in |
 |---|---|---|---|
 | `PROXY_PORT` | `5577` | Port for proxy + dashboard. `--port` overrides it and opts out of hub mode; `PROXY_PORT` alone keeps hub mode on that port. | `server/config.js` |
+| `PROXY_HOST` | — (loopback) | Address the proxy + dashboard listens on. Unset: `127.0.0.1`, plus `::1` on the same port when the host has IPv6 loopback. Set (e.g. `0.0.0.0`, `::`, or one interface address): a single listener on that address only, and startup prints the bound address. Clients on other hosts still need a ccxray credential. The Docker image sets `0.0.0.0`. | `server/listen.js` |
 | `PORT` | — | **Not read.** `config.PORT` is derived from `PROXY_PORT`. Listed because it is a common guess. | `server/config.js` |
 | `CCXRAY_HOME` | `~/.ccxray` | Base directory for `hub.json`, `hub.sock`, `hub.log`, secrets, settings, and (by default) logs. Created 0700. A loose existing home is tightened to 0700 at startup only when it is the default `~/.ccxray`; a loose custom directory gets a one-line warning on every startup and keeps its mode, even after ccxray has written its own files (`local-secret`, `hub.sock`) into it. A symlinked `~/.ccxray` is warning-only, and `$HOME` and its ancestors are never chmod'ed, including through a symlink. | `server/paths.js` |
 | `LOGS_DIR` | `<CCXRAY_HOME>/logs` | Log directory (`index.ndjson`, `_req`/`_res` files, `sessions.json`). | `server/paths.js`, `server/cost-worker.js` |
@@ -55,6 +56,7 @@ Unless noted, a variable is read once at process start. In hub mode the hub's ow
 |---|---|---|---|
 | `AUTH_TOKEN` | — | Optional shared access token; when unset ccxray uses `<CCXRAY_HOME>/local-secret`. | `server/auth.js` |
 | `CCXRAY_LOOPBACK_REQUIRE_AUTH` | — | `1` requires auth on loopback too (loopback is trusted by default). | `server/auth.js` |
+| `CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN` | — | `1` lets a non-loopback client authenticate ChatGPT-routed `/v1/*` HTTP and WebSocket requests with Codex's ChatGPT-login headers (`chatgpt-account-id` plus a JWT-shaped `Authorization`) instead of a ccxray credential. ccxray cannot check that token locally, so with this set those headers alone are accepted from any client that can reach the port. Unset, the headers count only from loopback (including under `CCXRAY_LOOPBACK_REQUIRE_AUTH=1` and over an SSH tunnel). | `server/auth.js` |
 | `CCXRAY_LOOPBACK_NO_AUTH` | — | Legacy; ignored apart from a startup notice that it is no longer needed. | `server/index.js` |
 
 ## Launch and hub

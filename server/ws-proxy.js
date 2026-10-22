@@ -167,7 +167,8 @@ function writeSocketResponse(socket, statusCode, reason) {
 
 function isAuthorized(req) {
   // Same predicate as the HTTP gate: loopback bypass, valid X-Ccxray-Auth, or
-  // the ChatGPT-OAuth carve-out scoped to ChatGPT-routed requests.
+  // the ChatGPT-OAuth carve-out scoped to ChatGPT-routed requests from a
+  // loopback peer (or CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN=1).
   return isUpstreamAuthenticated(req);
 }
 

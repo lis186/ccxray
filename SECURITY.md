@@ -10,10 +10,11 @@ advisory at <https://github.com/lis186/ccxray/security/advisories>.
 
 ### Where it listens
 
-The HTTP proxy and dashboard listen on the configured port (default 5577). The
-server calls `listen(port)` without restricting the host to loopback, so it can
-accept connections through available network interfaces. Hub coordination uses
-a separate local Unix-domain socket on macOS/Linux.
+The HTTP proxy and dashboard listen on the configured port (default 5577) on
+loopback only by default: `127.0.0.1`, plus `::1` when the host has IPv6
+loopback. Set `PROXY_HOST` (for example `0.0.0.0`) to listen on another address;
+the Docker image does this. Hub coordination uses a separate local Unix-domain
+socket on macOS/Linux.
 
 ### Who is authenticated
 
@@ -31,11 +32,15 @@ an authorized dashboard caller.
 
 Non-loopback upstream `/v1/*` HTTP requests and WebSocket upgrades normally
 require the ccxray-injected upstream credential. ChatGPT-routed Codex traffic
-has a compatibility exception: ccxray accepts `chatgpt-account-id` together
-with a JWT-shaped `Authorization` header, and checks that the request routes to
-the ChatGPT upstream. This is only a shape check; ccxray does not verify the
-JWT signature. The upstream determines whether the OAuth token is actually
-valid. This exception does not authenticate dashboard/API requests.
+has a compatibility exception for loopback peers: ccxray accepts
+`chatgpt-account-id` together with a JWT-shaped `Authorization` header, and
+checks that the request routes to the ChatGPT upstream. This holds with
+`CCXRAY_LOOPBACK_REQUIRE_AUTH=1` too. This is only a shape check; ccxray does
+not verify the JWT signature. The upstream determines whether the OAuth token
+is actually valid. A non-loopback peer needs the ccxray credential for these
+requests unless `CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN=1` is set, which accepts the
+ChatGPT-login headers alone from any peer that can reach the port. This
+exception does not authenticate dashboard/API requests.
 
 `/_api/health` is public and returns a minimal listener identity, including
 `app`, `pid`, `hub`, `version`, and `capabilities: []`. The additional export
