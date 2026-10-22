@@ -189,7 +189,7 @@ function atomicWrite(file, bytes, mode, deps) {
 // file (directory, FIFO, dangling link) is refused, never replaced.
 function writeProfile(file, text, deps) {
   const link = lstatOrNull(file, deps);
-  if (!link) { atomicWrite(file, Buffer.from(text), 0o644, deps); return; }
+  if (!link) { atomicWrite(file, Buffer.isBuffer(text) ? text : Buffer.from(text), 0o644, deps); return; }
   let real;
   try { real = deps.fs.realpathSync(file); } catch (err) { throw new Error(`${file} cannot be resolved (${err.code || err.message})`); }
   const st = deps.fs.statSync(real);
@@ -206,6 +206,21 @@ function writeProfile(file, text, deps) {
     throw err;
   }
 }
+
+// Reads an existing profile as raw bytes. Only ENOENT/ENOTDIR mean "absent" (null);
+// any other failure (EACCES, EIO, ...) is thrown so nothing is written over content
+// that could not be read.
+function readProfileBytes(file, deps) {
+  try { return deps.fs.readFileSync(path.resolve(file)); } catch (err) {
+    if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return null;
+    throw err;
+  }
+}
+
+// Profile bytes are handled as latin1 text (one char per byte, lossless) so the
+// ASCII marker search never decodes or re-encodes bytes it does not own.
+const toText = bytes => bytes.toString('latin1');
+const fromText = text => Buffer.from(text, 'latin1');
 
 function lstatOrNull(file, deps) {
   try { return deps.fs.lstatSync(file); } catch (err) {
@@ -257,14 +272,14 @@ function undo(manifest, lay, deps, log = () => {}) {
   for (const entry of manifest.sessionEnv || []) removeOwned(entry);
   for (const profile of manifest.profiles || []) {
     try {
-      const text = deps.fs.readFileSync(profile.file, 'utf8');
+      const text = toText(deps.fs.readFileSync(profile.file));
       const range = blockRange(text);
       if (!range) continue;
       let start = range.start;
       if (profile.prefix && text.slice(0, start).endsWith(profile.prefix)) start -= profile.prefix.length;
       const rest = text.slice(0, start) + text.slice(range.end);
       if (profile.created && rest === '') deps.fs.unlinkSync(profile.file);
-      else writeProfile(profile.file, rest, deps);
+      else writeProfile(profile.file, fromText(rest), deps);
       log(`restored ${profile.file}`);
     } catch (err) { if (err.code !== 'ENOENT') problems.push({ kind: 'error', message: `${profile.file}: ${err.message}` }); }
   }
@@ -296,8 +311,9 @@ function preflight(p, lay, deps, previous, found) {
   for (const file of p.targets.files) {
     try {
       if (!lstatOrNull(file, deps)) continue;
-      if (!deps.fs.statSync(deps.fs.realpathSync(file)).isFile()) conflicts.push(`${file} does not resolve to a regular file`);
-    } catch (err) { conflicts.push(`${file} cannot be resolved (${err.code || err.message})`); }
+      if (!deps.fs.statSync(deps.fs.realpathSync(file)).isFile()) { conflicts.push(`${file} does not resolve to a regular file`); continue; }
+      readProfileBytes(file, deps); // an existing profile must be readable before anything is touched
+    } catch (err) { conflicts.push(`${file} cannot be resolved or read (${err.code || err.message})`); }
   }
   return conflicts;
 }
@@ -325,6 +341,16 @@ async function install(options, deps, lay) {
     }
   }
 
+  // Every existing profile is read (as bytes) before the first write. A read that
+  // fails for any reason but "absent" aborts here, with nothing created.
+  const profileBytes = new Map();
+  try {
+    for (const file of p.targets.files) profileBytes.set(file, readProfileBytes(file, deps));
+  } catch (err) {
+    log.error(`Refusing to install: a shell profile cannot be read (${err.code || err.message}). Nothing was changed by this step.`);
+    return 1;
+  }
+
   const originals = [];
   const mkdirs = [...new Set([...firstMissingAncestors(lay.shimDir, deps), ...firstMissingAncestors(lay.home, deps)])];
   try {
@@ -343,9 +369,8 @@ async function install(options, deps, lay) {
     }
     const block = renderPathBlock(lay.shimDir);
     for (const file of p.targets.files) {
-      let original = null;
-      let originalBytes = null;
-      try { originalBytes = deps.fs.readFileSync(path.resolve(file)); original = originalBytes.toString('utf8'); } catch { /* new file */ }
+      const originalBytes = profileBytes.get(file);
+      const original = originalBytes === null ? null : toText(originalBytes);
       const stripped = original !== null && blockRange(original)
         ? original.slice(0, blockRange(original).start) + original.slice(blockRange(original).end) : original;
       const prefix = stripped && !stripped.endsWith('\n') ? '\n' : '';
@@ -354,7 +379,7 @@ async function install(options, deps, lay) {
       // The exact original bytes are kept for rollback: block stripping alone could
       // not repair a profile whose own write went wrong.
       originals.push({ file, bytes: originalBytes });
-      writeProfile(file, (stripped ?? '') + prefix + block, deps);
+      writeProfile(file, Buffer.concat([fromText(stripped ?? ''), Buffer.from(prefix), Buffer.from(block, 'utf8')]), deps);
     }
     if (p.envFile) {
       const envDirs = firstMissingAncestors(path.dirname(p.envFile), deps);
@@ -372,7 +397,7 @@ async function install(options, deps, lay) {
     for (const o of originals.reverse()) {
       try {
         if (o.bytes === null) { if (lstatOrNull(o.file, deps)) deps.fs.unlinkSync(o.file); }
-        else writeProfile(o.file, o.bytes.toString('utf8'), deps);
+        else writeProfile(o.file, o.bytes, deps);
       } catch (e) { log.error(`warning: could not restore ${o.file}: ${e.message}`); }
     }
     const leftovers = undo(manifest, lay, deps);
@@ -460,7 +485,7 @@ async function check(options, deps, lay) {
   }
   for (const profile of manifest.profiles) {
     let present = false;
-    try { present = deps.fs.readFileSync(profile.file, 'utf8').includes(BLOCK_START); } catch { /* missing */ }
+    try { present = toText(deps.fs.readFileSync(profile.file)).includes(BLOCK_START); } catch { /* missing */ }
     flag(present, `PATH block in ${profile.file} ${present ? 'present' : 'missing'}`);
   }
   const port = shimProbe.discoverPort({ ...deps.env, CCXRAY_SHIM_HOME: lay.home }, lay.home);

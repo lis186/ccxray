@@ -76,13 +76,28 @@ case $secs in ''|*[!0-9]*) secs=2 ;; esac
 { [ "$secs" -ge 1 ] && [ "$secs" -le 30 ]; } || secs=2
 
 decision=
+shim_pid=$$
+# SIGINT/SIGHUP during the helper or logger phase end the launch (the real tool is
+# NOT started afterwards). A shell runs a trap once its foreground step returns, so
+# this takes effect within the step's own bound (the deadline above, or the log
+# budget below); SIGTERM keeps its default, immediate disposition.
+trap 'exit 130' INT
+trap 'exit 129' HUP
 if [ -x "$node" ] && [ -r "$probe" ]; then
   decision=$(
     {
       "$node" "$probe" "$tool" "$@" 2>/dev/null </dev/null & hp=$!
+      # The watchdog also ends the helper if this shell is gone (a SIGTERM/SIGINT/
+      # SIGHUP during this phase): it checks once a second, so nothing outlives a
+      # signalled launch by more than about a second. `$$` is this shell's pid.
       ( trap 'kill "$sp" 2>/dev/null; exit 0' TERM
-        "$sleepcmd" "$secs" & sp=$!
-        wait "$sp"
+        i=0
+        while [ "$i" -lt "$secs" ]; do
+          "$sleepcmd" 1 & sp=$!
+          wait "$sp"
+          kill -0 "$shim_pid" 2>/dev/null || { kill -9 "$hp" 2>/dev/null; exit 0; }
+          i=$((i + 1))
+        done
         kill -9 "$hp" 2>/dev/null
         echo timeout ) & wd=$!
       wait "$hp"

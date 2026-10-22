@@ -697,6 +697,95 @@ describe('fallback logging cannot block the launch (round 2, must-fix 4)', () =>
   });
 });
 
+// Review round 3: a signal that arrives while the shim is still in the helper or
+// fallback-logger phase (before it execs the real tool) must end the launch
+// promptly and leave no helper, watchdog or logger process behind. Linux only:
+// descendants are found through /proc; macOS has not been run (see the docs).
+describe('signals during the launch phase (round 3)', { skip: !fs.existsSync('/proc/self/stat') }, () => {
+  let dir; let paths; let fakeDir;
+  before(async () => { dir = tmp('ccxray-shim-sigphase-'); fakeDir = path.join(dir, 'fake-tools'); });
+  after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  const stat = pid => { try { return fs.readFileSync(`/proc/${pid}/stat`, 'utf8'); } catch { return null; } };
+  const alive = pid => { const t = stat(pid); return t !== null && !/^\d+ \(.*\) Z /.test(t); };
+  const descendants = root => {
+    const kids = new Map();
+    for (const name of fs.readdirSync('/proc')) {
+      if (!/^\d+$/.test(name)) continue;
+      const t = stat(name);
+      if (!t) continue;
+      const ppid = Number(t.slice(t.lastIndexOf(')') + 2).split(' ')[1]);
+      if (!kids.has(ppid)) kids.set(ppid, []);
+      kids.get(ppid).push(Number(name));
+    }
+    const out = []; const queue = [root];
+    while (queue.length) for (const k of kids.get(queue.shift()) || []) { out.push(k); queue.push(k); }
+    return out;
+  };
+  const waitFor = async (fn, what, ms = 8000) => {
+    const until = Date.now() + ms;
+    while (!fn()) { assert.ok(Date.now() < until, `timed out waiting for ${what}`); await new Promise(r => setTimeout(r, 10)); }
+  };
+
+  // Starts the shim with a wedged stage, signals it once the stage is running, and
+  // returns how long it took to end and which of its descendants were left alive.
+  async function signalDuring(stage, signal) {
+    fs.rmSync(fakeDir, { recursive: true, force: true });
+    const home = path.join(dir, `home-${stage}-${signal}`);
+    const marker = path.join(dir, `stage-${stage}-${signal}.pid`);
+    fs.rmSync(marker, { force: true });
+    let env;
+    if (stage === 'helper') {
+      const fakeNode = path.join(dir, `fake-node-${signal}`);
+      makeFake(fakeNode, `echo $$ > "${marker}"\nexec /bin/sleep 60`);
+      paths = await installInto(path.join(dir, `inst-${stage}-${signal}`), {}, { nodePath: fakeNode });
+      env = { CCXRAY_SHIM_HOME: paths.home, CCXRAY_SHIM_DEADLINE_SECS: '2' };
+    } else {
+      // No helper at all, and a logger command that hangs: the fallback-log phase.
+      paths = await installInto(path.join(dir, `inst-${stage}-${signal}`));
+      fs.rmSync(path.join(paths.home, 'shim-probe.js'));
+      makeFake(path.join(fakeDir, 'date'), `echo $$ > "${marker}"\nexec /bin/sleep 60`);
+      env = { CCXRAY_SHIM_HOME: paths.home, CCXRAY_SHIM_SYSPATH: `${fakeDir}:/usr/bin:/bin` };
+    }
+    void home;
+    const child = spawn('claude', ['x'], {
+      env: { PATH: [paths.shims, realBin, SYSTEM_PATH].join(':'), HOME: root, CCXRAY_SHIM_PORT: String(proxyPort), ...env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let seen = '';
+    child.stdout.on('data', d => { seen += d; });
+    const closed = new Promise(resolve => child.on('close', (code, sig) => resolve({ code, sig })));
+    try {
+      await waitFor(() => fs.existsSync(marker) && fs.readFileSync(marker, 'utf8').trim() !== '', `${stage} stage to start`);
+      const before = descendants(child.pid);
+      assert.ok(before.length > 0, 'the stage must be running as a child');
+      const started = Date.now();
+      child.kill(signal);
+      const ended = await Promise.race([closed, new Promise(r => setTimeout(() => r(null), 5000))]);
+      const ms = Date.now() - started;
+      // Reparented descendants are still found by pid: give them a bounded moment.
+      const until = Date.now() + 3000;
+      while (before.some(alive) && Date.now() < until) await new Promise(r => setTimeout(r, 10));
+      return { ended, ms, seen, survivors: before.filter(alive) };
+    } finally {
+      child.kill('SIGKILL');
+      for (const pid of descendants(child.pid)) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
+    }
+  }
+
+  for (const stage of ['helper', 'logger']) {
+    for (const signal of ['SIGTERM', 'SIGINT']) {
+      it(`${signal} during the ${stage} phase ends the launch in bounded time with no surviving children`, async () => {
+        const r = await signalDuring(stage, signal);
+        assert.ok(r.ended, 'the shim did not exit after the signal');
+        assert.ok(r.ms < 5000, `took ${r.ms}ms`);
+        assert.deepEqual(r.survivors, [], 'processes left behind');
+        assert.doesNotMatch(r.seen, /ARGS:/, 'the real tool must not start after the signal');
+      });
+    }
+  }
+});
+
 describe('real-binary override is always an explicit path (round 2, must-fix 1)', () => {
   let cwdDir;
   before(() => {

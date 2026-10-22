@@ -499,6 +499,80 @@ describe('an unrecognized shims.json is never replaced or deleted (round 2, must
   });
 });
 
+describe('robust profile reads and raw-byte fidelity (review round 3)', () => {
+  // Fails readFileSync for one profile (optionally only from its Nth read on).
+  function failingReadFs(match, code, { fromRead = 1 } = {}) {
+    let reads = 0;
+    return new Proxy(fs, {
+      get(target, prop) {
+        const value = target[prop];
+        if (prop !== 'readFileSync') return typeof value === 'function' ? value.bind(target) : value;
+        return (file, ...rest) => {
+          if (match(String(file)) && ++reads >= fromRead) throw Object.assign(new Error(`injected ${code}`), { code });
+          return target.readFileSync(file, ...rest);
+        };
+      },
+    });
+  }
+  const RAW = Buffer.from([0x23, 0x20, 0xff, 0xfe, 0x0a, 0x65, 0x78, 0x70, 0x6f, 0x72, 0x74, 0x20, 0x4b, 0x3d, 0xc3, 0x28, 0x0a, 0x80]);
+
+  for (const code of ['EACCES', 'EIO']) {
+    for (const fromRead of [1, 2]) {
+      it(`${code} reading an existing profile (read #${fromRead}) refuses the install and changes nothing`, async () => {
+        fs.writeFileSync(path.join(root, '.bashrc'), RAW);
+        fs.writeFileSync(path.join(root, '.profile'), '# sibling\n');
+        const tree = snapshot(root);
+        const o = overrides();
+        o.shims.fs = failingReadFs(file => path.basename(file) === '.bashrc', code, { fromRead });
+        assert.equal(await install([], o), 1);
+        assert.match(err.join('\n'), new RegExp(`(cannot be resolved or read|cannot be read) \\(${code}\\)|\\(${code}\\)`));
+        assert.deepEqual(snapshot(root), tree, 'profiles and siblings untouched, no stray files');
+        assert.ok(Buffer.from(fs.readFileSync(path.join(root, '.bashrc'))).equals(RAW));
+        assert.ok(!fs.existsSync(home), 'nothing was created');
+      });
+    }
+  }
+
+  it('a profile with invalid UTF-8 bytes survives install then remove byte for byte', async () => {
+    const bashrc = path.join(root, '.bashrc');
+    fs.writeFileSync(bashrc, RAW, { mode: 0o600 });
+    fs.writeFileSync(path.join(root, '.profile'), RAW);
+    assert.equal(await install([], overrides()), 0);
+    const installed = fs.readFileSync(bashrc);
+    assert.ok(installed.subarray(0, RAW.length).equals(RAW), 'original bytes kept in place');
+    assert.match(installed.toString('latin1'), /# >>> ccxray shims >>>/);
+    assert.equal(await setup.runSetup(['--wrap-binaries', '--remove'], overrides()), 0);
+    assert.ok(fs.readFileSync(bashrc).equals(RAW), 'removal restores the raw bytes');
+    assert.ok(fs.readFileSync(path.join(root, '.profile')).equals(RAW));
+  });
+
+  it('an install that fails part way restores raw-byte profiles byte for byte', async () => {
+    const bashrc = path.join(root, '.bashrc');
+    const login = path.join(root, '.profile');
+    fs.writeFileSync(bashrc, RAW);
+    fs.writeFileSync(login, RAW);
+    const o = overrides();
+    o.shims.fs = new Proxy(fs, {
+      get(target, prop) {
+        const value = target[prop];
+        if (prop !== 'renameSync') return typeof value === 'function' ? value.bind(target) : value;
+        // Let the first profile replacement land, fail the second.
+        let profileRenames = 0;
+        return (from, to) => {
+          if (/\.(bashrc|profile)$/.test(String(to)) && ++profileRenames > 0 && String(to).endsWith('.bashrc')) {
+            throw Object.assign(new Error('injected rename failure'), { code: 'EIO' });
+          }
+          return target.renameSync(from, to);
+        };
+      },
+    });
+    assert.equal(await install([], o), 1);
+    assert.ok(fs.readFileSync(bashrc).equals(RAW));
+    assert.ok(fs.readFileSync(login).equals(RAW));
+    assert.deepEqual(fs.readdirSync(root).filter(n => n.includes('.tmp')), []);
+  });
+});
+
 describe('profile writes are atomic and roll back exactly (round 2, must-fix 3)', () => {
   // Writes a prefix of the data and then fails: what a short write / ENOSPC does.
   function shortWriteFs(match) {
@@ -562,7 +636,7 @@ describe('profile writes are atomic and roll back exactly (round 2, must-fix 3)'
     fs.writeFileSync(path.join(root, '.profile'), '# p\n');
     const tree = snapshot(root);
     assert.equal(await install([], overrides()), 1);
-    assert.match(err.join('\n'), /\.bashrc cannot be resolved/);
+    assert.match(err.join('\n'), /\.bashrc cannot be resolved or read/);
     assert.deepEqual(snapshot(root), tree);
     assert.ok(fs.lstatSync(path.join(root, '.bashrc')).isSymbolicLink());
     assert.ok(!fs.existsSync(home));

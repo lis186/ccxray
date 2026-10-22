@@ -31,7 +31,14 @@ Options: `--shim-dir D` installs the two shims into a directory that is already 
    kills the helper, so a hung Node start, a stalled synchronous read (for example `hub.json` replaced by a FIFO) or
    blocked I/O cannot keep the tool from starting. The probe asks `GET /_api/health` on the proxy port
    (`CCXRAY_SHIM_PORT`, else `hub.json`, else `PROXY_PORT`, else 5577) with a 300 ms budget
-   (`CCXRAY_SHIM_TIMEOUT_MS`). Healthy cost: one node start (tens of milliseconds). A genuinely uninterruptible
+   (`CCXRAY_SHIM_TIMEOUT_MS`). The launch-time cost has several parts, each with its own bound: a Node start, the HTTP health check
+   (300 ms by default), and, on a hub, a socket registration of the launch. The whole helper phase is capped by
+   the shell deadline (2 s by default). When the helper is unusable, the fallback log adds at most about 1 s, plus
+   up to about 1 s more before a stuck logging command is killed. `scripts/measure-shim-latency.js` measures
+   direct, healthy, proxy-down and slow-proxy launches and prints medians; on one 8-core Linux machine with Node
+   22 (15 runs each, a trivial fake `claude`) the medians were about 1 ms direct, 44 ms healthy, 41 ms proxy
+   down and 337 ms for a proxy that answers after 1 s (the 300 ms health budget, plus the Node start). Those
+   numbers depend on the machine, the Node version and the profile; run the script on yours. A genuinely uninterruptible
    kernel wait (a dead network filesystem) cannot be killed by anyone; that is the one case the deadline cannot cover.
 3. **Healthy:** Claude runs with `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>[/_ccxray/client/<pid>]` (plus the
    print-mode marker for `-p`); Codex runs with `-c openai_base_url="…/v1"` placed before your arguments. A launch
@@ -132,7 +139,7 @@ machine stops working until it is restarted.
 | Proxy down | agent still runs, unrecorded, bypass logged | agent cannot reach its API at all |
 | Coverage | launches that resolve `claude`/`codex` through the shimmed PATH | every launch that reads the config, including absolute paths |
 | Recording guarantee | best effort, with a visible gap counter | complete while the proxy is up |
-| Per-launch cost | one node start | none |
+| Per-launch cost | a Node start plus a health check and, on a hub, a registration, bounded as in step 2 (measured medians: `scripts/measure-shim-latency.js`) | none |
 | Footprint | files + PATH edits, all removable | edits a file the tool owns |
 
 Choose shims when losing the agent is worse than losing a recording. Choose strict mode (a middle path: shim
@@ -173,6 +180,10 @@ temp homes, a fake proxy, and a real ccxray server with a fake upstream. When a 
 also checks that it accepts the injected `-c openai_base_url="…"` placement (parse-only, offline, temp `HOME` and
 `CODEX_HOME`); it skips cleanly otherwise.
 
-Those tests run on **Linux only**. The shell watchdog (background jobs, traps, `wait`, pipe lifetime) is plain POSIX
+Those tests run on **Linux only**, and that includes the launch-phase signal tests: a SIGTERM or SIGINT sent while
+the shim is still in the helper or fallback-logger phase ends the launch and leaves no helper, watchdog or logger
+process behind. SIGTERM ends the shim at once and the watchdog stops the helper within about a second; SIGINT and
+SIGHUP take effect when the current step returns, which is bounded by the deadline (or the log budget), and the real
+tool is not started afterwards. None of the watchdog or signal behaviour has been verified on macOS. The shell watchdog (background jobs, traps, `wait`, pipe lifetime) is plain POSIX
 `sh` and was also exercised under `bash --posix`, which is what macOS provides as `/bin/sh`, but it has **not been
 executed on macOS**. Treat macOS behaviour as unverified until someone runs the focused files there.
