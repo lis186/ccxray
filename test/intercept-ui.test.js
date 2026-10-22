@@ -32,6 +32,7 @@ function loadContext() {
   };
   vm.createContext(context);
   // messages.js defines getMessagePreview, used by the "messages" tab renderer.
+  vm.runInContext(fs.readFileSync(path.join(publicDir, 'format.js'), 'utf8').replace(/^function escapeHtml[\s\S]*?\n}\n/m, ''), context);
   vm.runInContext(fs.readFileSync(path.join(publicDir, 'messages.js'), 'utf8'), context);
   vm.runInContext(fs.readFileSync(path.join(publicDir, 'intercept-ui.js'), 'utf8'), context);
   return context;
@@ -155,5 +156,20 @@ describe('intercept-ui: approveIntercept() override filters disabled tools befor
     assert.deepEqual(ctx.currentPending.body.tools.map(t => t.name), ['Read', 'Write']);
     assert.ok(ctx.currentPending.body.tools.every(t => !('_enabled' in t)));
     assert.deepEqual(sentBody.body.tools.map(t => t.name), ['Read', 'Write']);
+  });
+});
+
+describe('intercept-ui: message role rendering', () => {
+  it('escapes unknown roles and keeps known role classes', () => {
+    const context = loadContext();
+    context.currentPending = { body: { messages: [
+      { role: 'user', content: 'a' },
+      { role: '"><i>x', content: 'b' },
+    ] } };
+    const html = context.renderInterceptTabContent('messages');
+    assert.ok(html.includes('class="ie-msg-role user"'));
+    assert.ok(html.includes('class="ie-msg-role other"'));
+    assert.ok(!html.includes('<i>'));
+    assert.ok(html.includes('&gt;&lt;i&gt;x'));
   });
 });

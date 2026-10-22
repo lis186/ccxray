@@ -174,6 +174,13 @@ function escapeHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
+// Message role -> CSS class. Roles come from request bodies, so only a fixed
+// set is allowed through to the class attribute.
+const KNOWN_MSG_ROLES = { user: 1, assistant: 1, system: 1, tool: 1, developer: 1 };
+function roleClass(role) {
+  return typeof role === 'string' && Object.prototype.hasOwnProperty.call(KNOWN_MSG_ROLES, role) ? role : 'other';
+}
+
 // Isomorphic, same shape as agent-classification.js (#381): the Herdr plugin is
 // a SEPARATE PROCESS that renders aggregate costs, and ADR 0017 says these
 // helpers are the only way an aggregate cost reaches a screen. Exporting them is
@@ -181,6 +188,8 @@ function escapeHtml(s) {
 // hand-rolling the thresholds. No top-level DOM access, so require() is safe.
 if (typeof module !== 'undefined') {
   module.exports = {
+    roleClass,
+    escapeHtml,
     AGG_FB_MARK_SHARE,
     AGG_FB_DEGRADE_SHARE,
     formatAggCost,

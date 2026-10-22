@@ -967,7 +967,7 @@ function renderSingleMessage(msg, perMsg, msgIdx) {
     : asmCls
       ? ' ' + getAssistantBadgeHtml(asmCls).trimEnd()
       : '';
-  return '<div class="msg"><div class="msg-role ' + msg.role + '">[' + msgIdx + '] ' + msg.role + clsHtml + tokLabel + '</div>' + body + '</div>';
+  return '<div class="msg"><div class="msg-role ' + roleClass(msg.role) + '">[' + msgIdx + '] ' + escapeHtml(String(msg.role)) + clsHtml + tokLabel + '</div>' + body + '</div>';
 }
 
 // ── Token Minimap ──
@@ -1090,9 +1090,10 @@ function renderMinimapHtml(steps, perMessage, activeStepIdx, maxContext, usage, 
     // ponytail: inline label — short name visible without hover, tooltip has token count
     var shortLabel = b.label.replace(/^tool_result:/, '').replace(/^tool_use:/, '');
     if (shortLabel.length > 10) shortLabel = shortLabel.slice(0, 9) + '…';
+    shortLabel = escapeHtml(shortLabel);
     html += '<div class="' + cls + '" data-step="' + b.stepIdx + '" data-block="' + i + '" data-tokens="' + b.tokens + '" '
       + 'style="background:' + b.color + errStyle + '" '
-      + 'title="' + b.label + ' · ' + b.tokens.toLocaleString() + ' tok">'
+      + 'title="' + escapeHtml(b.label) + ' · ' + b.tokens.toLocaleString() + ' tok">'
       + '<span class="mm-label">' + shortLabel + '</span></div>';
   }
   html += '</div>';

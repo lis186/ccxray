@@ -97,7 +97,7 @@ function renderInterceptTabContent(tab) {
         const m = msgs[i];
         const preview = getMessagePreview(m).slice(0, 60);
         html += '<div class="ie-msg" data-msg-idx="' + i + '" onclick="toggleInterceptMsg(this,' + i + ',event)">';
-        html += '<div class="ie-msg-role ' + m.role + '">[' + i + '] ' + m.role + '</div>';
+        html += '<div class="ie-msg-role ' + roleClass(m.role) + '">[' + i + '] ' + escapeHtml(String(m.role)) + '</div>';
         html += '<div class="ie-msg-preview">' + escapeHtml(preview) + '</div>';
         html += '</div>';
       }
@@ -159,7 +159,7 @@ function toggleInterceptMsg(el, idx, evt) {
   if (evt && (evt.target.tagName === 'TEXTAREA' || evt.target.closest('textarea'))) return;
   if (el.querySelector('textarea')) {
     // Collapse
-    el.innerHTML = '<div class="ie-msg-role ' + currentPending.body.messages[idx].role + '">[' + idx + '] ' + currentPending.body.messages[idx].role + '</div>' +
+    el.innerHTML = '<div class="ie-msg-role ' + roleClass(currentPending.body.messages[idx].role) + '">[' + idx + '] ' + escapeHtml(String(currentPending.body.messages[idx].role)) + '</div>' +
       '<div class="ie-msg-preview">' + escapeHtml(getMessagePreview(currentPending.body.messages[idx]).slice(0, 60)) + '</div>';
     el.classList.remove('expanded');
     return;
@@ -167,7 +167,7 @@ function toggleInterceptMsg(el, idx, evt) {
   const m = currentPending.body.messages[idx];
   const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content, null, 2);
   el.classList.add('expanded');
-  el.innerHTML = '<div class="ie-msg-role ' + m.role + '">[' + idx + '] ' + m.role + '</div>' +
+  el.innerHTML = '<div class="ie-msg-role ' + roleClass(m.role) + '">[' + idx + '] ' + escapeHtml(String(m.role)) + '</div>' +
     '<textarea oninput="onInterceptMsgEdit(' + idx + ',this)" style="min-height:150px">' + escapeHtml(content) + '</textarea>';
 }
 
