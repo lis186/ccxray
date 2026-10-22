@@ -236,7 +236,7 @@ describe('--check', () => {
     assert.match(text, /installed in .*shims/);
     assert.match(text, /claude: shim is first on this process's PATH/);
     assert.match(text, /proxy on 127\.0\.0\.1:1: not reachable/);
-    assert.match(text, /2 in the last 24h .*refused×1.*timeout×1.*3 total/);
+    assert.match(text, /2 in the last 24h .*refused×1.*timeout×1.*3 retained/);
   });
 
   it('warns when the shim is shadowed on PATH and fails when a shim file was deleted', async () => {
@@ -246,19 +246,6 @@ describe('--check', () => {
     fs.rmSync(path.join(home, 'shims', 'codex'));
     assert.equal(await setup.runSetup(['--wrap-binaries', '--check'], overrides()), 1);
     assert.match(out.join('\n'), /FAIL codex missing or modified/);
-  });
-});
-
-describe('plain `ccxray setup --remove` also removes shims', () => {
-  it('removes them when installed (their state is part of setup)', async () => {
-    await setup.runSetup(['--wrap-binaries', '--yes'], overrides());
-    assert.ok(fs.existsSync(path.join(home, 'shims.json')));
-    const o = overrides();
-    await setup.runSetup(['--remove', '--dry-run'], { ...o, env: o.shims.env, homedir: () => root });
-    assert.ok(fs.existsSync(path.join(home, 'shims.json')), '--dry-run must not remove');
-    await shims.removeIfInstalled({ remove: true }, overrides().shims);
-    assert.ok(!fs.existsSync(path.join(home, 'shims.json')));
-    assert.ok(!fs.existsSync(path.join(home, 'shims')));
   });
 });
 
@@ -277,5 +264,188 @@ describe('bypass summary', () => {
     assert.ok(!JSON.stringify(s).includes('/secret'));
     assert.match(renderBypassLine(s), /NOT recorded/);
     assert.equal(summarizeBypasses(path.join(root, 'nowhere')).total, 0);
+  });
+});
+
+// ── Review round 1 (#734): ownership, rollback, reinstall, plain --remove ──
+
+const envConf = () => path.join(root, '.config', 'environment.d', '50-ccxray-shims.conf');
+const install = (extra = [], o = overrides()) => setup.runSetup(['--wrap-binaries', '--yes', ...extra], o);
+
+// A throwaway fs wrapper that fails one operation on demand.
+function failingFs(failWhen) {
+  return new Proxy(fs, {
+    get(target, prop) {
+      const value = target[prop];
+      if (typeof value !== 'function') return value;
+      return (...args) => { failWhen(String(prop), args); return value.apply(target, args); };
+    },
+  });
+}
+
+describe('pre-existing auxiliary files are never destroyed (finding 1)', () => {
+  it('refuses an existing probe helper and changes nothing else', async () => {
+    fs.mkdirSync(home, { recursive: true });
+    fs.writeFileSync(path.join(home, 'shim-probe.js'), 'USER PROBE', { mode: 0o640 });
+    const before = snapshot(root);
+    const o = overrides();
+    assert.equal(await install([], o), 1);
+    assert.deepEqual(snapshot(root), before);
+    assert.equal(fs.statSync(path.join(home, 'shim-probe.js')).mode & 0o777, 0o640);
+    assert.match(err.join('\n'), /shim-probe\.js already exists and was not installed by ccxray.*Nothing was changed/s);
+  });
+
+  it('refuses an existing environment.d file (its PATH config survives install and remove)', async () => {
+    fs.mkdirSync(path.dirname(envConf()), { recursive: true });
+    fs.writeFileSync(envConf(), 'PATH=/opt/mine:$PATH\n');
+    const before = snapshot(root);
+    assert.equal(await install(), 1);
+    assert.deepEqual(snapshot(root), before);
+    assert.equal(await setup.runSetup(['--wrap-binaries', '--remove'], overrides()), 0);
+    assert.equal(fs.readFileSync(envConf(), 'utf8'), 'PATH=/opt/mine:$PATH\n');
+    assert.equal(await install(['--no-session-env']), 0, '--no-session-env is the documented way around it');
+    assert.equal(fs.readFileSync(envConf(), 'utf8'), 'PATH=/opt/mine:$PATH\n');
+  });
+
+  it('refuses a symlink at the probe or environment.d path and never writes through it', async () => {
+    const outside = path.join(root, 'outside.txt');
+    fs.writeFileSync(outside, 'OUTSIDE');
+    fs.mkdirSync(home, { recursive: true });
+    fs.symlinkSync(outside, path.join(home, 'shim-probe.js'));
+    assert.equal(await install(), 1);
+    assert.equal(fs.readFileSync(outside, 'utf8'), 'OUTSIDE');
+    assert.ok(fs.lstatSync(path.join(home, 'shim-probe.js')).isSymbolicLink());
+    fs.rmSync(path.join(home, 'shim-probe.js'));
+    fs.mkdirSync(path.dirname(envConf()), { recursive: true });
+    fs.symlinkSync(outside, envConf());
+    assert.equal(await install(), 1);
+    assert.equal(fs.readFileSync(outside, 'utf8'), 'OUTSIDE');
+    assert.ok(!fs.existsSync(path.join(home, 'shims')), 'preflight failed before any write');
+  });
+
+  it('--dry-run reports the refusal instead of promising a write', async () => {
+    fs.mkdirSync(home, { recursive: true });
+    fs.writeFileSync(path.join(home, 'shim-probe.js'), 'USER PROBE');
+    assert.equal(await setup.runSetup(['--wrap-binaries', '--dry-run'], overrides()), 1);
+    assert.match(err.join('\n'), /would REFUSE: .*shim-probe\.js/);
+  });
+
+  it('a failure half way through leaves the tree exactly as it was', async () => {
+    fs.writeFileSync(path.join(root, '.bashrc'), 'export A=1');
+    fs.writeFileSync(path.join(root, '.profile'), '# profile\n');
+    const before = snapshot(root);
+    // Fail while the session PATH file is written: probe, shims and both profiles already changed by then.
+    const broken = failingFs((op, args) => {
+      if (op === 'writeFileSync' && String(args[0]).includes('environment.d')) throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+    });
+    const o = overrides();
+    o.shims.fs = broken;
+    assert.equal(await install([], o), 1);
+    assert.match(err.join('\n'), /Setup failed \(disk full\); rolling back/);
+    assert.deepEqual(snapshot(root), before);
+  });
+});
+
+describe('reinstall validates ownership first (finding 2)', () => {
+  it('a clean reinstall succeeds and is byte-stable', async () => {
+    assert.equal(await install(), 0);
+    const first = snapshot(root);
+    assert.equal(await install(), 0);
+    assert.deepEqual(snapshot(root), first);
+  });
+
+  it('never overwrites a shim the user edited, and keeps the recovery record', async () => {
+    await install();
+    const shim = path.join(home, 'shims', 'claude');
+    fs.writeFileSync(shim, '#!/bin/sh\n# my own edit\n');
+    const manifest = fs.readFileSync(path.join(home, 'shims.json'), 'utf8');
+    assert.equal(await install(), 1);
+    assert.equal(fs.readFileSync(shim, 'utf8'), '#!/bin/sh\n# my own edit\n');
+    assert.equal(fs.readFileSync(path.join(home, 'shims.json'), 'utf8'), manifest);
+    assert.match(err.join('\n'), /claude was modified since setup/);
+    // remove preserves it too, and a later install still refuses it
+    assert.equal(await setup.runSetup(['--wrap-binaries', '--remove'], overrides()), 1);
+    assert.equal(fs.readFileSync(shim, 'utf8'), '#!/bin/sh\n# my own edit\n');
+    assert.equal(await install(), 1);
+    assert.equal(fs.readFileSync(shim, 'utf8'), '#!/bin/sh\n# my own edit\n');
+  });
+
+  it('never writes through a symlink planted at a shim path', async () => {
+    await install();
+    const outside = path.join(root, 'victim.txt');
+    fs.writeFileSync(outside, 'VICTIM');
+    const shim = path.join(home, 'shims', 'codex');
+    fs.rmSync(shim);
+    fs.symlinkSync(outside, shim);
+    assert.equal(await install(), 1);
+    assert.equal(fs.readFileSync(outside, 'utf8'), 'VICTIM');
+    assert.ok(fs.lstatSync(shim).isSymbolicLink());
+    assert.match(err.join('\n'), /codex is a symlink/);
+    assert.equal(await setup.runSetup(['--wrap-binaries', '--remove'], overrides()), 1);
+    assert.equal(fs.readFileSync(outside, 'utf8'), 'VICTIM', 'remove does not follow it either');
+    assert.ok(fs.lstatSync(shim).isSymbolicLink());
+  });
+
+  it('keeps the manifest when the previous install cannot be undone, and writes nothing new', async () => {
+    await install();
+    const manifest = fs.readFileSync(path.join(home, 'shims.json'), 'utf8');
+    const o = overrides();
+    o.shims.fs = failingFs((op, args) => { if (op === 'unlinkSync' && String(args[0]) === path.join(root, '.profile')) throw Object.assign(new Error('read-only'), { code: 'EROFS' }); });
+    assert.equal(await install([], o), 1);
+    assert.match(err.join('\n'), /Could not undo the previous install; nothing new was written/);
+    assert.equal(fs.readFileSync(path.join(home, 'shims.json'), 'utf8'), manifest, 'the recovery record is kept');
+    assert.doesNotMatch(err.join('\n'), /rolling back/);
+  });
+});
+
+describe('plain `ccxray setup --remove` shares one preview, consent and failure model (finding 7)', () => {
+  const plain = (args, o = overrides()) => setup.runSetup(['--remove', ...args], { ...o, env: o.shims.env, homedir: () => root, logger: o.shims.logger });
+
+  it('--dry-run lists the shim changes and changes nothing', async () => {
+    await install();
+    const before = snapshot(root);
+    assert.equal(await plain(['--dry-run']), 0);
+    assert.deepEqual(snapshot(root), before);
+    assert.match(out.join('\n'), /would delete .*shims\/claude/);
+    assert.match(out.join('\n'), /would remove the PATH block from .*\.bashrc/);
+  });
+
+  it('shows the shim changes at the consent step, and a refusal removes nothing', async () => {
+    await install();
+    const before = snapshot(root);
+    const code = await plain([]); // not a TTY and no --yes
+    assert.equal(code, 2);
+    assert.deepEqual(snapshot(root), before);
+    assert.match(out.join('\n'), /launcher shims: would delete/);
+  });
+
+  it('removes the shims together with setup when consent is given', async () => {
+    await install();
+    assert.equal(await plain(['--yes']), 0);
+    assert.ok(!fs.existsSync(path.join(home, 'shims.json')));
+    assert.ok(!fs.existsSync(path.join(home, 'shims')));
+    assert.ok(!fs.existsSync(envConf()));
+  });
+
+  it('leaves the shims alone when setup removal itself fails', async () => {
+    await install();
+    // A setup block with no end marker is a malformed target: removal reports failure.
+    fs.appendFileSync(path.join(root, '.zshrc'), `${setup.START_MARKER}\nexport FOO=1\n`);
+    const o = overrides({ env: { SHELL: '/bin/zsh' } });
+    const code = await plain(['--yes'], o);
+    assert.notEqual(code, 0);
+    assert.ok(fs.existsSync(path.join(home, 'shims.json')), 'shims must stay installed');
+    assert.ok(fs.existsSync(path.join(home, 'shims', 'claude')));
+    assert.match(err.join('\n'), /Launcher shims were left installed/);
+  });
+
+  it('propagates a shim-removal failure to the exit code', async () => {
+    await install();
+    const o = overrides();
+    o.shims.fs = failingFs((op, args) => { if (op === 'unlinkSync' && String(args[0]).endsWith(`${path.sep}claude`)) throw Object.assign(new Error('permission denied'), { code: 'EACCES' }); });
+    const code = await plain(['--yes'], o);
+    assert.equal(code, 1);
+    assert.match(err.join('\n'), /permission denied/);
+    assert.ok(fs.existsSync(path.join(home, 'shims.json')), 'the recovery record is kept for a retry');
   });
 });

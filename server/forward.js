@@ -517,7 +517,7 @@ function forwardRequest(ctx) {
       : null;
     let cwdForPrefix = meta?.cwd || null;
     if (!cwdForPrefix && reqSessionId && reqSessionId !== 'direct-api') {
-      cwdForPrefix = hub.lookupClientCwd();
+      cwdForPrefix = hub.lookupClientCwdForRequest(clientReq);
     }
     const isOrphan = isSubagent && ctx.sessionInferred && !cwdForPrefix && (!reqSessionId || reqSessionId === 'direct-api');
     const turnStep = parser.attributionTurnStep(parsedBody);

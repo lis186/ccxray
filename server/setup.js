@@ -1830,7 +1830,7 @@ async function runBrowserMode(options, deps) {
   }
 }
 
-async function runRemove(context, options, deps) {
+async function runRemove(context, options, deps, extraChangeLines = []) {
   if (context.resolution.issues.length) {
     for (const issue of context.resolution.issues) {
       deps.logger.error(`Cannot remove setup: ${issue.shell}: ${issue.detail}`);
@@ -1851,7 +1851,7 @@ async function runRemove(context, options, deps) {
   const current = deps.exportSync.readEnrollment(context.home, deps.fs);
   const retention = parseShellValueFlag(options, '--retention-days', Number) ?? 30;
   const next = nextEnrollmentRemove(current, retention, deps.now());
-  const changeList = changeLines(context, options, null, null, next, deps);
+  const changeList = [...changeLines(context, options, null, null, next, deps), ...extraChangeLines];
   if (!await showConsent(context, options, deps, changeList)) return 2;
 
   await deps.hooks.beforeLock?.({ mode: 'remove', context, options });
@@ -2111,14 +2111,22 @@ Options:
     return checkReport(checks);
   }
   if (options.remove) {
-    const code = await runRemove(context, options, deps);
-    // Shims are part of what setup installed: --remove takes them out too.
-    if (!options.dryRun) {
-      await launcherShims.removeIfInstalled(options, {
-        fs: deps.fs, env: deps.env, platform: deps.platform, logger: deps.logger, ...(overrides.shims || {}),
-      });
+    // Shims are part of what setup installed, so they share its preview, consent
+    // and failure model: nothing is removed after a cancel or a failed preflight,
+    // and a shim-removal failure is a failed removal.
+    const shimDeps = { fs: deps.fs, env: deps.env, platform: deps.platform, logger: deps.logger, ...(overrides.shims || {}) };
+    const shimLines = launcherShims.shimRemovalPlan(shimDeps).map(line => `launcher shims: ${line}`);
+    const code = await runRemove(context, options, deps, shimLines);
+    if (options.dryRun) {
+      await launcherShims.removeIfInstalled(options, shimDeps);
+      return code;
     }
-    return code;
+    if (code !== 0) {
+      if (shimLines.length) deps.logger.error('Launcher shims were left installed because setup removal did not complete; re-run `ccxray setup --remove`.');
+      return code;
+    }
+    const shimCode = await launcherShims.removeIfInstalled(options, shimDeps);
+    return shimCode;
   }
   return runInstall(context, options, deps);
 }

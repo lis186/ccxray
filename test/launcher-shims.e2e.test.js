@@ -50,24 +50,25 @@ async function freePort() {
   });
 }
 
-function run(tool, args, { env = {}, stdin, pathDirs, timeout = 10000 } = {}) {
+function run(tool, args, { env = {}, stdin, pathDirs, timeout = 10000, cwd = root, exe, umask, onStdout } = {}) {
   const dirs = pathDirs || [shimDir, realBin];
   const started = Date.now();
   return new Promise(resolve => {
     // Plain spawn by bare name with only the PATH below: no shell, no profile.
-    const child = spawn(tool, args, {
-      cwd: root,
+    const target = exe || tool;
+    const [file, argv] = umask === undefined ? [target, args]
+      : ['/bin/sh', ['-c', `umask ${umask}; exec "$@"`, 'sh', target, ...args]];
+    const child = spawn(file, argv, {
+      cwd,
       env: { PATH: [...dirs, SYSTEM_PATH].join(':'), HOME: root, CCXRAY_SHIM_PORT: String(proxyPort), ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = ''; let stderr = '';
-    child.stdout.on('data', d => { stdout += d; });
+    child.stdout.on('data', d => { stdout += d; onStdout?.(stdout, child); });
     child.stderr.on('data', d => { stderr += d; });
     if (stdin !== undefined) child.stdin.end(stdin); else child.stdin.end();
     const timer = setTimeout(() => child.kill('SIGKILL'), timeout);
     child.on('close', (code, signal) => { clearTimeout(timer); resolve({ code, signal, stdout, stderr, ms: Date.now() - started, child }); });
-    child.spawned = true;
-    run.last = child;
   });
 }
 
@@ -151,10 +152,8 @@ describe('proxy healthy (criterion 1)', () => {
   });
 
   it('is exec-based: a signal reaches the real binary', async () => {
-    const result = run('claude', ['x'], { env: { FAKE_HANG: '1' } });
-    await new Promise(resolve => setTimeout(resolve, 600));
-    run.last.kill('SIGTERM');
-    const r = await result;
+    // The fake prints WHO: just before it execs into a long sleep: that line is the readiness barrier.
+    const r = await run('claude', ['x'], { env: { FAKE_HANG: '1' }, onStdout: (out, child) => { if (/WHO:claude\n/.test(out)) child.kill('SIGTERM'); } });
     assert.equal(r.signal, 'SIGTERM');
   });
 });
@@ -247,7 +246,7 @@ describe('strict mode (criterion 3)', () => {
     const r = await run('claude', ['x'], { env: { CCXRAY_SHIM_PORT: String(closedPort), CCXRAY_SHIM_STRICT: '1' } });
     assert.equal(r.code, 111);
     assert.doesNotMatch(r.stdout, /ARGS:/);
-    assert.match(r.stderr, /ccxray shim: proxy not reachable \(refused\); refusing to launch claude because CCXRAY_SHIM_STRICT=1/);
+    assert.match(r.stderr, /ccxray shim: proxy not usable \(refused\); refusing to launch claude because CCXRAY_SHIM_STRICT=1/);
     const lines = bypassLines();
     assert.equal(lines.length, 1);
     assert.equal(lines[0].action, 'refused');
@@ -341,7 +340,7 @@ describe('dashboard / status surfaces bypass counts', () => {
     await run('claude', ['x'], { env: { CCXRAY_SHIM_PORT: String(closedPort) } });
     const r = await cli(['status'], { port: closedPort });
     assert.match(r.stdout, /Launcher shims: installed/);
-    assert.match(r.stdout, /Launcher bypasses: 1 in the last 24h \(refused×1\), 1 total/);
+    assert.match(r.stdout, /Launcher bypasses: 1 in the last 24h \(refused×1\), 1 retained/);
     const clean = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-shim-clean-')));
     try {
       const out = await new Promise(resolve => execFile(process.execPath, [path.join(repo, 'server/index.js'), 'status'],
@@ -349,5 +348,257 @@ describe('dashboard / status surfaces bypass counts', () => {
         (e, stdout) => resolve(stdout)));
       assert.doesNotMatch(out, /Launcher/);
     } finally { fs.rmSync(clean, { recursive: true, force: true }); }
+  });
+});
+
+// ── Review round 1 (#734): shell-level hardening ────────────────────────────
+
+const { spawnSync } = require('child_process');
+
+function installInto(dir, extra = {}, deps = {}) {
+  const home = path.join(dir, '.ccxray');
+  return runWrapBinaries({ yes: true, shell: 'bash', ...extra }, {
+    env: { HOME: dir, CCXRAY_HOME: home, SHELL: '/bin/bash', PATH: SYSTEM_PATH },
+    homedir: () => dir, platform: 'linux', logger: quiet(), ...deps,
+  }).then(code => { assert.equal(code, 0); return { home, shims: path.join(home, 'shims') }; });
+}
+
+function tmp(prefix) { return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix))); }
+
+describe('PATH walking keeps empty components (finding 8)', () => {
+  let cwdBin; let proxyDown;
+  before(async () => {
+    cwdBin = path.join(root, 'cwd-bin');
+    makeFake(path.join(cwdBin, 'claude'), FAKE);
+    proxyDown = String(await freePort());
+  });
+  const viaPath = pathValue => run('claude', ['x'], {
+    exe: path.join(shimDir, 'claude'), cwd: cwdBin, pathDirs: [], env: { PATH: pathValue, CCXRAY_SHIM_PORT: proxyDown },
+  });
+
+  for (const [name, value] of [
+    ['trailing', `${shimDir}:/usr/bin:`], ['leading', `:${shimDir}:/usr/bin`], ['interior', `${shimDir}::/usr/bin`],
+    ['entirely empty (colon)', ':'], ['entirely empty (unset-like)', ''],
+  ]) {
+    it(`finds the real binary in the working directory for a ${name} empty entry`, async () => {
+      const r = await viaPath(value);
+      assert.equal(r.code, 0, r.stderr);
+      assert.match(r.stdout, /ARGS:x\n/); // (WHO is blank: the fake's basename is not on this bare PATH)
+    });
+  }
+
+  it('resolves relative entries against the working directory', async () => {
+    const r = await run('claude', ['x'], { exe: path.join(shimDir, 'claude'), cwd: root, pathDirs: [], env: { PATH: 'cwd-bin', CCXRAY_SHIM_PORT: proxyDown } });
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /ARGS:x\n/);
+  });
+
+  it('does not expand glob characters in PATH entries', async () => {
+    const star = path.join(root, 'gl*b');
+    makeFake(path.join(star, 'claude'), FAKE);
+    makeFake(path.join(root, 'globx', 'claude'), 'echo WRONG; exit 9');
+    const r = await run('claude', ['x'], { exe: path.join(shimDir, 'claude'), pathDirs: [], env: { PATH: star, CCXRAY_SHIM_PORT: proxyDown } });
+    assert.equal(r.code, 0, r.stderr);
+    assert.doesNotMatch(r.stdout, /WRONG/);
+  });
+
+  it('still exits 127 when an empty entry has no binary', async () => {
+    const r = await run('claude', ['x'], { exe: path.join(shimDir, 'claude'), cwd: root, pathDirs: [], env: { PATH: `${shimDir}:` } });
+    assert.equal(r.code, 127);
+  });
+});
+
+describe('invocation name and override are never evaluated (should-fix 2)', () => {
+  it('refuses an unexpected invocation name without running its command substitution', async () => {
+    const evil = path.join(root, 'evil');
+    fs.mkdirSync(evil, { recursive: true });
+    const name = 'claude$($CCXRAY_TEST_COMMAND)';
+    fs.symlinkSync(path.join(shimDir, 'claude'), path.join(evil, name));
+    const marker = path.join(root, 'pwned-marker');
+    const r = await run(name, ['x'], { exe: path.join(evil, name), pathDirs: [realBin], env: { CCXRAY_TEST_COMMAND: `touch ${marker}` } });
+    assert.equal(r.code, 127);
+    assert.match(r.stderr, /unsupported invocation name/);
+    assert.equal(fs.existsSync(marker), false);
+  });
+
+  it('honours a valid override but ignores one that points back at a shim', async () => {
+    const other = path.join(root, 'override-bin', 'claude');
+    makeFake(other, FAKE.replace('echo "WHO:$(basename "$0")"', 'echo "WHO:override"'));
+    const used = await run('claude', ['x'], { env: { CCXRAY_SHIM_REAL_CLAUDE: other } });
+    assert.match(used.stdout, /WHO:override/);
+    for (const loop of [path.join(shimDir, 'claude'), path.join(shimDir, 'codex')]) {
+      const r = await run('claude', ['x'], { env: { CCXRAY_SHIM_REAL_CLAUDE: loop }, timeout: 8000 });
+      assert.equal(r.code, 0);
+      assert.match(r.stdout, /WHO:claude/);
+    }
+    const alias = path.join(root, 'shim-alias2');
+    fs.symlinkSync(shimDir, alias);
+    const viaAlias = await run('claude', ['x'], { env: { CCXRAY_SHIM_REAL_CLAUDE: path.join(alias, 'claude') }, timeout: 8000 });
+    assert.match(viaAlias.stdout, /WHO:claude/);
+    fs.rmSync(alias);
+  });
+});
+
+describe('hard launch deadline (finding 3) and strict mode on every failure path (finding 4)', () => {
+  let dir; let paths; let fakeNodeLog;
+  before(async () => {
+    dir = tmp('ccxray-shim-deadline-');
+    fakeNodeLog = path.join(dir, 'fake-node.pid');
+    const fakeNode = path.join(dir, 'fake-node');
+    // Records its pid, then hangs: stands for a Node start stuck in a preload.
+    makeFake(fakeNode, `echo $$ > "${fakeNodeLog}"\nexec sleep 30`);
+    paths = await installInto(dir, {}, { nodePath: fakeNode });
+  });
+  after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  const launch = (extraEnv = {}) => run('claude', ['x'], {
+    pathDirs: [paths.shims, realBin],
+    env: { CCXRAY_SHIM_HOME: paths.home, CCXRAY_SHIM_DEADLINE_SECS: '1', FAKE_EXIT: '4', ...extraEnv },
+    timeout: 15000,
+  });
+  const logIn = home => { try { return fs.readFileSync(path.join(home, 'shim-bypass.log'), 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse); } catch { return []; } };
+  const pidGone = pid => { try { process.kill(pid, 0); return false; } catch { return true; } };
+
+  it('execs the real binary after the deadline and kills the hung helper', async () => {
+    const r = await launch();
+    assert.equal(r.code, 4);
+    assert.match(r.stdout, /ARGS:x\n/);
+    assert.match(r.stdout, /BASE:\n/);
+    assert.ok(r.ms < 6000, `took ${r.ms}ms`);
+    assert.equal(logIn(paths.home).at(-1).reason, 'timeout');
+    const helperPid = Number(fs.readFileSync(fakeNodeLog, 'utf8'));
+    const until = Date.now() + 5000;
+    while (!pidGone(helperPid) && Date.now() < until) await new Promise(resolve => setImmediate(resolve));
+    assert.ok(pidGone(helperPid), 'the hung helper must be killed and reaped');
+  });
+
+  it('strict mode refuses on the deadline and never starts the real binary', async () => {
+    const r = await launch({ CCXRAY_SHIM_STRICT: '1' });
+    assert.equal(r.code, 111);
+    assert.doesNotMatch(r.stdout, /ARGS:/);
+    assert.equal(logIn(paths.home).at(-1).action, 'refused');
+  });
+
+  it('fails open on a Node binary that crashes immediately, and refuses in strict mode', async () => {
+    const crashDir = tmp('ccxray-shim-crash-');
+    try {
+      const fakeNode = path.join(crashDir, 'fake-node');
+      makeFake(fakeNode, 'exit 70');
+      const p = await installInto(crashDir, {}, { nodePath: fakeNode });
+      const env = { CCXRAY_SHIM_HOME: p.home, FAKE_EXIT: '6' };
+      const open = await run('claude', ['x'], { pathDirs: [p.shims, realBin], env });
+      assert.equal(open.code, 6);
+      assert.ok(open.ms < 4000, `a crashed helper must not wait for the deadline (${open.ms}ms)`);
+      assert.equal(logIn(p.home).at(-1).reason, 'helper-unavailable');
+      const strict = await run('claude', ['x'], { pathDirs: [p.shims, realBin], env: { ...env, CCXRAY_SHIM_STRICT: '1' } });
+      assert.equal(strict.code, 111);
+      assert.doesNotMatch(strict.stdout, /ARGS:/);
+    } finally { fs.rmSync(crashDir, { recursive: true, force: true }); }
+  });
+
+  it('fails open when the Node binary is missing', async () => {
+    const missingDir = tmp('ccxray-shim-nonode-');
+    try {
+      const p = await installInto(missingDir, {}, { nodePath: path.join(missingDir, 'no-such-node') });
+      const r = await run('claude', ['x'], { pathDirs: [p.shims, realBin], env: { CCXRAY_SHIM_HOME: p.home } });
+      assert.equal(r.code, 0);
+      assert.match(r.stdout, /BASE:\n/);
+    } finally { fs.rmSync(missingDir, { recursive: true, force: true }); }
+  });
+
+  it('survives a stalled synchronous read (hub.json is a FIFO)', async () => {
+    const fifoDir = tmp('ccxray-shim-fifo-');
+    try {
+      const p = await installInto(fifoDir);
+      const made = spawnSync('mkfifo', [path.join(p.home, 'hub.json')]);
+      if (made.status !== 0) return; // no mkfifo on this machine
+      const env = { CCXRAY_SHIM_HOME: p.home, CCXRAY_SHIM_DEADLINE_SECS: '1', FAKE_EXIT: '5' };
+      const open = await run('claude', ['x'], { pathDirs: [p.shims, realBin], env: { ...env, CCXRAY_SHIM_PORT: '' }, timeout: 15000 });
+      assert.equal(open.code, 5);
+      assert.match(open.stdout, /BASE:\n/);
+      assert.equal(logIn(p.home).at(-1).reason, 'timeout');
+      const strict = await run('claude', ['x'], { pathDirs: [p.shims, realBin], env: { ...env, CCXRAY_SHIM_PORT: '', CCXRAY_SHIM_STRICT: '1' }, timeout: 15000 });
+      assert.equal(strict.code, 111);
+    } finally { fs.rmSync(fifoDir, { recursive: true, force: true }); }
+  });
+
+  it('still routes when the working directory was removed (process.cwd() throws)', async () => {
+    const gone = path.join(root, 'gone-cwd');
+    fs.mkdirSync(gone);
+    const script = `cd "${gone}" && rmdir "${gone}" && exec claude x`;
+    // Async spawn: the fake proxy lives in this process, so a blocking spawn would starve it.
+    const out = await run('sh', ['-c', script], { exe: '/bin/sh', env: { CCXRAY_SHIM_STRICT: '1' } });
+    assert.equal(out.code, 0, out.stderr);
+    assert.match(out.stdout, new RegExp(`BASE:http://127.0.0.1:${proxyPort}\\n`));
+  });
+});
+
+describe('bypass log written by the shim (should-fix 3)', () => {
+  let dir; let paths; let logFile;
+  before(async () => { dir = tmp('ccxray-shim-log-'); paths = await installInto(dir); logFile = path.join(paths.home, 'shim-bypass.log'); });
+  after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  beforeEach(() => { fs.rmSync(logFile, { force: true }); fs.rmSync(`${logFile}.1`, { force: true }); });
+  const noHelper = (extra = {}) => {
+    const probe = path.join(paths.home, 'shim-probe.js');
+    const saved = fs.readFileSync(probe);
+    fs.rmSync(probe);
+    const restore = () => fs.writeFileSync(probe, saved);
+    return run('claude', ['x'], { pathDirs: [paths.shims, realBin], env: { CCXRAY_SHIM_HOME: paths.home, ...extra.env }, ...extra }).finally(restore);
+  };
+
+  it('creates a private directory and file whatever the umask', async () => {
+    const fresh = path.join(dir, 'fresh-home');
+    const r = await noHelper({ umask: '000', env: { CCXRAY_SHIM_HOME: fresh } });
+    assert.equal(r.code, 0);
+    assert.equal(fs.statSync(fresh).mode & 0o777, 0o700);
+    assert.equal(fs.statSync(path.join(fresh, 'shim-bypass.log')).mode & 0o777, 0o600);
+  });
+
+  it('writes valid single-line JSON for a hostile working directory', async () => {
+    const weird = path.join(dir, 'we"ird\\back\nline\ttab\u0001dir');
+    fs.mkdirSync(weird);
+    const r = await noHelper({ cwd: weird });
+    assert.equal(r.code, 0);
+    const lines = fs.readFileSync(logFile, 'utf8').split('\n').filter(Boolean);
+    assert.equal(lines.length, 1);
+    const rec = JSON.parse(lines[0]);
+    assert.equal(rec.reason, 'helper-unavailable');
+    assert.match(rec.cwd, /^[ -~]*$/);
+    assert.ok(rec.cwd.includes('we\\"ird') === false && rec.cwd.includes('we"ird'));
+  });
+
+  it('rotates past 1 MiB so the log stays bounded', async () => {
+    fs.writeFileSync(logFile, `${'x'.repeat(1100000)}\n`);
+    await noHelper();
+    assert.ok(fs.existsSync(`${logFile}.1`));
+    assert.equal(fs.readFileSync(logFile, 'utf8').split('\n').filter(Boolean).length, 1);
+  });
+
+  it('stays silent and launches when the log cannot be written', async () => {
+    fs.mkdirSync(logFile); // a directory where the file should be
+    const r = await noHelper();
+    assert.equal(r.code, 0);
+    assert.equal(r.stderr, 'ERR\n');
+    fs.rmdirSync(logFile);
+  });
+
+  it('never blocks on a FIFO planted at the log path', async () => {
+    if (spawnSync('mkfifo', [logFile]).status !== 0) return;
+    const r = await noHelper({ timeout: 8000 });
+    assert.equal(r.code, 0);
+    assert.ok(r.ms < 3000, `took ${r.ms}ms`);
+    assert.equal(r.stderr, 'ERR\n');
+    fs.rmSync(logFile);
+  });
+
+  it('stays silent when the home is unreadable', async function () {
+    if (process.getuid && process.getuid() === 0) return;
+    const locked = path.join(dir, 'locked-home');
+    fs.mkdirSync(locked, { mode: 0o500 });
+    try {
+      const r = await noHelper({ env: { CCXRAY_SHIM_HOME: locked } });
+      assert.equal(r.code, 0);
+      assert.equal(r.stderr, 'ERR\n');
+    } finally { fs.chmodSync(locked, 0o700); }
   });
 });

@@ -13,21 +13,26 @@ const MAX_READ_BYTES = 2 * 1024 * 1024;
 
 function bypassLogPath(home) { return path.join(home, 'shim-bypass.log'); }
 
-function summarizeBypasses(home, { now = Date.now(), windowMs = WINDOW_MS, io = fs } = {}) {
-  const empty = { recent: 0, total: 0, refused: 0, windowMs, lastAt: null, byReason: {}, byTool: {} };
-  let text;
+function readTail(file, io) {
   try {
-    const file = bypassLogPath(home);
     const size = io.statSync(file).size;
     const fd = io.openSync(file, 'r');
     try {
       const len = Math.min(size, MAX_READ_BYTES);
       const buf = Buffer.alloc(len);
       io.readSync(fd, buf, 0, len, size - len);
-      text = buf.toString('utf8');
+      return buf.toString('utf8');
     } finally { io.closeSync(fd); }
-  } catch { return empty; }
-  const out = { ...empty, byReason: {}, byTool: {} };
+  } catch { return ''; }
+}
+
+// The writers rotate the active log to `<log>.1` once it passes ~1 MiB, so both
+// files are the retained history: `total` means "retained", not "ever" (the
+// active log plus one rotated generation, each read from its last 2 MiB).
+function summarizeBypasses(home, { now = Date.now(), windowMs = WINDOW_MS, io = fs } = {}) {
+  const out = { recent: 0, total: 0, refused: 0, windowMs, lastAt: null, byReason: {}, byTool: {} };
+  const file = bypassLogPath(home);
+  const text = readTail(`${file}.1`, io) + '\n' + readTail(file, io);
   for (const line of text.split('\n')) {
     if (!line) continue;
     let rec;
@@ -52,7 +57,7 @@ function summarizeBypasses(home, { now = Date.now(), windowMs = WINDOW_MS, io = 
 function renderBypassLine(summary) {
   if (!summary || summary.total === 0) return 'Launcher bypasses: none recorded';
   const reasons = Object.entries(summary.byReason).map(([r, n]) => `${r}×${n}`).join(', ');
-  return `Launcher bypasses: ${summary.recent} in the last 24h${reasons ? ` (${reasons})` : ''}, ${summary.total} total — those launches were NOT recorded`;
+  return `Launcher bypasses: ${summary.recent} in the last 24h${reasons ? ` (${reasons})` : ''}, ${summary.total} retained — those launches were NOT recorded`;
 }
 
 module.exports = { bypassLogPath, summarizeBypasses, renderBypassLine };

@@ -109,7 +109,7 @@ Before pushing, confirm the suite passes against an empty home: `CCXRAY_HOME=$(m
 | `server/index.js` | Entry point: HTTP server, request routing, startup |
 | `server/setup.js` | `ccxray setup`: bounded preflight, export enrollment, owned shell wrapper, removal, checks, and browser preference |
 | `server/launcher-shims.js` | `ccxray setup --wrap-binaries` (#732): fail-open `claude`/`codex` launcher shims, PATH blocks, `--dry-run`/`--check`/`--remove` with a manifest that restores the previous state exactly. Guide: `docs/launcher-shims.md` |
-| `server/shim-bypass.js` | Reads `<home>/shim-bypass.log` (written by the shim probe) into counts for `ccxray status`, `ccxray setup --wrap-binaries --check` and `GET /_api/shim-bypass`; never exposes cwd |
+| `server/shim-bypass.js` | Reads `<home>/shim-bypass.log` and its rotated `.1` generation (written by the shim and its probe) into counts for `ccxray status`, `ccxray setup --wrap-binaries --check` and `GET /_api/shim-bypass`; never exposes cwd |
 | `server/shim/` | Files copied to the user's machine by `--wrap-binaries`: `ccxray-shim.sh` (the shim) and `shim-probe.js` (dependency-free health probe; must stay built-ins only) |
 | `server/bounded-run.js` | Bounded shell/process runner for setup discovery and startup-file probes |
 | `server/statusline-setup.js` | `ccxray setup-statusline`: argument parsing, install/remove planning (`--dry-run`), and backed-up atomic rewrites of Claude's `settings.json` |
