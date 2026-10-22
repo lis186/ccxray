@@ -38,7 +38,7 @@ function registerClient(home, agentType) {
     socket.once('error', reject);
   });
 }
-it('routing fix and provider header hygiene at fake upstreams', async () => {
+it('routing fix and provider header hygiene at fake upstreams', async t => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-routing-'));
   const logs = path.join(home, 'logs');
   fs.mkdirSync(logs);
@@ -75,7 +75,7 @@ it('routing fix and provider header hygiene at fake upstreams', async () => {
         CCXRAY_PRICING_CACHE: path.join(home, 'pricing.json'), RESTORE_DAYS: '0',
         ANTHROPIC_TEST_HOST: '127.0.0.1', ANTHROPIC_TEST_PORT: String(upstreamPort), ANTHROPIC_TEST_PROTOCOL: 'http',
         OPENAI_TEST_HOST: '127.0.0.1', OPENAI_TEST_PORT: String(openaiPort), OPENAI_TEST_PROTOCOL: 'http',
-        CHATGPT_BASE_URL: `http://127.0.0.1:${openaiPort}` },
+        CHATGPT_BASE_URL: `http://127.0.0.1:${openaiPort}/backend-api/codex` },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let output = '';
@@ -89,7 +89,7 @@ it('routing fix and provider header hygiene at fake upstreams', async () => {
     }
     assert.ok(ready, output);
     assert.equal((await registerClient(home, 'codex')).ok, true);
-    const unknown = await request(port, '/v1/alpha/search?probe=synthetic', 'POST', {}, '{}');
+    const unknown = await request(port, '/v1/alpha/unlisted?probe=synthetic', 'POST', {}, '{}');
     assert.equal(unknown.status, 421);
     assert.equal(JSON.parse(unknown.data).error.type, 'ccxray_unknown_route');
     assert.deepEqual(received, []);
@@ -120,6 +120,18 @@ it('routing fix and provider header hygiene at fake upstreams', async () => {
     assert.deepEqual(openaiReceived, []);
     assert.equal(fs.readFileSync(path.join(logs, 'index.ndjson'), 'utf8'), '');
     assert.deepEqual(fs.readdirSync(logs).filter(f => /_(req|res)\.json$/.test(f)), []);
+    await t.test('routing fix: Codex search path goes to the ChatGPT upstream', async () => {
+      const before = openaiReceived.length;
+      const otherBefore = received.length;
+      const result = await request(port, '/v1/alpha/search', 'POST', {
+        authorization: 'Bearer syntheticheader.payload.signature', 'chatgpt-account-id': 'acct',
+      }, '{}');
+      assert.equal(result.status, 200);
+      assert.deepEqual(JSON.parse(result.data), { synthetic: true });
+      assert.equal(openaiReceived.length, before + 1);
+      assert.equal(openaiReceived.at(-1).url, '/backend-api/codex/alpha/search');
+      assert.equal(received.length, otherBefore);
+    });
     for (const headers of openaiHeaders) {
       assert.equal((await request(port, '/v1/alpha/headers', 'POST', headers, '{}')).status, 200);
     }
@@ -132,12 +144,12 @@ it('routing fix and provider header hygiene at fake upstreams', async () => {
     for (const row of received) {
       for (const [key, value] of Object.entries(claudeHeaders)) assert.equal(row.headers[key], value);
     }
-    for (const url of ['/v1/responses?probe=synthetic', '/v1/alpha/search?probe=synthetic']) {
+    for (const url of ['/v1/responses?probe=synthetic', '/v1/alpha/unlisted?probe=synthetic']) {
       assert.equal((await request(port, url, 'POST', { 'x-codex-turn-metadata': '{}' }, '{}')).status, 200);
     }
     assert.equal((await request(port, '/v1/alpha/account', 'POST', { 'chatgpt-account-id': 'acct' }, '{}')).status, 200);
     assert.equal((await request(port, '/v1/alpha/api-key', 'POST', { authorization: 'bearer sk-proj-synthetic', 'user-agent': 'codex_cli_rs/0.163.0' }, '{}')).status, 200);
-    assert.equal(openaiReceived.length, 4 + openaiHeaders.length);
+    assert.equal(openaiReceived.length, 5 + openaiHeaders.length);
     assert.equal(received.length, 2);
     for (const url of ['/v1/files', '/v1/skills']) {
       const before = received.length;
@@ -180,7 +192,7 @@ it('routing fix and provider header hygiene at fake upstreams', async () => {
       assert.ok(!row.path.includes('?'));
       assert.notEqual(row.status, 421);
     }
-    assert.ok(rows.some(row => row.path === '/v1/alpha/search' && row.provider === 'openai' && row.agent === 'codex'));
+    assert.ok(rows.some(row => row.path === '/v1/alpha/unlisted' && row.provider === 'openai' && row.agent === 'codex'));
   } finally {
     await stop();
     openai.closeAllConnections();

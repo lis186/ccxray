@@ -193,6 +193,9 @@ function getProviderForRequest(urlPath, headers = {}, req = {}) {
   if (pathname === '/v1/responses' || pathname.startsWith('/v1/responses/')) return 'openai';
   if (pathname === '/v1/realtime' || pathname.startsWith('/v1/realtime/')) return 'openai';
   if (pathname === '/v1/models' || pathname.startsWith('/v1/models/')) return 'openai';
+  if (pathname === '/v1/alpha/search' || pathname.startsWith('/v1/alpha/search/')) return 'openai';
+  if (pathname === '/v1/memories' || pathname.startsWith('/v1/memories/')) return 'openai';
+  if (pathname === '/v1/images' || pathname.startsWith('/v1/images/')) return 'openai';
   if (isChatGPTCodexPath(pathname)) return 'openai';
   if (isAnthropicMessagesPath(pathname)) return 'anthropic';
   // chat/completions has no path rule until its wire parser handles the shape.

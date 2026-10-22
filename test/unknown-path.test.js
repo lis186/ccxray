@@ -9,8 +9,36 @@ const { isJwtShaped } = require('../server/request-signals');
 const { forwardRequest } = require('../server/forward');
 const { isOpenAIWebSocket } = require('../server/ws-proxy');
 
+for (const path of ['/v1/alpha/search', '/v1/memories', '/v1/images']) {
+  it(`routing fix: ${path} uses the OpenAI upstreams`, () => {
+    for (const url of [path, `${path}/child`, `${path}?probe=synthetic`]) {
+      assert.equal(config.getProviderForRequest(url), 'openai');
+      assert.equal(config.getUpstreamForRequest(url), config.UPSTREAMS.openai);
+      assert.equal(config.getUpstreamForRequestAndHeaders(url), config.UPSTREAMS.openai);
+      const headers = { 'chatgpt-account-id': 'acct', authorization: 'Bearer syntheticheader.payload.signature' };
+      const upstream = config.getUpstreamForRequestAndHeaders(url, headers);
+      assert.equal(upstream, config.UPSTREAMS.openaiChatGPT);
+      assert.equal(config.joinUpstreamPath(upstream, url), `/backend-api/codex${url.slice(3)}`);
+      assert.equal(checkHttpRoute({ method: 'POST', url, headers: {} }, {
+        writeHead() { assert.fail('routing fix: listed path should be forwarded'); }, end() {},
+      }, config.getUpstreamForRequestAndHeaders(url)), true);
+      const previous = process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH;
+      process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH = '1';
+      try {
+        assert.equal(auth.isUpstreamAuthenticated({
+          url, headers, socket: { remoteAddress: '127.0.0.1' },
+        }), true);
+      } finally {
+        if (previous === undefined) delete process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH;
+        else process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH = previous;
+      }
+    }
+    assert.equal(config.getProviderForRequest(`${path}-unlisted`), null);
+  });
+}
+
 it('unknown-path handling resolves request signals', () => {
-  const url = '/v1/alpha/search?q=synthetic';
+  const url = '/v1/alpha/unlisted?q=synthetic';
   for (const headers of [
     { 'chatgpt-account-id': 'acct' }, { originator: 'codex_cli_rs' },
     { 'openai-beta': 'synthetic' }, { 'x-openai-test': 'synthetic' },
@@ -72,7 +100,7 @@ it('provider header hygiene rejects Anthropic forwarding', () => {
 
 it('routing fix checks the forwarding fallback', () => {
   for (const [url, headers, upstream] of [
-    ['/v1/alpha/search', {}, undefined],
+    ['/v1/alpha/unlisted', {}, undefined],
     ['/v1/messages', { 'x-codex-turn-metadata': '{}' }, undefined],
     ['/v1/responses', { 'chatgpt-account-id': 'acct' }, config.UPSTREAMS.anthropic],
   ]) {
@@ -96,7 +124,7 @@ it('unknown-path handling keeps Claude JWT shapes on Anthropic', () => {
       assert.equal(upstream.provider, 'anthropic');
       assert.equal(checkHttpRoute(req, { writeHead() {}, end() {} }, upstream), true);
     }
-    for (const url of ['/api/event_logging/batch', '/v1/alpha/search']) {
+    for (const url of ['/api/event_logging/batch', '/v1/alpha/unlisted']) {
       const req = { method: 'POST', url, headers: { authorization } };
       const upstream = config.getUpstreamForRequestAndHeaders(url, req.headers, req);
       assert.equal(upstream, null);
