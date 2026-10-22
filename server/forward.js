@@ -5,6 +5,7 @@ const http = require('http');
 const tls = require('tls');
 const crypto = require('crypto');
 const config = require('./config');
+const { checkHttpRoute } = require('./request-routing');
 const store = require('./store');
 const { buildEditedReqRecord } = require('./delta-helpers');
 const { calculateCost } = require('./pricing');
@@ -495,7 +496,6 @@ function describeUpstreamError(err, host) {
 }
 
 // ── Forward request to Anthropic ─────────────────────────────────────
-const { checkHttpRoute } = require('./request-routing');
 
 function forwardRequest(ctx) {
   const { id, ts, startTime, parsedBody, rawBody, clientReq, clientRes, fwdHeaders, reqSessionId } = ctx;

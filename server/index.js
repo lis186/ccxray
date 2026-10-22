@@ -161,6 +161,7 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const config = require('./config');
+const { checkHttpRoute } = require('./request-routing');
 const store = require('./store');
 const { resolveCcxrayHome, tightenCcxrayHome } = require('./paths');
 const helpers = require('./helpers');
@@ -472,7 +473,6 @@ const { isInternalHeader } = require('./internal-headers');
 const { armClientShutdown } = require('./client-shutdown');
 const { createLaunchDecision, raceWithLaunchDecision } = require('./launch-decision');
 
-const { checkHttpRoute } = require('./request-routing');
 
 function buildForwardHeaders(clientHeaders, upstream) {
   const fwdHeaders = { ...clientHeaders };

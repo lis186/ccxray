@@ -17,6 +17,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const config = require('./config');
+const { isJwtShaped } = require('./request-signals');
 const { ensureCcxrayHome } = require('./paths');
 
 // ─── Root secret resolution ──────────────────────────────────────────
@@ -323,7 +324,7 @@ function isDashboardAuthenticated(req) {
   if (verifyUpstreamCredential(req.headers) === 'ok') return true;
   if (AUTH_TOKEN) {
     const h = req.headers['authorization'] || '';
-    if (h.startsWith('Bearer ') && compareSecret(h.slice(7), AUTH_TOKEN)) return true;
+    if (/^Bearer /i.test(h) && compareSecret(h.slice(7), AUTH_TOKEN)) return true;
   }
   return false;
 }
@@ -381,8 +382,6 @@ function isLoopbackBypass(req) {
 // server/providers.js inject. We constant-time compare it to the locally
 // derived K_upstream, so this behaves identically whether the root secret
 // comes from AUTH_TOKEN or the ephemeral local-secret file.
-
-const { isJwtShaped } = require('./request-signals');
 
 function verifyUpstreamCredential(headers) {
   // Pure header taxonomy: no env-flag or peer-address awareness. The

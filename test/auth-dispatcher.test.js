@@ -143,6 +143,16 @@ describe('verifyDashboard — Phase 2.3 enforcement (cookie / Bearer / X-Ccxray-
     assert.equal(setHeaderCalls['X-Ccxray-Deprecation'], undefined);
   });
 
+  it('provider header hygiene handles dashboard bearer scheme variants', () => {
+    const auth = loadAuthWith('sec1');
+    for (const scheme of ['Bearer', 'bearer', 'bEaReR']) {
+      const { req, res } = mockReqRes({ authorization: `${scheme} sec1` }, '/_api/entries');
+      assert.equal(auth.verifyDashboard(req, res), true);
+      const wrong = mockReqRes({ authorization: `${scheme} SEC1` }, '/_api/entries');
+      assert.equal(auth.verifyDashboard(wrong.req, wrong.res), false);
+    }
+  });
+
   it('AUTH_TOKEN set, wrong Bearer → 401', () => {
     const auth = loadAuthWith('sec1');
     const { req, res } = mockReqRes({ authorization: 'Bearer wrong', host: 'localhost' }, '/_api/entries');

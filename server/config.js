@@ -1,6 +1,6 @@
 'use strict';
 
-const { hasOpenAIHeaders } = require('./request-signals');
+const { isOpenAISide, isAnthropicSide, matchOpenAIWireClient } = require('./request-signals');
 const { createStorage } = require('./storage');
 const { resolveLogsDir } = require('./paths');
 const { retentionDays, boundedDays } = require('./retention');
@@ -187,6 +187,7 @@ function getUpstream(provider) {
   return Object.hasOwn(UPSTREAMS, provider) ? UPSTREAMS[provider] : null;
 }
 
+/** Returns a provider name, or null when unknown-path handling cannot choose one. */
 function getProviderForRequest(urlPath, headers = {}, req = {}) {
   const pathname = (urlPath || '').split('?')[0];
   if (pathname === '/v1/responses' || pathname.startsWith('/v1/responses/')) return 'openai';
@@ -194,11 +195,10 @@ function getProviderForRequest(urlPath, headers = {}, req = {}) {
   if (pathname === '/v1/models' || pathname.startsWith('/v1/models/')) return 'openai';
   if (isChatGPTCodexPath(pathname)) return 'openai';
   if (isAnthropicMessagesPath(pathname)) return 'anthropic';
-  const identity = require('./hub').lookupClientIdentityForRequest(req);
-  const agentType = identity?.agentType || req.agentType || req.clientIdentity?.agentType;
-  const openai = hasOpenAIHeaders(headers) || !!require('./providers').matchOpenAIWireClient(headers) || ['codex', 'grok'].includes(agentType);
-  const anthropic = ['anthropic-version', 'anthropic-beta', 'x-api-key'].some(key => key in headers)
-    || /^Bearer sk-ant-/i.test(headers.authorization || '') || agentType === 'claude';
+  // chat/completions has no path rule until its wire parser handles the shape.
+  // Unknown-path handling uses request signals for it as for other unlisted paths.
+  const openai = isOpenAISide(headers, req);
+  const anthropic = isAnthropicSide(headers, req);
   if (pathname === '/' && ['GET', 'HEAD'].includes(req.method) && !openai
       && !headers['transfer-encoding'] && !Number(headers['content-length']) && !req.bodySize) return 'anthropic';
   if (openai === anthropic) return null;
@@ -261,7 +261,6 @@ function getUpstreamForRequestAndHeaders(urlPath, headers = {}, req = {}) {
   if (!provider) return null;
   if (pathname.startsWith('/v1/') && !isAnthropicMessagesPath(pathname)) {
     try {
-      const { matchOpenAIWireClient } = require('./providers');
       const client = matchOpenAIWireClient(headers);
       if (client?.upstreamKey && UPSTREAMS[client.upstreamKey]) {
         return UPSTREAMS[client.upstreamKey];
