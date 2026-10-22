@@ -581,7 +581,7 @@ function renderStepListHtml(steps, activeStepKey, toolSources) {
         if (step.source === 'history') {
           html += '🧠'; // indicator only — prior turn content not shown
         } else {
-          const durLabel = step.thinkingDuration ? ' ' + step.thinkingDuration.toFixed(1) + 's' : '';
+          const durLabel = step.thinkingDuration ? ' ' + fmtFixed(step.thinkingDuration, 1) + 's' : '';
           const thinkPreview = (step.thinking || '').slice(0, 80).replace(/\n/g, ' ').trim();
           html += '🧠' + durLabel + (thinkPreview ? ' <span style="opacity:0.7">' + escapeHtml(thinkPreview) + '…</span>' : '');
         }
@@ -807,7 +807,7 @@ function renderStepDetailHtml(req, tok) {
     return '<div class="detail-content"><pre>' + highlightCredentials(step.text || '') + '</pre></div>';
   } else if (step.type === 'tool-group') {
     if (subIdx === 999) {
-      const durLabel = step.thinkingDuration ? ' · ' + step.thinkingDuration.toFixed(1) + 's' : '';
+      const durLabel = step.thinkingDuration ? ' · ' + fmtFixed(step.thinkingDuration, 1) + 's' : '';
       return '<div class="detail-content">' + renderThinkingDetail(step.thinking, durLabel) + '</div>';
     } else if (subIdx < step.calls.length) {
       const c = step.calls[subIdx];
@@ -1067,9 +1067,11 @@ function renderMinimapHtml(steps, perMessage, activeStepIdx, maxContext, usage, 
 
   // Cache breakdown bar (D7) — 4px tall at top
   if (usage) {
-    const cr = usage.cache_read_input_tokens || 0;
-    const cw = usage.cache_creation_input_tokens || 0;
-    const inp = usage.input_tokens || 0;
+    // Only finite numbers take part in the bar; other values draw nothing.
+    const numOr0 = v => (typeof v === 'number' && isFinite(v) ? v : 0);
+    const cr = numOr0(usage.cache_read_input_tokens);
+    const cw = numOr0(usage.cache_creation_input_tokens);
+    const inp = numOr0(usage.input_tokens);
     const cacheTotal = cr + cw + inp;
     if (cacheTotal > 0) {
       html += '<div class="minimap-cache-bar">';

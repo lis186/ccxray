@@ -28,12 +28,17 @@ function loadContext() {
     interceptSessionIds: new Set(),
     countdownInterval: null,
     interceptTimeoutSec: 30,
-    escapeHtml: (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
   };
   vm.createContext(context);
   // messages.js defines getMessagePreview, used by the "messages" tab renderer.
-  vm.runInContext(fs.readFileSync(path.join(publicDir, 'format.js'), 'utf8').replace(/^function escapeHtml[\s\S]*?\n}\n/m, ''), context);
+  vm.runInContext(fs.readFileSync(path.join(publicDir, 'format.js'), 'utf8'), context);
   vm.runInContext(fs.readFileSync(path.join(publicDir, 'messages.js'), 'utf8'), context);
+  // entry-rendering.js runs app init at load, so only renderMessages is lifted out of it.
+  const er = fs.readFileSync(path.join(publicDir, 'entry-rendering.js'), 'utf8');
+  const start = er.indexOf('function renderMessages(');
+  const end = er.indexOf('\nfunction ', start + 1);
+  assert.ok(start >= 0 && end > start);
+  vm.runInContext(er.slice(start, end), context);
   vm.runInContext(fs.readFileSync(path.join(publicDir, 'intercept-ui.js'), 'utf8'), context);
   return context;
 }
@@ -171,5 +176,44 @@ describe('intercept-ui: message role rendering', () => {
     assert.ok(html.includes('class="ie-msg-role other"'));
     assert.ok(!html.includes('<i>'));
     assert.ok(html.includes('&gt;&lt;i&gt;x'));
+  });
+});
+
+describe('intercept-ui: message roles are escaped with the production helper', () => {
+  const ROLE = '<b x="1">&';
+  const ESCAPED = '&lt;b x=&quot;1&quot;&gt;&amp;';
+  function mkEl() {
+    return {
+      innerHTML: '',
+      classList: { add() {}, remove() {} },
+      querySelector(sel) { return sel === 'textarea' && this.innerHTML.includes('<textarea') ? {} : null; },
+    };
+  }
+  it('expand and collapse render the role as text', () => {
+    const ctx = loadContext();
+    ctx.currentPending = { body: { messages: [{ role: ROLE, content: 'hi' }] } };
+    const el = mkEl();
+    ctx.toggleInterceptMsg(el, 0, null);
+    assert.ok(el.innerHTML.includes(ESCAPED), el.innerHTML);
+    assert.ok(!el.innerHTML.includes('<b x'));
+    ctx.toggleInterceptMsg(el, 0, null);
+    assert.ok(el.innerHTML.includes(ESCAPED), el.innerHTML);
+    assert.ok(!el.innerHTML.includes('<b x'));
+  });
+  it('expand and collapse tolerate a missing role', () => {
+    const ctx = loadContext();
+    ctx.currentPending = { body: { messages: [{ content: 'hi' }] } };
+    const el = mkEl();
+    ctx.toggleInterceptMsg(el, 0, null);
+    assert.ok(el.innerHTML.includes('undefined'));
+    ctx.toggleInterceptMsg(el, 0, null);
+    assert.ok(el.innerHTML.includes('ie-msg-role other'));
+  });
+  it('renderMessages escapes the role and tolerates a missing role', () => {
+    const ctx = loadContext();
+    const html = ctx.renderMessages([{ role: ROLE, content: 'x' }, { content: 'y' }], null);
+    assert.ok(html.includes(ESCAPED), html);
+    assert.ok(!html.includes('<b x'));
+    assert.ok(html.includes('msg-role other'));
   });
 });

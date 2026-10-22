@@ -14,10 +14,12 @@ function ctxZone(pct) {
 // cache read + input + output tokens (the full request cost the next turn pays).
 function computeCtxUsed(usage) {
   if (!usage) return 0;
-  return (usage.cache_creation_input_tokens || 0)
-    + (usage.cache_read_input_tokens || 0)
-    + (usage.input_tokens || 0)
-    + (usage.output_tokens || 0);
+  // Counters come from response bodies; only finite numbers count.
+  const n = v => (typeof v === 'number' && isFinite(v) ? v : 0);
+  return n(usage.cache_creation_input_tokens)
+    + n(usage.cache_read_input_tokens)
+    + n(usage.input_tokens)
+    + n(usage.output_tokens);
 }
 
 // Strip the "claude-" prefix and a trailing YYYYMMDD date suffix.
@@ -174,6 +176,20 @@ function escapeHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
+// Number -> display text for HTML. Finite numbers format as before; null and
+// undefined give `fallback`; anything else (counters come from response bodies
+// and are not guaranteed numeric) is shown as escaped text.
+function fmtNum(n, fallback) {
+  if (n == null) return fallback === undefined ? '—' : fallback;
+  if (typeof n === 'number') return isFinite(n) ? n.toLocaleString() : '?';
+  return escapeHtml(String(n));
+}
+
+// toFixed for values that may not be numbers; '?' when not a finite number.
+function fmtFixed(n, digits) {
+  return typeof n === 'number' && isFinite(n) ? n.toFixed(digits) : '?';
+}
+
 // Message role -> CSS class. Roles come from request bodies, so only a fixed
 // set is allowed through to the class attribute.
 const KNOWN_MSG_ROLES = { user: 1, assistant: 1, system: 1, tool: 1, developer: 1 };
@@ -190,6 +206,8 @@ if (typeof module !== 'undefined') {
   module.exports = {
     roleClass,
     escapeHtml,
+    fmtNum,
+    fmtFixed,
     AGG_FB_MARK_SHARE,
     AGG_FB_DEGRADE_SHARE,
     formatAggCost,

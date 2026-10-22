@@ -2606,7 +2606,12 @@ function wfSetupInteractions(mainSvg, subSvg) {
 }
 
 // ── Tooltip ───────────────────────────────────────────────────────────────
-function _wfFmtTok(n) { return n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n); }
+// Both token formatters feed HTML: non-numbers come back as escaped text.
+function _wfFmtTok(n) {
+  if (typeof n !== 'number') return n == null ? '0' : wfEsc(String(n));
+  if (!isFinite(n)) return '?';
+  return n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
+}
 var _wfTtHideTimer = null;
 function _wfShowTooltip(e, t, lane) {
   if (_wfTtHideTimer) { clearTimeout(_wfTtHideTimer); _wfTtHideTimer = null; }
@@ -2808,6 +2813,8 @@ function _wfDrawOverviewCursor(canvas) {
 // subagent spend as main. Tracked separately; add back once that's fixed.
 function _wfFmtSessTok(n) {
   n = n || 0;
+  if (typeof n !== 'number') return wfEsc(String(n));
+  if (!isFinite(n)) return '?';
   if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
   if (n >= 1000) return (n / 1000).toFixed(0) + 'K';
   return String(n);
@@ -2984,13 +2991,13 @@ function wfRenderTurnCard(turnEntry) {
   var html = '<div class="wf-agent-card wf-turn-card" style="border-left:2px solid ' + color + '">';
   html += '<div class="wf-tc-back" onclick="wfBackToLane()">&#8592; back</div>';
   var turnW = typeof assessWeather === 'function' ? assessWeather([turnEntry], { sessionWindow: _wfTurnWindow(turnEntry, false) }) : null;
-  html += '<div class="wf-tc-title">' + (turnW && turnW.level !== 'sunny' && weatherDisplayEnabled() ? '<span style="cursor:default" data-weather=\'' + wfEsc(JSON.stringify(turnW)) + '\' onmouseenter="showWeatherOverlay(event,JSON.parse(this.dataset.weather))" onmouseleave="hideWeatherOverlay()">' + turnW.emoji + '</span> ' : '') + '#' + displayNum + '  ' + wfEsc(wfShortModel(turnEntry.model)) + ' · ' + wfFmtDur(dur * 1000) + '</div>';
+  html += '<div class="wf-tc-title">' + (turnW && turnW.level !== 'sunny' && weatherDisplayEnabled() ? '<span style="cursor:default" data-weather=\'' + wfEsc(JSON.stringify(turnW)) + '\' onmouseenter="showWeatherOverlay(event,JSON.parse(this.dataset.weather))" onmouseleave="hideWeatherOverlay()">' + turnW.emoji + '</span> ' : '') + '#' + wfEsc(String(displayNum)) + '  ' + wfEsc(wfShortModel(turnEntry.model)) + ' · ' + wfFmtDur(dur * 1000) + '</div>';
 
   // Breadcrumb
   var laneName = lane ? lane.name : '?';
-  var statusBadge = turnEntry.status ? turnEntry.status : '';
+  var statusBadge = turnEntry.status ? wfEsc(String(turnEntry.status)) : '';
   var inferBadge = turnEntry.sessionInferred ? ' [inferred]' : '';
-  html += '<div class="wf-tc-crumb">' + wfEsc(laneName) + ' > #' + displayNum + '  ' + statusBadge + inferBadge + '</div>';
+  html += '<div class="wf-tc-crumb">' + wfEsc(laneName) + ' > #' + wfEsc(String(displayNum)) + '  ' + statusBadge + inferBadge + '</div>';
 
   // Context
   html += '<div class="wf-ac-section"><div class="wf-ac-section-title">Context</div>';
@@ -3014,7 +3021,7 @@ function wfRenderTurnCard(turnEntry) {
   html += '<div class="wf-ac-section"><div class="wf-ac-section-title">Tokens</div>';
   html += '<div class="wf-ac-row"><span>In</span><span class="wf-ac-val">' + _wfFmtSessTok(inTok) + '</span></div>';
   html += '<div class="wf-ac-row"><span>Out</span><span class="wf-ac-val">' + _wfFmtSessTok(outTok) + '</span></div>';
-  if (thinkDur > 0) html += '<div class="wf-ac-row"><span>Thinking</span><span class="wf-ac-val">' + thinkDur.toFixed(1) + 's</span></div>';
+  if (thinkDur > 0) html += '<div class="wf-ac-row"><span>Thinking</span><span class="wf-ac-val">' + fmtFixed(thinkDur, 1) + 's</span></div>';
   html += '</div>';
 
   // Tools
