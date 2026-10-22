@@ -584,11 +584,11 @@ describe('discoverHub with socket', () => {
     assert.equal(result.sockPath, hub.SOCK_PATH);
   });
 
-  it('returns null when sockPath in lockfile but socket not responding', async () => {
+  it('throws HubUnresponsiveError and keeps the lock when sockPath in lockfile but socket not responding (#730)', async () => {
     hub.writeHubLock(5577, process.pid, undefined, hub.SOCK_PATH);
 
-    const result = await hub.discoverHub();
-    assert.equal(result, null);
+    await assert.rejects(hub.discoverHub(), err => err.code === 'HUB_UNRESPONSIVE');
+    assert.equal(hub.readHubLock().pid, process.pid);
   });
 });
 
