@@ -1972,7 +1972,7 @@ function selectProject(name) {
   if (name === null && typeof maybeAutoExpandSidebar === 'function') maybeAutoExpandSidebar();
 }
 
-function fmt(n) { return n != null ? n.toLocaleString() : '—'; }
+function fmt(n) { return fmtNum(n, '—'); }
 
 // ── Miller Columns: Selection ──
 
@@ -2712,9 +2712,9 @@ function renderSectionsCol(idx) {
 
   let html = '<div class="col-header">';
   html += '<div class="ch-line1"><span style="color:var(--dim)">' + (isSubagent ? '' : '#') + escapeHtml(displayNum) + '</span> <span style="color:var(--purple)">' + escapeHtml(shortModelStr) + '</span>' + subBadge + inferBadge + '</div>';
-  html += '<div class="ch-line2"><span class="' + statusClass + '">' + e.status + '</span> · 🤖 ' + (e.elapsed || '?') + 's';
+  html += '<div class="ch-line2"><span class="' + statusClass + '">' + escapeHtml(String(e.status)) + '</span> · 🤖 ' + escapeHtml(String(e.elapsed || '?')) + 's';
   if (stopReason) html += ' · ' + escapeHtml(stopReason);
-  if (e.thinkingDuration) html += ' · <span style="color:var(--purple)">🧠 ' + e.thinkingDuration.toFixed(1) + 's</span>';
+  if (e.thinkingDuration) html += ' · <span style="color:var(--purple)">🧠 ' + fmtFixed(e.thinkingDuration, 1) + 's</span>';
   // INVARIANT(#420): per-turn cost must use formatCost/formatCostText(cost, confidence) — 5 sites across 3 files
   if (turnCost != null || e.costConfidence === 'unknown') html += ' · <span style="color:var(--yellow)">' + formatCostText(turnCost, e.costConfidence, 2) + '</span>';
   html += '</div>';

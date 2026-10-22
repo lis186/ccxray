@@ -99,7 +99,7 @@ function renderMessages(messages, perMessage) {
       body = escapeHtml(JSON.stringify(m.content, null, 2));
     }
     const tokLabel = perMessage && perMessage[i] ? ' <span class="badge">' + perMessage[i].tokens + ' tok</span>' : '';
-    return '<div class="msg"><div class="msg-role ' + m.role + '">[' + i + '] ' + m.role + tokLabel + '</div><pre>' + body + '</pre></div>';
+    return '<div class="msg"><div class="msg-role ' + roleClass(m.role) + '">[' + i + '] ' + escapeHtml(String(m.role)) + tokLabel + '</div><pre>' + body + '</pre></div>';
   }).join('');
 }
 

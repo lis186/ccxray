@@ -467,3 +467,53 @@ describe('renderEditedBanner — intercept-edited badge (client render)', () => 
     assert.ok(!unchanged.includes('Original before edit'), 'unchanged message must not offer an identical original');
   });
 });
+
+describe('dashboard output escaping', () => {
+  const nasty = `<b a="x" b='y'>&`;
+  const ent = '&lt;b a=&quot;x&quot; b=&#39;y&#39;&gt;&amp;';
+
+  it('minimap escapes block labels', () => {
+    const context = loadMessagesContext();
+    const steps = [{ type: 'assistant', source: 'history', msgIndices: [0] }];
+    const perMessage = [{ tokens: 20, blocks: [
+      { type: 'tool_use', name: nasty, tokens: 10 },
+      { type: 'text', tokens: 10 },
+    ] }];
+    const html = context.renderMinimapHtml(steps, perMessage, -1, 200000, null);
+    const blocksHtml = html.slice(html.indexOf('minimap-blocks'));
+    assert.ok(!blocksHtml.includes('<b a='), 'raw markup must not appear');
+    assert.ok(html.includes('title="tool_use:' + ent + ' · 10 tok"'));
+    // short label is truncated before escaping, so no entity is cut in half
+    assert.ok(html.includes('<span class="mm-label">' + context.escapeHtml(('tool_use:' + nasty).replace(/^tool_use:/, '').slice(0, 9)) + '…</span>'));
+  });
+
+  it('minimap renders normal labels unchanged', () => {
+    const context = loadMessagesContext();
+    const steps = [{ type: 'assistant', source: 'history', msgIndices: [0] }];
+    const perMessage = [{ tokens: 20, blocks: [
+      { type: 'tool_use', name: 'Bash', tokens: 10 },
+      { type: 'text', tokens: 10 },
+    ] }];
+    const html = context.renderMinimapHtml(steps, perMessage, -1, 200000, null);
+    assert.ok(html.includes('title="tool_use:Bash · 10 tok"'));
+    assert.ok(html.includes('<span class="mm-label">Bash</span>'));
+    assert.ok(html.includes('<span class="mm-label">text</span>'));
+  });
+
+  it('message list escapes the role and allowlists its class', () => {
+    const context = loadMessagesContext();
+    const odd = '"><i>r';
+    const out = context.renderSingleMessage({ role: odd, content: 'hi' }, null, 0);
+    assert.ok(out.includes('class="msg-role other"'));
+    assert.ok(!out.includes('<i>'));
+    assert.ok(out.includes('&quot;&gt;&lt;i&gt;r'));
+    const known = context.renderSingleMessage({ role: 'user', content: 'hi' }, null, 0);
+    assert.ok(known.includes('class="msg-role user"'));
+  });
+
+  it('roleClass allows only known roles', () => {
+    const context = loadMessagesContext();
+    for (const r of ['user', 'assistant', 'system', 'tool', 'developer']) assert.equal(context.roleClass(r), r);
+    for (const r of ['x" onclick="1', '__proto__', 'constructor', undefined, null, 5]) assert.equal(context.roleClass(r), 'other');
+  });
+});
