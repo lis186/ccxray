@@ -1219,7 +1219,7 @@ if (process.argv[2] === 'status') {
           : undefined,
       }).line);
       if (occ.kind !== 'free') {
-        hub.describePortOccupant(occ, config.PORT).forEach(l => console.log(`Note: ${l}`));
+        hub.describePortOccupant(occ, config.PORT, { homeSocketReachable: await hub.probeHomeHub(occ) }).forEach(l => console.log(`Note: ${l}`));
       }
       // One machine-readable line so a consumer does not have to scrape the
       // English above. `proxy` answers whether this process can trace traffic.
@@ -1237,7 +1237,8 @@ if (process.argv[2] === 'status') {
 
     if (result.kind === 'dead-lockfile') {
       console.log('Hub lockfile exists but process is dead. Cleaning up.');
-      hub.deleteHubLock();
+      // A replacement hub may have published its lock since we observed this one.
+      hub.deleteHubLockIfPid(result.lock.pid);
       console.log(renderProcessStatus(null, 'no discoverable hub (the lockfile process is dead)'));
       console.log(inspectHomeStatus(null, { env: process.env }).line);
       printDiagnostics(null);
@@ -1448,17 +1449,18 @@ async function startClientMode(lock, decision) {
     // A shutdown that already captured the previous registration will never see
     // a promise created after it, so re-registering now would hand the new hub a
     // pid that is on its way out.
-    if (clientShutdown.isShuttingDown()) return;
+    if (clientShutdown.isShuttingDown()) return true;
     currentLock = newLock;
     try {
       registration = hub.registerClient(newLock, process.pid, process.cwd(), clientIdentity);
       const reg = await registration;
+      if (!reg) return false; // the monitor retries and reports the failure once
       // This is best-effort notification: recovery happens while the agent's TUI
       // owns the terminal, so the banner may not be read.
-      if (reg) reportHubRegistrationStatus(reg, 'recovered');
-      else reportHubRegistrationStatus(null, 'recovery-failed');
+      reportHubRegistrationStatus(reg, 'recovered');
+      return true;
     } catch {
-      reportHubRegistrationStatus(null, 'recovery-failed');
+      return false;
     }
   }, () => reportHubRegistrationStatus(null, 'recovery-failed'));
 
@@ -1617,7 +1619,7 @@ async function startServer({ onListen } = {}) {
             // #555: identify the occupant before advising — the old unconditional
             // `kill $(lsof …)` hint would have killed a deliberate listener.
             const occ = await hub.probePortOccupant(config.PORT);
-            const advice = hub.describePortOccupant(occ, config.PORT);
+            const advice = hub.describePortOccupant(occ, config.PORT, { homeSocketReachable: await hub.probeHomeHub(occ) });
             if (advice.length) advice.forEach(l => console.error(`Error: ${l}`));
             else console.error(`Error: port ${config.PORT} still occupied after ${HUB_BIND_RETRIES}s but nothing answered a probe — it may have been released; retry.`);
           }
@@ -1631,6 +1633,18 @@ async function startServer({ onListen } = {}) {
   }
   if (onListen) onListen(actualPort);
   hub.setIdentityPort(actualPort);
+  {
+    // Loopback is the default bind; say so when PROXY_HOST opted in to more.
+    const listen = require('./listen');
+    const host = listen.resolveListenHosts().primary;
+    if (!listen.isLoopbackHost(host)) {
+      const bound = listen.listenAddresses(server).map(listen.formatAddress).join(', ');
+      console.error(`${DISPLAY_NAME} listening on ${bound} (PROXY_HOST=${host}); non-loopback clients need a ccxray credential`);
+      if (listen.isSingleInterfaceHost(host)) {
+        console.error(`${DISPLAY_NAME}: PROXY_HOST=${host} is not reachable as localhost, so local agent launches and hub checks cannot use it; set PROXY_HOST=0.0.0.0 to keep them working`);
+      }
+    }
+  }
   rebuildIndexHTML(actualPort);
 
   runPostListenStartupTasks();
@@ -1650,6 +1664,7 @@ async function startServer({ onListen } = {}) {
     // does not live forever waiting for a client that will never arrive.
     hub.startIdleTimer();
     hub.startDeadClientCheck();
+    hub.startLockSelfHeal(actualPort, hub.SOCK_PATH);
     hub.setOnShutdown(() => gracefulExit(0));
     const cleanup = () => hub.shutdownHub(); // closes socket + deletes lockfile + gracefulExit via onShutdown
     process.on('SIGTERM', cleanup);

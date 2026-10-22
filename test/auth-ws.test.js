@@ -29,3 +29,40 @@ describe('WS header stripping (1.4c)', () => {
     assert.equal(result.host, 'api.openai.com');
   });
 });
+
+describe('WS gate: ChatGPT-login headers from a non-loopback peer', () => {
+  const JWT = 'Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIn0.sig';
+
+  function fakeSocket() {
+    return {
+      destroyed: false,
+      written: '',
+      write(chunk) { this.written += chunk; },
+      destroy() { this.destroyed = true; },
+    };
+  }
+
+  it('is answered 401 without a ccxray credential', () => {
+    const saved = process.env.CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN;
+    delete process.env.CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN;
+    try {
+      const socket = fakeSocket();
+      const req = {
+        url: '/v1/responses',
+        headers: {
+          'openai-beta': 'responses_websockets=v1',
+          'chatgpt-account-id': 'acct-1',
+          authorization: JWT,
+          upgrade: 'websocket',
+          connection: 'Upgrade',
+        },
+        socket: { remoteAddress: '192.168.1.50' },
+      };
+      assert.equal(wsProxy.handleWebSocketUpgrade(req, socket, Buffer.alloc(0)), true);
+      assert.match(socket.written, /^HTTP\/1\.1 401 /);
+      assert.equal(socket.destroyed, true);
+    } finally {
+      if (saved !== undefined) process.env.CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN = saved;
+    }
+  });
+});

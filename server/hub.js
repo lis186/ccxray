@@ -8,6 +8,7 @@ const { resolveCcxrayHome, resolveLogsDir } = require('./paths');
 const { exportStatus, exportConfigHash } = require('./export-sync');
 const { relativeRootComplaints } = require('./importer');
 const { discoverCredentials, describeCredentials } = require('./export-credentials');
+const { bindPort } = require('./listen');
 const LAUNCH_TOKEN = require('crypto').randomBytes(8).toString('hex');
 
 const HUB_DIR = resolveCcxrayHome();
@@ -20,6 +21,8 @@ const IDLE_TIMEOUT_MS = 5000;
 const DEAD_CLIENT_CHECK_MS = 30000;
 const HUB_REQUEST_TIMEOUT_MS = 3000;
 const HUB_HEALTH_CHECK_MS = 5000;
+const HUB_LOCK_CHECK_MS = 5000;
+const HUB_RECOVERY_MAX_BACKOFF_MS = 60000;
 const READINESS_POLL_MS = 200;
 const READINESS_TIMEOUT_MS = 10000;
 const HUB_LOG_MAX_BYTES = 1 * 1024 * 1024; // 1 MB
@@ -66,12 +69,38 @@ function writeHubLock(port, pid, versionOverride, sockPath) {
   const version = versionOverride || require('../package.json').version;
   const data = { port, pid, version, startedAt: new Date().toISOString() };
   if (sockPath) data.sockPath = sockPath;
-  fs.writeFileSync(HUB_LOCK_PATH, JSON.stringify(data), { mode: 0o600 });
+  // Temp file + rename: a concurrent reader sees the old file or the whole new
+  // one, never a truncated hub.json (#730).
+  const tmp = `${HUB_LOCK_PATH}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(data), { mode: 0o600 });
+    fs.renameSync(tmp, HUB_LOCK_PATH);
+  } catch (err) {
+    try { fs.unlinkSync(tmp); } catch {}
+    throw err;
+  }
   return data;
 }
 
+// Unconditional delete — only for callers that own the file by construction
+// (tests, a home nobody else writes). Anything that observed a lock earlier and
+// cleans up later (hub shutdown, client recovery, `ccxray status` on a dead
+// lockfile) must use deleteHubLockIfPid(observedPid), because a replacement hub
+// can publish its lock in between.
 function deleteHubLock() {
   try { fs.unlinkSync(HUB_LOCK_PATH); } catch {}
+}
+
+// INVARIANT (#730): hub.json is shared by every process on this home. Remove it
+// only when it still names `pid` (the caller itself on shutdown, or the dead hub
+// a client was monitoring) or names a dead pid. A lockfile naming a different
+// LIVE pid belongs to a newer hub and must survive. The lock is re-read
+// immediately before the unlink; the residual window is one syscall.
+function deleteHubLockIfPid(pid) {
+  const lock = readHubLock();
+  if (!lock) return false;
+  if (lock.pid !== pid && isPidAlive(lock.pid)) return false;
+  try { fs.unlinkSync(HUB_LOCK_PATH); return true; } catch { return false; }
 }
 
 // ── PID check ───────────────────────────────────────────────────────
@@ -189,11 +218,23 @@ function probeHubStatus(port, timeoutMs = 2000, signal, options = {}) {
 
 // ── Hub discovery (dual verification: pid + health) ─────────────────
 
+// Thrown by discoverHub when hub.json names a live pid that fails its health or
+// socket probe. Distinct from a null result ("no hub"), which callers answer by
+// forking: a live-but-unresponsive owner must never get a second hub.
+class HubUnresponsiveError extends Error {
+  constructor(lock) {
+    super(`hub pid ${lock.pid} (port ${lock.port}) is alive but not responding; its lockfile was kept and no second hub was started`);
+    this.name = 'HubUnresponsiveError';
+    this.code = 'HUB_UNRESPONSIVE';
+    this.lock = lock;
+  }
+}
+
 async function discoverHub(defaultPort) {
   const lock = readHubLock();
   if (lock) {
     if (!isPidAlive(lock.pid)) {
-      deleteHubLock();
+      deleteHubLockIfPid(lock.pid);
       return null;
     }
     // Prefer socket probe when sockPath is available
@@ -209,12 +250,11 @@ async function discoverHub(defaultPort) {
       healthy = await checkHubHealth(lock.port);
     }
     if (!healthy) {
-      deleteHubLock();
-      // Do NOT kill lock.pid here: hub.json may be stale from a crash, and the pid
-      // may have been reused by an unrelated process. Sending SIGTERM to an arbitrary
-      // pid is unsafe. The hub startup retry loop (5 × 1s) handles the shutdown-race
-      // case where the port hasn't been released yet.
-      return null;
+      // #730: the owner is ALIVE, merely slow or wedged. Keep hub.json: deleting
+      // it lets cleanupStaleSocket() unlink the live hub's socket and lets the
+      // caller fork a competitor. Do NOT kill lock.pid either (it may be a reused
+      // pid). Callers retry discovery with backoff or fall back; none forks.
+      throw new HubUnresponsiveError(lock);
     }
     return lock;
   }
@@ -722,14 +762,43 @@ function setOnShutdown(fn) { onShutdown = fn; }
 
 function shutdownHub() {
   if (deadCheckInterval) clearInterval(deadCheckInterval);
+  stopLockSelfHeal();
   if (hubSocket) {
     try { hubSocket.close(); } catch {}
     try { fs.unlinkSync(SOCK_PATH); } catch {}
     hubSocket = null;
   }
-  deleteHubLock();
+  deleteHubLockIfPid(process.pid);
   if (onShutdown) onShutdown();
   else process.exit(0);
+}
+
+// ── Hub lockfile self-heal (#730) ───────────────────────────────────
+
+// A hub whose hub.json was deleted by another process would otherwise be
+// invisible to every supervisor until some launch happened to rebuild it. Check
+// cheaply and restore; never overwrite a lock naming a different live hub.
+let lockHealTimer = null;
+
+function selfHealHubLock(port, sockPath = SOCK_PATH) {
+  const lock = readHubLock();
+  if (lock) {
+    if (lock.pid !== process.pid && isPidAlive(lock.pid)) return false;
+    if (lock.pid === process.pid && lock.port === port && lock.sockPath === sockPath) return false;
+  }
+  try { writeHubLock(port, process.pid, undefined, sockPath); return true; } catch { return false; }
+}
+
+function startLockSelfHeal(port, sockPath = SOCK_PATH, intervalMs = HUB_LOCK_CHECK_MS) {
+  stopLockSelfHeal();
+  lockHealTimer = setInterval(() => selfHealHubLock(port, sockPath), intervalMs);
+  lockHealTimer.unref();
+  return lockHealTimer;
+}
+
+function stopLockSelfHeal() {
+  if (lockHealTimer) clearInterval(lockHealTimer);
+  lockHealTimer = null;
 }
 
 function startDeadClientCheck() {
@@ -916,6 +985,16 @@ function probePortOccupant(port, timeoutMs = 1500) {
   });
 }
 
+// True when the hub holding the port also answers on THIS home's socket, i.e.
+// the home matches and only hub.json is missing (#730).
+async function probeHomeHub(occ) {
+  if (!occ || occ.kind !== 'ccxray-hub' || !fs.existsSync(SOCK_PATH)) return false;
+  try {
+    const res = await hubSocketRequest(SOCK_PATH, { cmd: 'status' }, 2000);
+    return !!(res && res.app === 'ccxray' && (!occ.pid || res.pid === occ.pid));
+  } catch { return false; }
+}
+
 // Message lines for a probed occupant, shared by the hub's bind-failure log,
 // the client's post-mortem suggestion, and `ccxray status` — one composer so
 // the three surfaces cannot drift apart. Never suggests an unconditional kill:
@@ -924,7 +1003,7 @@ function probePortOccupant(port, timeoutMs = 1500) {
 // themselves. PROXY_PORT is the escape hatch every branch offers because it
 // moves the hub (discovery + fork) rather than opting out of hub mode the way
 // --port does.
-function describePortOccupant(occ, port) {
+function describePortOccupant(occ, port, { homeSocketReachable = false } = {}) {
   // Copy-pasteable form: bash/zsh `set X=Y` does not export, so the hint
   // shows the prefix form a user can actually run (grok review P2).
   const escape = `relaunch with PROXY_PORT=<other-port> (e.g. PROXY_PORT=5600 ccxray claude) to run the hub on a different port`;
@@ -938,6 +1017,14 @@ function describePortOccupant(occ, port) {
         `This process records into ${resolveLogsDir()}. To record separately, set CCXRAY_HOME=<dir>.`,
       ];
     case 'ccxray-hub':
+      // #730: the same hub answers on THIS home's socket, so the home is right
+      // and only hub.json is gone — do not point the user at CCXRAY_HOME.
+      if (homeSocketReachable) {
+        return [
+          `port ${port} is held by a live ccxray hub${occ.pid ? ` (pid ${occ.pid})` : ''} reachable on this CCXRAY_HOME's socket, but its lockfile (hub.json) is missing.`,
+          `The hub restores the lockfile on its own within a few seconds, and the next launch re-discovers it through the socket; retry shortly.`,
+        ];
+      }
       // The hub may be healthy under a different CCXRAY_HOME — only its
       // lockfile is unreachable from here; do not prescribe a restart as
       // the sole fix (grok review P2).
@@ -967,48 +1054,112 @@ function describePortOccupant(occ, port) {
 
 // ── Hub pid monitoring (client-side recovery) ───────────────────────
 
-function startHubMonitor(hubPid, hubPort, onRecovery, onRecoveryFailure) {
+function createHubMonitor(hubPid, hubPort, onRecovery, onRecoveryFailure) {
   // Recovery failure is a separate required channel so a caller cannot omit
   // the failure path and mistake a failed recovery for a successful one.
   if (typeof onRecovery !== 'function' || typeof onRecoveryFailure !== 'function') {
     throw new TypeError('startHubMonitor requires success and failure callbacks');
   }
 
-  const interval = setInterval(async () => {
-    if (isPidAlive(hubPid)) return;
+  let monitoredPid = hubPid;
+  let pendingLock = null; // hub found, registration not yet acknowledged
+  let busy = false;
+  let failures = 0;
+  let failureReported = false;
+  let nextAttemptAt = 0;
 
-    clearInterval(interval);
-    console.error('\x1b[33mHub process died. Attempting recovery...\x1b[0m');
-    deleteHubLock();
+  const fail = () => {
+    failures++;
+    nextAttemptAt = Date.now() + Math.min(HUB_HEALTH_CHECK_MS * 2 ** failures, HUB_RECOVERY_MAX_BACKOFF_MS);
+    // Report once per outage; the monitor keeps retrying quietly (#730).
+    if (!failureReported) { failureReported = true; onRecoveryFailure(); }
+  };
 
-    let acquired = false;
-    try {
-      acquired = tryAcquireForkLock();
-      let launchFailure = null;
-      if (acquired) {
-        let rejectLaunch;
-        launchFailure = new Promise((_, reject) => { rejectLaunch = reject; });
-        forkHub(hubPort, { onError: rejectLaunch });
-      }
-      const readiness = waitForHubReady();
-      const lock = acquired ? await Promise.race([readiness, launchFailure]) : await readiness;
-      if (acquired) releaseForkLock();
-      if (lock.port !== hubPort) {
-        if (acquired) releaseForkLock();
-        console.error(`\x1b[31mHub recovered on port ${lock.port} but Claude is using port ${hubPort}. Cannot recover.\x1b[0m`);
-        try { process.kill(lock.pid, 'SIGTERM'); } catch {}
-        onRecoveryFailure();
+  // Recovery is complete only once the callback reports that registration with
+  // the replacement hub succeeded (#730). A failed registration keeps the lock
+  // pending and is retried with backoff even while that hub is alive.
+  const register = async lock => {
+    let ok = false;
+    try { ok = (await onRecovery(lock)) !== false; } catch { ok = false; }
+    if (!ok) { pendingLock = lock; fail(); return; }
+    pendingLock = null;
+    failures = 0;
+    failureReported = false;
+    nextAttemptAt = 0;
+  };
+
+  const recover = async () => {
+    // #730: the lockfile may already belong to a replacement hub. Drop it only
+    // if it still names the dead hub (or another dead pid), then discover
+    // before forking so a live hub on this port is re-used, not raced.
+    deleteHubLockIfPid(monitoredPid);
+    let lock = null;
+    try { lock = await discoverHub(hubPort); } catch (err) {
+      if (err && err.code === 'HUB_UNRESPONSIVE') {
+        // A live owner exists: never fork against it. Retry with backoff.
+        console.error(`\x1b[31mHub recovery waiting: ${err.message}\x1b[0m`);
+        fail();
         return;
       }
-      console.error(`\x1b[32mHub recovered (pid ${lock.pid}, port ${lock.port})\x1b[0m`);
-      if (onRecovery) onRecovery(lock);
-      startHubMonitor(lock.pid, lock.port, onRecovery, onRecoveryFailure);
-    } catch (err) {
-      if (acquired) releaseForkLock();
-      console.error(`\x1b[31mHub recovery failed: ${err.message}\x1b[0m`);
-      onRecoveryFailure();
+      lock = null;
     }
-  }, HUB_HEALTH_CHECK_MS);
+
+    if (!lock) {
+      let acquired = false;
+      try {
+        acquired = tryAcquireForkLock();
+        let launchFailure = null;
+        if (acquired) {
+          let rejectLaunch;
+          launchFailure = new Promise((_, reject) => { rejectLaunch = reject; });
+          forkHub(hubPort, { onError: rejectLaunch });
+        }
+        const readiness = waitForHubReady();
+        lock = acquired ? await Promise.race([readiness, launchFailure]) : await readiness;
+      } catch (err) {
+        console.error(`\x1b[31mHub recovery failed: ${err.message}\x1b[0m`);
+        fail();
+        return;
+      } finally {
+        if (acquired) releaseForkLock();
+      }
+    }
+
+    if (lock.port !== hubPort) {
+      // A hub-mode child binds the requested port, so a hub on another port is
+      // never this client's own child. It belongs to someone else: leave it
+      // alone, report failure, and keep retrying.
+      console.error(`\x1b[31mHub found on port ${lock.port} but Claude is using port ${hubPort}. Cannot recover.\x1b[0m`);
+      fail();
+      return;
+    }
+    console.error(`\x1b[32mHub recovered (pid ${lock.pid}, port ${lock.port})\x1b[0m`);
+    monitoredPid = lock.pid;
+    await register(lock);
+  };
+
+  const tick = async () => {
+    if (busy || Date.now() < nextAttemptAt) return;
+    if (pendingLock && !isPidAlive(pendingLock.pid)) pendingLock = null;
+    if (!pendingLock && isPidAlive(monitoredPid)) return;
+    busy = true;
+    try {
+      if (pendingLock) await register(pendingLock);
+      else {
+        if (failures === 0) console.error('\x1b[33mHub process died. Attempting recovery...\x1b[0m');
+        await recover();
+      }
+    } catch (err) {
+      console.error(`\x1b[31mHub recovery failed: ${err.message}\x1b[0m`);
+      fail();
+    } finally { busy = false; }
+  };
+  return { tick };
+}
+
+function startHubMonitor(hubPid, hubPort, onRecovery, onRecoveryFailure) {
+  const { tick } = createHubMonitor(hubPid, hubPort, onRecovery, onRecoveryFailure);
+  const interval = setInterval(tick, HUB_HEALTH_CHECK_MS);
   interval.unref();
   return interval;
 }
@@ -1016,26 +1167,17 @@ function startHubMonitor(hubPid, hubPort, onRecovery, onRecoveryFailure) {
 // ── Port scanner (used by hub and Claude-mode startup) ──────────────
 
 function tryListen(srv, port, maxAttempts) {
-  return new Promise((resolve, reject) => {
-    let attempt = 0;
-    function onError(err) {
-      if (err.code === 'EADDRINUSE' && attempt < maxAttempts) {
-        attempt++;
-        srv.listen(port + attempt);
-      } else {
-        srv.removeListener('error', onError);
-        srv.removeListener('listening', onListening);
-        reject(err);
+  // bindPort selects the listen hosts (loopback by default, PROXY_HOST opt-in)
+  // and reports EADDRINUSE for the port as a whole.
+  return (async () => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await bindPort(srv, port === 0 ? 0 : port + attempt);
+      } catch (err) {
+        if (err.code !== 'EADDRINUSE' || attempt >= maxAttempts) throw err;
       }
     }
-    function onListening() {
-      srv.removeListener('error', onError);
-      resolve(srv.address().port);
-    }
-    srv.on('error', onError);
-    srv.once('listening', onListening);
-    srv.listen(port);
-  });
+  })();
 }
 
 module.exports = {
@@ -1053,11 +1195,18 @@ module.exports = {
   readHubLock,
   writeHubLock,
   deleteHubLock,
+  deleteHubLockIfPid,
+  selfHealHubLock,
+  startLockSelfHeal,
+  stopLockSelfHeal,
+  probeHomeHub,
   isPidAlive,
   sweepDeadClients,
   checkHubHealth,
   probeHubStatus,
   discoverHub,
+  HubUnresponsiveError,
+  createHubMonitor,
   checkVersionCompat,
   tryAcquireForkLock,
   releaseForkLock,

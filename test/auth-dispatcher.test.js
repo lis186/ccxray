@@ -185,7 +185,7 @@ describe('verifyDashboard — Phase 2.3 enforcement (cookie / Bearer / X-Ccxray-
     assert.equal(res.writeHeadCalled, false);
   });
 
-  it('AUTH_TOKEN set, forged X-Ccxray-Auth (no other cred) → 401', () => {
+  it('AUTH_TOKEN set, non-matching X-Ccxray-Auth (no other cred) → 401', () => {
     const auth = loadAuthWith('sec1');
     const { req, res } = mockReqRes({ 'x-ccxray-auth': 'forged' }, '/_api/entries');
     assert.equal(auth.verifyDashboard(req, res), false);
@@ -277,7 +277,7 @@ describe('verifyUpstream — Phase 2.2 enforcement (X-Ccxray-Auth required, lega
     assert.equal(setHeaderCalls['X-Ccxray-Deprecation'], undefined);
   });
 
-  it('AUTH_TOKEN set, forged X-Ccxray-Auth: returns false and writes 401', () => {
+  it('AUTH_TOKEN set, non-matching X-Ccxray-Auth: returns false and writes 401', () => {
     const auth = loadAuthWith('sec1');
     const { req, res } = mockReqRes({ 'x-ccxray-auth': 'forged-value', host: 'localhost' }, '/v1/messages');
     assert.equal(auth.verifyUpstream(req, res), false);
@@ -298,12 +298,15 @@ describe('verifyUpstream — Phase 2.2 enforcement (X-Ccxray-Auth required, lega
     assert.equal(res.statusCode, 401);
   });
 
-  it('ChatGPT-OAuth carve-out (chatgpt-account-id + JWT) accepted', () => {
+  it('ChatGPT-login headers accepted on a ChatGPT-routed request', () => {
     const auth = loadAuthWith('sec1');
     const jwt = 'Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIn0.sig';
-    const { req, res } = mockReqRes({ 'chatgpt-account-id': 'acct-1', authorization: jwt }, '/v1/responses');
-    assert.equal(auth.verifyUpstream(req, res), true);
-    assert.equal(res.writeHeadCalled, false);
+    const { req, res } = mockReqRes({ 'chatgpt-account-id': 'acct-1', authorization: jwt }, '/v1/responses', '127.0.0.1');
+    process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH = '1';
+    try {
+      assert.equal(auth.verifyUpstream(req, res), true);
+      assert.equal(res.writeHeadCalled, false);
+    } finally { delete process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH; }
   });
 });
 
@@ -399,35 +402,39 @@ describe('loopback trust covers both dashboard and upstream', () => {
   });
 });
 
-describe('verifyUpstream — ChatGPT-OAuth carve-out scoped to ChatGPT-routed requests (codex 2.4 P1)', () => {
-  // The carve-out exists because Codex on a ChatGPT login can't inject custom
-  // headers (errata §1.3), so we accept `chatgpt-account-id` + JWT-shaped
-  // Authorization as the credential on routes that actually go to ChatGPT.
-  // Previously the check was header-only, so the same shape passed on
-  // Anthropic `/v1/messages` too — a LAN attacker could forge it and bypass
-  // upstream auth on the main API path. Now the gate confirms the request
-  // would route to UPSTREAMS.openaiChatGPT before accepting the carve-out.
+describe('verifyUpstream — ChatGPT-login compatibility scoped to ChatGPT-routed requests', () => {
+  // Codex on a ChatGPT login cannot inject custom headers, so its native
+  // headers are accepted only when the request routes to the ChatGPT backend.
   const JWT = 'Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIn0.sig';
 
-  it('chatgpt markers on /v1/messages (Anthropic route) → 401 (bypass closed)', () => {
+  it('ChatGPT-login headers not accepted on /v1/messages (Anthropic route) → 401', () => {
     const auth = loadAuthWith('sec1');
-    const { req, res } = mockReqRes({ 'chatgpt-account-id': 'acct-1', authorization: JWT }, '/v1/messages');
-    assert.equal(auth.verifyUpstream(req, res), false);
-    assert.equal(res.statusCode, 401);
+    const { req, res } = mockReqRes({ 'chatgpt-account-id': 'acct-1', authorization: JWT }, '/v1/messages', '127.0.0.1');
+    process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH = '1';
+    try {
+      assert.equal(auth.verifyUpstream(req, res), false);
+      assert.equal(res.statusCode, 401);
+    } finally { delete process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH; }
   });
 
-  it('chatgpt markers on /v1/responses (Codex path → ChatGPT route) → allowed', () => {
+  it('ChatGPT-login headers on /v1/responses (Codex path → ChatGPT route) → allowed', () => {
     const auth = loadAuthWith('sec1');
-    const { req, res } = mockReqRes({ 'chatgpt-account-id': 'acct-1', authorization: JWT }, '/v1/responses');
-    assert.equal(auth.verifyUpstream(req, res), true);
-    assert.equal(res.writeHeadCalled, false);
+    const { req, res } = mockReqRes({ 'chatgpt-account-id': 'acct-1', authorization: JWT }, '/v1/responses', '127.0.0.1');
+    process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH = '1';
+    try {
+      assert.equal(auth.verifyUpstream(req, res), true);
+      assert.equal(res.writeHeadCalled, false);
+    } finally { delete process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH; }
   });
 
-  it('chatgpt markers on /v1/realtime (OpenAI path + chatgpt-account-id → ChatGPT route) → allowed', () => {
+  it('ChatGPT-login headers on /v1/realtime (OpenAI path + chatgpt-account-id → ChatGPT route) → allowed', () => {
     const auth = loadAuthWith('sec1');
-    const { req, res } = mockReqRes({ 'chatgpt-account-id': 'acct-1', authorization: JWT }, '/v1/realtime');
-    assert.equal(auth.verifyUpstream(req, res), true);
-    assert.equal(res.writeHeadCalled, false);
+    const { req, res } = mockReqRes({ 'chatgpt-account-id': 'acct-1', authorization: JWT }, '/v1/realtime', '127.0.0.1');
+    process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH = '1';
+    try {
+      assert.equal(auth.verifyUpstream(req, res), true);
+      assert.equal(res.writeHeadCalled, false);
+    } finally { delete process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH; }
   });
 });
 
@@ -446,5 +453,84 @@ describe('dispatch().verify — sanity: same instance routes to correct verifier
     const { verify } = auth.dispatch(req);
     assert.equal(verify(req, res), true);
     assert.equal(setHeaderCalls['X-Ccxray-Deprecation'], undefined);
+  });
+});
+
+describe('ChatGPT-login headers are a credential for loopback peers only', () => {
+  const JWT = 'Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIn0.sig';
+  const LOGIN = { 'chatgpt-account-id': 'acct-1', authorization: JWT };
+
+  function withEnv(vars, fn) {
+    const saved = {};
+    for (const [k, v] of Object.entries(vars)) {
+      saved[k] = process.env[k];
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+    try { return fn(); } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k]; else process.env[k] = v;
+      }
+    }
+  }
+
+  function authed(headers, remoteAddress, url = '/v1/responses') {
+    const auth = loadAuthWith('sec1');
+    return auth.isUpstreamAuthenticated({ headers, url, socket: { remoteAddress } });
+  }
+
+  for (const addr of ['127.0.0.1', '::1', '::ffff:127.0.0.1']) {
+    it(`accepted from loopback ${addr} with CCXRAY_LOOPBACK_REQUIRE_AUTH=1`, () => {
+      withEnv({ CCXRAY_LOOPBACK_REQUIRE_AUTH: '1', CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN: undefined }, () => {
+        assert.equal(authed(LOGIN, addr), true);
+      });
+    });
+  }
+
+  it('accepted from loopback under default loopback trust', () => {
+    withEnv({ CCXRAY_LOOPBACK_REQUIRE_AUTH: undefined, CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN: undefined }, () => {
+      assert.equal(authed(LOGIN, '127.0.0.1'), true);
+    });
+  });
+
+  it('rejected from a non-loopback peer', () => {
+    withEnv({ CCXRAY_LOOPBACK_REQUIRE_AUTH: undefined, CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN: undefined }, () => {
+      assert.equal(authed(LOGIN, '192.168.1.50'), false);
+      assert.equal(authed(LOGIN, '192.168.1.50', '/v1/realtime'), false);
+      assert.equal(authed(LOGIN, '::ffff:10.0.0.7'), false);
+    });
+  });
+
+  it('rejected when the peer address is unknown', () => {
+    withEnv({ CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN: undefined }, () => {
+      const auth = loadAuthWith('sec1');
+      assert.equal(auth.isUpstreamAuthenticated({ headers: LOGIN, url: '/v1/responses' }), false);
+    });
+  });
+
+  it('accepted from a non-loopback peer with CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN=1', () => {
+    withEnv({ CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN: '1' }, () => {
+      assert.equal(authed(LOGIN, '192.168.1.50'), true);
+    });
+  });
+
+  it('the opt-in still requires a ChatGPT-routed request', () => {
+    withEnv({ CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN: '1' }, () => {
+      assert.equal(authed(LOGIN, '192.168.1.50', '/v1/messages'), false);
+    });
+  });
+
+  it('only the exact value "1" enables the opt-in', () => {
+    withEnv({ CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN: 'true' }, () => {
+      assert.equal(authed(LOGIN, '192.168.1.50'), false);
+    });
+  });
+
+  it('X-Ccxray-Auth is still accepted from a non-loopback peer', () => {
+    withEnv({ CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN: undefined }, () => {
+      const auth = loadAuthWith('sec1');
+      const headers = { 'x-ccxray-auth': upstreamTokenFor(auth) };
+      assert.equal(auth.isUpstreamAuthenticated({ headers, url: '/v1/messages', socket: { remoteAddress: '192.168.1.50' } }), true);
+      assert.equal(auth.isUpstreamAuthenticated({ headers, url: '/v1/responses', socket: { remoteAddress: '192.168.1.50' } }), true);
+    });
   });
 });

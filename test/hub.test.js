@@ -28,6 +28,7 @@ const repoCacheMtimeBefore = repoCacheBefore ? fs.statSync(REPO_PRICING_CACHE).m
 
 // Now require hub (picks up CCXRAY_HOME)
 const hub = require('../server/hub');
+const { occupyLoopbackPort } = require('./helpers/occupy-port');
 
 // Inject no-op shutdown so idle timer never calls process.exit in tests
 hub.setOnShutdown(() => {});
@@ -271,12 +272,11 @@ describe('hub discovery', () => {
     assert.equal(hub.readHubLock(), null); // lockfile deleted
   });
 
-  it('returns null when pid alive but health check fails', async () => {
+  it('throws HubUnresponsiveError and keeps the lock when pid alive but health check fails (#730)', async () => {
     // Write lockfile with our own pid but a port nothing is listening on
     hub.writeHubLock(1, process.pid); // port 1: privileged, guaranteed no listener
-    const result = await hub.discoverHub();
-    assert.equal(result, null);
-    assert.equal(hub.readHubLock(), null);
+    await assert.rejects(hub.discoverHub(), err => err.code === 'HUB_UNRESPONSIVE');
+    assert.equal(hub.readHubLock().pid, process.pid, 'live owner keeps its lockfile');
   });
 
   it('returns lock when pid alive and health check passes (via socket)', async () => {
@@ -731,8 +731,7 @@ describe('tryListen', () => {
   it('finds next free port when target is occupied (maxAttempts=2)', async () => {
     // Occupy a port
     const blocker = net.createServer();
-    await new Promise(r => blocker.listen(0, r));
-    const occupiedPort = blocker.address().port;
+    const occupiedPort = await occupyLoopbackPort(blocker);
 
     const srv = http.createServer();
     const bound = await hub.tryListen(srv, occupiedPort, 2);
@@ -745,8 +744,7 @@ describe('tryListen', () => {
 
   it('throws EADDRINUSE when maxAttempts=0 and port is occupied', async () => {
     const blocker = net.createServer();
-    await new Promise(r => blocker.listen(0, r));
-    const occupiedPort = blocker.address().port;
+    const occupiedPort = await occupyLoopbackPort(blocker);
 
     const srv = http.createServer();
     await assert.rejects(

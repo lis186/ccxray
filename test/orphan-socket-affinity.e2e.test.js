@@ -56,6 +56,14 @@ function waitForPort(port, timeoutMs = 8000) {
   });
 }
 
+async function waitFor(predicate, timeoutMs, label) {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await predicate())) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
+    await new Promise(r => setTimeout(r, 25));
+  }
+}
+
 function killAndWait(child) {
   return new Promise(resolve => {
     if (!child || child.exitCode !== null) return resolve();
@@ -192,7 +200,9 @@ describe('orphan request socket affinity (#129)', () => {
       // 2. Session B traffic on socket B, parked upstream → B stays inflight
       //    and is the most recent session. Temporal inference must prefer B.
       const bPending = postMessages(proxyPort, agentB, sessionBody(SID_B, 'session B HOLD_OPEN'));
-      await new Promise(r => setTimeout(r, 300));
+      // Wait until B is parked upstream (so it is inflight in the proxy) rather
+      // than for a fixed delay, which a loaded machine can outrun.
+      await waitFor(() => held.length === 1, 5000, 'session B to reach the upstream');
 
       // 3. Orphan reusing socket A. Socket affinity → A. Temporal → B (wrong).
       //    B is inflight on its own socket, so socket A is free for immediate reuse.
@@ -204,9 +214,13 @@ describe('orphan request socket affinity (#129)', () => {
 
       releaseHeld(held);
       await bPending;
-      await new Promise(r => setTimeout(r, 300));
 
-      const { entries } = await fetchEntries(proxyPort);
+      let entries = [];
+      await waitFor(async () => {
+        ({ entries } = await fetchEntries(proxyPort));
+        return entries.filter(e => e.model === 'claude-haiku-4-5-20251001').length >= 2
+          && entries.some(e => e.sessionId === SID_B && e.model === 'claude-sonnet-4-6');
+      }, 5000, 'all four entries to be recorded');
 
       // Identify entries structurally: the two orphans are the haiku
       // entries, in arrival order.

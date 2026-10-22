@@ -129,6 +129,38 @@ describe('launch decision and client shutdown', () => {
     assert.deepEqual(h.exits, [1]);
   });
 
+  describe('HubUnresponsiveError discovery diagnostic (#730)', () => {
+    const { HubUnresponsiveError } = require('../server/hub');
+    const message = new HubUnresponsiveError({ pid: 4242, port: 5577 }).message;
+
+    function capture(fn) {
+      const lines = [];
+      const real = console.error;
+      console.error = (...a) => lines.push(a.join(' '));
+      try { fn(); } finally { console.error = real; }
+      return lines;
+    }
+
+    it('fail-open prints the diagnostic before the banner and still launches the plain agent', () => {
+      const h = harness();
+      const lines = capture(() => h.decision.decide('original', 'hub-discovery-failed', message));
+      const diag = lines.findIndex(l => l.includes('pid 4242') && l.includes('port 5577') && l.includes('lockfile was kept') && l.includes('no second hub was started'));
+      const banner = lines.findIndex(l => l.includes('fail-open: hub-discovery-failed'));
+      assert.ok(diag >= 0, 'diagnostic printed');
+      assert.ok(banner > diag, 'banner follows the diagnostic');
+      assert.equal(h.spawnCalls.length, 1);
+      assert.deepEqual(h.exits, []);
+    });
+
+    it('fail-closed prints the specific error once, exits 1 and launches nothing', () => {
+      const h = harness({ failClosed: () => true });
+      const lines = capture(() => h.decision.decide('original', 'hub-discovery-failed', message));
+      assert.deepEqual(lines, [message]);
+      assert.deepEqual(h.spawnCalls, []);
+      assert.deepEqual(h.exits, [1]);
+    });
+  });
+
   it('uses one cleanup promise for all observers', () => {
     const h = harness({ registration: new Promise(() => {}) });
     h.decision.decide('original', 'fixture-failure');
