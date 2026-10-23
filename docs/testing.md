@@ -29,7 +29,10 @@ failure if any group fails. For a system Chrome install, use
 empty header values, trimmed string/array Grok `x-api-key` shapes, explicit
 Codex/ChatGPT conflicts, Grok header/hub path consistency, and request identity
 at both gates. Its e2e companion checks separate Anthropic, OpenAI, ChatGPT, and
-xAI fakes. Codex noise-path defaults use a ChatGPT-shaped
+xAI fakes. `fixtures/routing/header-names.json` records names only from real clients
+against a recording fake upstream; MCP transport names are separate spec-derived
+cases pending capture. Header allowlist tests cover launcher declarations, operator
+family scopes, and HTTP/WS forwarding to those fakes. Codex noise-path defaults use a ChatGPT-shaped
 bearer and account header; the Anthropic positive control keeps its own headers.
 
 ## Test hygiene
@@ -558,3 +561,8 @@ Agentflow v8.4.15 compatibility fixtures in `test/fixtures/agentflow/v8.4.15/`
 are hand-authored synthetic notebook/archive and manual owner-input cases.
 They model retained latest-completed history and Claude manual capture, without
 reading host sessions or requiring an upstream checkout.
+
+Header allowlist (follow-up to #745): `test/fixtures/routing/header-names.json`
+contains observed Claude/Codex header names and documented Grok header names,
+with synthetic values supplied by tests. `test/unknown-path.e2e.test.js` uses
+a temporary home and four local recording upstreams for HTTP and WebSocket.

@@ -19,7 +19,7 @@ describe('WS header stripping (1.4c)', () => {
       'openai-beta': 'responses_websockets=v1',
       'host': 'localhost:5577',
     };
-    const upstream = { host: 'api.openai.com', port: 443 };
+    const upstream = { provider: 'openai', host: 'api.openai.com', port: 443 };
     const result = buildWebSocketHeaders(clientHeaders, upstream);
 
     assert.equal(result['x-ccxray-auth'], undefined);
@@ -28,6 +28,14 @@ describe('WS header stripping (1.4c)', () => {
     assert.equal(result['openai-beta'], 'responses_websockets=v1');
     assert.equal(result.host, 'api.openai.com');
   });
+});
+
+it('header allowlist: unknown WS family accepts only common names', () => {
+  const result = wsProxy.buildWebSocketHeaders({ authorization: 'synthetic',
+    'openai-beta': 'synthetic', accept: 'application/json', 'x-request-id': 'request',
+    'x-ccxray-forward-headers': 'x-user', 'x-user': 'synthetic',
+  }, { host: 'unknown.example', port: 443 });
+  assert.deepEqual(result, { accept: 'application/json', 'x-request-id': 'request', host: 'unknown.example' });
 });
 
 describe('WS gate: ChatGPT-login headers from a non-loopback peer', () => {

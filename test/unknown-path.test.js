@@ -446,3 +446,41 @@ it('routing fix (#745): both gates use the request identity', () => {
     else process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH = previous;
   }
 });
+
+it('routing fix: bearer whitespace and trimmed values', () => {
+  for (const gap of [' ', '  ', '\t']) {
+    const authorization = `  bEaReR${gap}sk-ant-synthetic  `;
+    for (const url of ['/v1/responses', '/v1/alpha/search', '/v1/codex/x']) {
+      assert.equal(config.getUpstreamForRequestAndHeaders(url, { authorization }), null);
+    }
+    assert.equal(config.getUpstreamForRequestAndHeaders('/v1/models', { authorization }), config.UPSTREAMS.anthropic);
+    assert.equal(config.getUpstreamForRequestAndHeaders('/v1/models', {
+      authorization, 'chatgpt-account-id': 'synthetic',
+    }), null);
+    assert.equal(isJwtShaped(`  bEaReR${gap}syntheticheader.payload.signature  `), true);
+    assert.equal(isOpenAISide({ authorization: `  Bearer${gap}sk-proj-synthetic  ` }), true);
+  }
+});
+
+it('routing fix: every duplicate header value with raw, distinct, and joined headers', () => {
+  for (const name of ['x-api-key', 'authorization']) {
+    const anthropic = name === 'x-api-key' ? 'sk-ant-synthetic' : 'Bearer\tsk-ant-synthetic';
+    const other = name === 'x-api-key' ? 'xai-synthetic' : 'Bearer sk-proj-synthetic';
+    for (const values of [[other, anthropic], [anthropic, other]]) {
+      for (const source of ['raw', 'distinct', 'joined', 'array']) {
+        const headers = { 'user-agent': 'grok-shell/0.2.93', [name]: values.join(', ') };
+        const req = { headers };
+        if (source === 'raw') {
+          headers[name] = values[0];
+          req.rawHeaders = [name.toUpperCase(), values[0], name, values[1]];
+        } else if (source === 'distinct') {
+          headers[name] = values[0];
+          req.headersDistinct = { [name]: values };
+        } else if (source === 'array') headers[name] = values;
+        for (const url of ['/v1/models', '/v1/responses', '/v1/alpha/search', '/v1/codex/x', '/v1/files']) {
+          assert.equal(config.getUpstreamForRequestAndHeaders(url, headers, req), null, `${name}: ${source}: ${url}`);
+        }
+      }
+    }
+  }
+});

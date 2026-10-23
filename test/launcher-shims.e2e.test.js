@@ -110,6 +110,13 @@ beforeEach(() => {
 });
 
 describe('proxy healthy (criterion 1)', () => {
+  it('header allowlist: shim declares existing user names before print mode', async () => {
+    const existing = 'X-User-Header: retained\nX-Gateway: value:with:colons\nX-Ccxray-Agent-Id: pane\nx-user-header: again';
+    const r = await run('claude', ['-p', 'hello'], { env: { ANTHROPIC_CUSTOM_HEADERS: existing } });
+    assert.equal(r.code, 0);
+    assert.ok(r.stdout.includes(`HDR:${existing}\nX-Ccxray-Forward-Headers: x-user-header,x-gateway\nX-Ccxray-Print-Mode: true`));
+  });
+
   it('routes claude -p through ccxray via a plain spawn, with print mode marked', async () => {
     const r = await run('claude', ['-p', 'hello world'], { env: { FAKE_EXIT: '0' } });
     assert.equal(r.code, 0);

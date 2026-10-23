@@ -6541,8 +6541,18 @@ describe('codex round 2 fixes', () => {
       env: pluginEnv({ ANTHROPIC_CUSTOM_HEADERS: 'X-Existing: foo' }),
     });
     assert.equal(vars.ANTHROPIC_CUSTOM_HEADERS,
-      'X-Existing: foo\nX-Ccxray-Agent-Id: herdr:w1:p1',
+      'X-Existing: foo\nX-Ccxray-Forward-Headers: x-existing\nX-Ccxray-Agent-Id: herdr:w1:p1',
       'the user header survives as a separate Claude Code header line');
+  });
+
+  it('header allowlist: Herdr declares valid existing names once', () => {
+    const { proxyEnvVars } = require('../plugins/herdr/bin/lib/ccxray');
+    const existing = ' X-User: first\r\nx-user: second\nX-Gateway: third\nno-colon\nBad Name: fourth\nX-Ccxray-Future: fifth';
+    const vars = proxyEnvVars('claude', 5577, {
+      skipAuth: true, env: pluginEnv({ ANTHROPIC_CUSTOM_HEADERS: existing }),
+    });
+    assert.equal(vars.ANTHROPIC_CUSTOM_HEADERS,
+      existing.trim() + '\nX-Ccxray-Forward-Headers: x-user,x-gateway');
   });
 
   it('injects X-Ccxray-Auth into a claude launch', () => {
@@ -6556,6 +6566,7 @@ describe('codex round 2 fixes', () => {
     });
     assert.deepEqual(vars.ANTHROPIC_CUSTOM_HEADERS.split(/\r?\n/), [
       'X-Existing: foo',
+      'X-Ccxray-Forward-Headers: x-existing',
       'X-Ccxray-Agent-Id: herdr:w1:p1',
       `X-Ccxray-Auth: ${TOKEN}`,
     ], 'Herdr headers stay separate for Claude Code parsing and gated auth');

@@ -82,7 +82,7 @@ describe('auth launcher header injection (1.4a)', () => {
 
       assert.equal(
         launch.env.ANTHROPIC_CUSTOM_HEADERS,
-        `X-Existing: foo\nX-Ccxray-Agent-Id: herdr:w1:p1\nX-Ccxray-Auth: ${kUp}`
+        `X-Existing: foo\nX-Ccxray-Agent-Id: herdr:w1:p1\nX-Ccxray-Forward-Headers: x-existing\nX-Ccxray-Auth: ${kUp}`
       );
       const headers = parseClaudeCustomHeaders(launch.env.ANTHROPIC_CUSTOM_HEADERS);
       assert.equal(headers['x-existing'], 'foo');

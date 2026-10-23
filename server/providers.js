@@ -179,6 +179,13 @@ function withCodexConfig(configArgs, args) {
   ];
 }
 
+function anthropicCustomHeaderNames(value) {
+  return [...new Set(String(value || '').split(/\r?\n/)
+    .filter(line => line.includes(':'))
+    .map(line => line.slice(0, line.indexOf(':')).trim().toLowerCase())
+    .filter(name => /^[!#$%&'*+.^_`|~0-9a-z-]+$/.test(name) && !name.startsWith('x-ccxray-')))];
+}
+
 function appendAnthropicCustomHeader(launchEnv, header) {
   const existing = launchEnv.ANTHROPIC_CUSTOM_HEADERS;
   launchEnv.ANTHROPIC_CUSTOM_HEADERS = existing
@@ -231,6 +238,10 @@ const AGENT_PROVIDERS = Object.freeze({
     installHint: '  npm install -g @anthropic-ai/claude-code',
     createLaunch({ port, args, env }) {
       const launchEnv = { ...env, ANTHROPIC_BASE_URL: proxyBaseUrl(port, env) };
+      const userHeaderNames = anthropicCustomHeaderNames(env.ANTHROPIC_CUSTOM_HEADERS);
+      if (userHeaderNames.length) {
+        appendAnthropicCustomHeader(launchEnv, `X-Ccxray-Forward-Headers: ${userHeaderNames.join(',')}`);
+      }
       // This secret belongs to the ccxray install, not the launched session.
       const token = getUpstreamToken();
       if (token) {

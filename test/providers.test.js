@@ -32,6 +32,16 @@ describe('agent provider registry', () => {
     assert.match(launch.installHint, /anthropic-ai\/claude-code/);
   });
 
+  it('header allowlist: Claude declares only existing user header names', () => {
+    const existing = 'X-User-Header: retained\r\n X-Gateway: value:with:colons\nX-CCXRAY-Agent-Id: pane\ninvalid line\nx-user-header: again';
+    const launch = providers.getAgentLaunch('claude', 5577, [], {
+      HOME: home, ANTHROPIC_CUSTOM_HEADERS: existing,
+    });
+    assert.ok(launch.env.ANTHROPIC_CUSTOM_HEADERS.startsWith(existing + '\n'));
+    assert.equal(launch.env.ANTHROPIC_CUSTOM_HEADERS.split('\n')
+      .find(line => line.startsWith('X-Ccxray-Forward-Headers:')), 'X-Ccxray-Forward-Headers: x-user-header,x-gateway');
+  });
+
   it('builds the Codex launch through the registry', () => {
     const launch = providers.getAgentLaunch('codex', 5577, ['exec', 'hello'], {
       PATH: '/usr/bin',

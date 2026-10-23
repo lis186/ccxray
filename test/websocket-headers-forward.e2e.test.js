@@ -56,12 +56,12 @@ function killAndWait(child) {
   });
 }
 
-describe('WebSocket upgrade header forwarding + ChatGPT routing (PR #29, 0ff5507)', () => {
+describe('header allowlist: ChatGPT WebSocket', () => {
   after(() => {
     for (const d of tmpDirs) fs.rmSync(d, { recursive: true, force: true });
   });
 
-  it('forwards chatgpt-account-id and custom headers to ChatGPT upstream when header is present', async () => {
+  it('header allowlist: ChatGPT WebSocket request headers', async () => {
     const upstreamPort = await findFreePort();
     const proxyPort = await findFreePort();
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-ws-headers-'));
@@ -89,6 +89,9 @@ describe('WebSocket upgrade header forwarding + ChatGPT routing (PR #29, 0ff5507
         CHATGPT_BASE_URL: `http://127.0.0.1:${upstreamPort}/backend-api/codex`,
         CCXRAY_HOME: home,
         BROWSER: 'none',
+        CCXRAY_EXPORT_DISABLE: '1',
+        CCXRAY_IMPORT_DISABLE: '1',
+        CCXRAY_FORWARD_HEADERS: 'chatgpt:x-chatgpt-gateway,anthropic:x-anthropic-gateway',
         RESTORE_DAYS: '0',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -101,6 +104,9 @@ describe('WebSocket upgrade header forwarding + ChatGPT routing (PR #29, 0ff5507
         'chatgpt-account-id': 'acct-test-12345',
         'openai-beta': 'realtime=v1',
         'x-mark': 'verify-canary',
+        'x-ccxray-forward-headers': 'x-mark',
+        'x-anthropic-gateway': 'omitted',
+        'x-chatgpt-gateway': 'retained',
       };
       const wsUrl = `ws://localhost:${proxyPort}/v1/realtime?model=gpt-4o-realtime-preview`;
       const ws = new WebSocket(wsUrl, { headers: customHeaders });
@@ -119,8 +125,10 @@ describe('WebSocket upgrade header forwarding + ChatGPT routing (PR #29, 0ff5507
         'chatgpt-account-id must be forwarded intact');
       assert.equal(capturedHeaders['openai-beta'], 'realtime=v1',
         'openai-beta must be forwarded intact');
-      assert.equal(capturedHeaders['x-mark'], 'verify-canary',
-        'custom headers must pass through');
+      assert.equal(capturedHeaders['x-mark'], undefined, 'header allowlist');
+      assert.equal(capturedHeaders['x-ccxray-forward-headers'], undefined);
+      assert.equal(capturedHeaders['x-anthropic-gateway'], undefined);
+      assert.equal(capturedHeaders['x-chatgpt-gateway'], 'retained');
       assert.equal(capturedHeaders['host'], '127.0.0.1',
         'host must be rewritten to upstream hostname (no port — buildWebSocketHeaders sets host = upstream.host)');
 

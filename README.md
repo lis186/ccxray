@@ -320,10 +320,15 @@ ccxray is a transparent HTTP proxy. It forwards requests to the upstream API (An
 | `CCXRAY_PLAN` | _(auto)_ | Override plan detection: `pro`, `max5x`, `max20x`, `api-key` |
 | `CCXRAY_DISABLE_TITLES` | _(unset)_ | Set to `1` to disable session title extraction (sessions fall back to short hash) |
 | `CCXRAY_MODEL_PREFIX` | _(unset)_ | Prepend a string to the model name before forwarding (e.g. `databricks-`). Useful when the upstream requires a vendor-prefixed model name but Claude Code only accepts standard names. |
+| `CCXRAY_FORWARD_HEADERS` | _(unset)_ | Header allowlist additions, read once at startup. Comma-separated names; optional `anthropic:`, `openai:`, `chatgpt:`, or `xai:` prefix selects one upstream family. Unprefixed names apply to all families. Example: `x-gateway-id,anthropic:cf-aig-authorization`. |
 | `HTTPS_PROXY` / `https_proxy` | _(unset)_ | Route outbound HTTPS traffic through a corporate proxy via HTTP CONNECT tunnel. |
 | `ANTHROPIC_BASE_URL` | — | Custom upstream Anthropic endpoint (e.g. a corporate gateway). Supports base paths — `https://host/serving-endpoints/anthropic` works as-is. `ANTHROPIC_TEST_*` take precedence when set. |
 
 Every environment variable, with its default and source file, is listed in [docs/env-vars.md](docs/env-vars.md).
+
+Header allowlist (follow-up to #745): keep Claude user gateway headers in newline-separated `ANTHROPIC_CUSTOM_HEADERS` entries (`Name: Value`). Only the ccxray launchers (`ccxray claude`, the shell shim, and the Herdr plugin) add `X-Ccxray-Forward-Headers`, listing existing lowercase names and excluding `x-ccxray-*`; values stay in the original headers. If you set `ANTHROPIC_CUSTOM_HEADERS` another way, such as Claude `settings.json` env or plain `ANTHROPIC_BASE_URL` pointing to the proxy, add the names with `CCXRAY_FORWARD_HEADERS=anthropic:cf-aig-authorization`. For Azure-style gateways and Codex `http_headers`, use an operator addition such as `CCXRAY_FORWARD_HEADERS=openai:api-key`. `openai:` does not cover ChatGPT-login traffic; use `chatgpt:` for that family. In hub mode, the hub's environment applies, so set additions before starting the hub.
+
+Declared and operator names are omitted when another family's built-in names or prefixes accept them and the selected family's built-in list does not. OpenAI and ChatGPT form one vendor group for this check, so an explicit `chatgpt:openai-organization` addition is allowed. Their defaults differ: `chatgpt-account-id`, `mcp-*`, and `last-event-id` belong to ChatGPT; `openai-organization` and `openai-project` belong to OpenAI. `accept-encoding`, client `host`, `x-ccxray-*`, hop-by-hop names, and `sec-websocket-*` remain omitted regardless of declarations; upstream Host is rebuilt. HTTP and WS use the resolved upstream family.
 
 Raw request and response logs are stored locally in `LOGS_DIR` (by default `~/.ccxray/logs/`) as `{timestamp}_req.json` and `{timestamp}_res.json`. Upgrading from v1.0? Logs previously in `./logs/` are automatically migrated on first run.
 

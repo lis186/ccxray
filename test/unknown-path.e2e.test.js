@@ -8,6 +8,27 @@ const http = require('node:http');
 const net = require('node:net');
 const WebSocket = require('ws');
 const { spawn } = require('node:child_process');
+const { gzipSync } = require('node:zlib');
+const headerNames = require('./fixtures/routing/header-names.json');
+function shapeHeaders(shape) {
+  return Object.fromEntries(headerNames[shape].filter(name => !['host', 'connection', 'upgrade'].includes(name)
+    && !name.startsWith('sec-websocket-')).map(name => [name,
+    name === 'authorization' ? 'Bearer syntheticheader.payload.signature'
+      : name === 'user-agent' ? (shape.startsWith('grok') ? 'grok-shell/0.2.93'
+        : shape.startsWith('codex') ? 'codex_cli_rs/0.163.0' : 'claude-code/2.1.306')
+      : name === 'content-length' ? '2' : name === 'content-type' ? 'application/json'
+      : name === 'content-encoding' ? 'gzip' : name === 'x-codex-turn-metadata' ? '{}' : 'synthetic']));
+}
+function assertShapeHeaders(headers, shape, extra = [], excluded = []) {
+  const omitted = new Set(['accept-encoding', ...excluded]);
+  const expected = new Set([...headerNames[shape].filter(name => !omitted.has(name)), ...extra,
+    'host', 'connection']);
+  for (const name of headerNames[shape]) {
+    if (!omitted.has(name)) assert.ok(name in headers, `header allowlist: ${shape}: ${name}`);
+  }
+  for (const name of Object.keys(headers)) assert.ok(expected.has(name), `header allowlist: ${shape}: ${name}`);
+  assert.equal(headers['accept-encoding'], undefined);
+}
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
 function request(port, url, method = 'GET', headers = {}, body) {
@@ -73,7 +94,7 @@ it('routing fix and provider header hygiene at fake upstreams', async t => {
   });
   for (const server of [upstream, openai, chatgpt, xai]) {
     server.on('upgrade', (req, socket, head) => {
-      wsConnections.push({ server, url: req.url });
+      wsConnections.push({ server, url: req.url, headers: req.headers });
       wss.handleUpgrade(req, socket, head, ws => ws.on('message', data => ws.send(data)));
     });
   }
@@ -96,6 +117,7 @@ it('routing fix and provider header hygiene at fake upstreams', async t => {
       env: { ...process.env, HOME: home, CCXRAY_HOME: home, LOGS_DIR: logs,
         CLAUDE_CONFIG_DIR: home, CCXRAY_EXPORT_DISABLE: '1', CCXRAY_IMPORT_DISABLE: '1',
         CCXRAY_PRICING_CACHE: path.join(home, 'pricing.json'), RESTORE_DAYS: '0',
+        CCXRAY_FORWARD_HEADERS: '',
         ANTHROPIC_TEST_HOST: '127.0.0.1', ANTHROPIC_TEST_PORT: String(upstreamPort), ANTHROPIC_TEST_PROTOCOL: 'http',
         OPENAI_TEST_HOST: '127.0.0.1', OPENAI_TEST_PORT: String(openaiPort), OPENAI_TEST_PROTOCOL: 'http',
         XAI_BASE_URL: `http://127.0.0.1:${xaiPort}/v1`,
@@ -302,6 +324,18 @@ it('routing fix and provider header hygiene at fake upstreams', async t => {
       assert.equal(wsConnections.length, 1);
       assert.equal(wsConnections[0].server, chatgpt);
       assert.equal(wsConnections[0].url, '/backend-api/codex/responses');
+      for (const account of [true, false]) {
+        const headers = shapeHeaders('codex WS UPGRADE /v1/responses');
+        if (!account) delete headers['chatgpt-account-id'];
+        assert.equal(await upgrade({ ...headers, 'x-foo': 'synthetic', 'x-app': 'synthetic',
+          'anthropic-extra': 'synthetic', 'x-ccxray-future': 'synthetic' }), 101);
+        const row = wsConnections.at(-1);
+        assert.equal(row.server, account ? chatgpt : openai);
+        const observed = { ...row.headers };
+        if (!account) assert.equal(observed['chatgpt-account-id'], undefined);
+        assertShapeHeaders(observed, 'codex WS UPGRADE /v1/responses', [], account ? [] : ['chatgpt-account-id']);
+      }
+
     });
     await t.test('routing fix (#745): Grok with Anthropic-shaped x-api-key', async () => {
       for (const headers of [{ 'user-agent': 'grok-shell/0.2' }, { 'x-grok-model-override': 'synthetic' }]) {
@@ -347,6 +381,134 @@ it('routing fix and provider header hygiene at fake upstreams', async t => {
       assert.equal((await request(port, `/_ccxray/client/${process.pid}/v1/messages`, 'POST', {}, '{}')).status, 421);
       assert.equal(received.length, before);
       assert.equal(openaiReceived.length, otherBefore);
+    });
+
+    await t.test('header allowlist: observed HTTP request shapes', async () => {
+      for (const [shape, url, method, target] of [
+        ['claude HEAD /api/hello', '/api/hello', 'HEAD', received],
+        ['claude POST /v1/messages', '/v1/messages', 'POST', received],
+        ['codex GET /v1/models', '/v1/models', 'GET', chatgptReceived],
+        ['codex POST /v1/responses (HTTP fallback)', '/v1/responses', 'POST', chatgptReceived],
+        ['grok POST /v1/responses', '/v1/responses', 'POST', xaiReceived],
+      ]) {
+        const headers = shapeHeaders(shape);
+        const body = method === 'POST' ? (headers['content-encoding'] ? gzipSync('{}') : '{}') : undefined;
+        if (headers['content-length']) headers['content-length'] = String(Buffer.byteLength(body));
+        const foreign = shape.startsWith('claude') ? { 'session-id': 'synthetic' }
+          : { 'x-app': 'synthetic', 'anthropic-extra': 'synthetic' };
+        const before = target.length;
+        assert.equal((await request(port, url, method, { ...headers, ...foreign,
+          'x-foo': 'synthetic', 'x-ccxray-future': 'synthetic' }, body)).status, 200);
+        assert.equal(target.length, before + 1);
+        assertShapeHeaders(target.at(-1).headers, shape, ['content-length']);
+        if (headers['content-encoding']) assert.equal(target.at(-1).headers['content-encoding'], 'gzip');
+      }
+      for (const mode of ['api', 'claude-api']) {
+        const claude = mode === 'claude-api';
+        const shape = claude ? 'claude POST /v1/messages' : 'codex POST /v1/responses (HTTP fallback)';
+        const headers = shapeHeaders(shape);
+        if (claude) { delete headers.authorization; headers['x-api-key'] = 'synthetic'; }
+        else delete headers['chatgpt-account-id'];
+        const body = headers['content-encoding'] ? gzipSync('{}') : '{}';
+        headers['content-length'] = String(Buffer.byteLength(body));
+        const target = claude ? received : openaiReceived;
+        const before = target.length;
+        assert.equal((await request(port, claude ? '/v1/messages' : '/v1/responses', 'POST', headers, body)).status, 200);
+        assert.equal(target.length, before + 1);
+        const observed = { ...target.at(-1).headers };
+        if (claude) {
+          assert.equal(observed['x-api-key'], 'synthetic');
+          assert.equal(observed.authorization, undefined);
+          delete observed['x-api-key']; observed.authorization = 'synthetic';
+        } else assert.equal(observed['chatgpt-account-id'], undefined);
+        assertShapeHeaders(observed, shape, [], claude ? [] : ['chatgpt-account-id']);
+      }
+    });
+    await t.test('header allowlist: declarations and MCP transport names at fake upstreams', async () => {
+      const foreignNames = ['x-grok-session-id', 'session-id', 'thread-id', 'version',
+        'x-xai-token-auth', 'conversation_id'];
+      const foreign = Object.fromEntries(foreignNames.map(name => [name, 'synthetic']));
+      const declared = [...foreignNames, 'accept-encoding', 'x-user'].join(',');
+      assert.equal((await request(port, '/v1/messages', 'POST', {
+        ...foreign, 'anthropic-version': '2023-06-01', 'x-user': 'retained',
+        'accept-encoding': 'gzip', 'x-ccxray-forward-headers': declared,
+      }, '{}')).status, 200);
+      const anthropicHeaders = received.at(-1).headers;
+      assert.equal(anthropicHeaders['x-user'], 'retained');
+      for (const name of [...foreignNames, 'accept-encoding', 'x-ccxray-forward-headers']) {
+        assert.equal(anthropicHeaders[name], undefined, name);
+      }
+      for (const [url, signals, target] of [
+        ['/v1/responses', { 'user-agent': 'codex_cli_rs/0.163.0' }, openaiReceived],
+        ['/v1/responses', { 'chatgpt-account-id': 'acct' }, chatgptReceived],
+        ['/v1/responses', { 'user-agent': 'grok-shell/0.2.93' }, xaiReceived],
+      ]) {
+        const before = target.length;
+        assert.equal((await request(port, url, 'POST', {
+          ...signals, 'x-user': 'omitted', 'x-ccxray-forward-headers': 'x-user',
+          ...(target === xaiReceived ? { 'x-xai-token-auth': 'synthetic',
+            'x-grok-client-version': 'synthetic' } : {}),
+        }, '{}')).status, 200);
+        assert.equal(target.length, before + 1);
+        assert.equal(target.at(-1).headers['x-user'], undefined);
+        assert.equal(target.at(-1).headers['x-ccxray-forward-headers'], undefined);
+        if (target === xaiReceived) {
+          assert.equal(target.at(-1).headers['x-xai-token-auth'], 'synthetic');
+          assert.equal(target.at(-1).headers['x-grok-client-version'], 'synthetic');
+        }
+      }
+      const mcp = { 'mcp-session-id': 'session', 'mcp-protocol-version': '2025-06-18', 'last-event-id': 'event' };
+      for (const [url, signals, target] of [
+        ['/v1/api/codex/ps/mcp', { 'chatgpt-account-id': 'acct' }, chatgptReceived],
+        ['/v1/responses', { 'user-agent': 'codex_cli_rs/0.163.0' }, openaiReceived],
+        ['/v1/messages', { 'anthropic-version': '2023-06-01',
+          'x-ccxray-forward-headers': Object.keys(mcp).join(',') }, received],
+      ]) {
+        const before = target.length;
+        assert.equal((await request(port, url, 'POST', { ...signals, ...mcp }, '{}')).status, 200);
+        assert.equal(target.length, before + 1);
+        for (const [name, value] of Object.entries(mcp)) {
+          assert.equal(target.at(-1).headers[name], target === chatgptReceived ? value : undefined, name);
+        }
+        if (target === chatgptReceived) assert.equal(target.at(-1).url, '/backend-api/ps/mcp');
+      }
+    });
+    await t.test('routing fix: bearer whitespace and duplicate header values', async () => {
+      const counts = () => [openaiReceived.length, chatgptReceived.length, xaiReceived.length];
+      const before = counts();
+      const anthropicBefore = received.length;
+      for (const [url, headers] of [
+        ['/v1/messages', { ...shapeHeaders('claude POST /v1/messages'), 'x-codex-turn-metadata': '{}' }],
+        ['/v1/responses', { ...shapeHeaders('codex GET /v1/models'), 'anthropic-beta': 'synthetic' }],
+      ]) {
+        delete headers['content-length'];
+        assert.equal((await request(port, url, 'GET', headers)).status, 421);
+      }
+      assert.equal(received.length, anthropicBefore);
+      for (const gap of ['  ', '\t']) {
+        for (const url of ['/v1/responses', '/v1/models', '/v1/alpha/search', '/v1/codex/x']) {
+          for (const explicit of [false, true]) {
+            const headers = { authorization: `Bearer${gap}sk-ant-synthetic`,
+              ...(explicit ? { 'user-agent': 'codex_cli_rs/0.163.0' } : {}) };
+            const anthropicBefore = received.length;
+            const allowed = url === '/v1/models' && !explicit;
+            assert.equal((await request(port, url, 'GET', headers)).status, allowed ? 200 : 421);
+            assert.equal(received.length, anthropicBefore + Number(allowed));
+          }
+        }
+      }
+      for (const name of ['x-api-key', 'authorization']) {
+        const anthropic = name === 'x-api-key' ? 'sk-ant-synthetic' : 'Bearer\tsk-ant-synthetic';
+        const other = name === 'x-api-key' ? 'xai-synthetic' : 'Bearer syntheticheader.payload.signature';
+        for (const values of [[other, anthropic], [anthropic, other]]) {
+          for (const url of ['/v1/models', '/v1/responses', '/v1/alpha/search', '/v1/codex/x', '/v1/files']) {
+            const headers = ['host', `127.0.0.1:${port}`, 'user-agent', 'grok-shell/0.2.93',
+              name, values[0], name, values[1]];
+            assert.equal((await request(port, url, 'GET', headers)).status, 421);
+          }
+        }
+      }
+      assert.deepEqual(counts(), before);
     });
     await stop(); child = null;
     const rows = fs.readFileSync(path.join(logs, 'index.ndjson'), 'utf8').trim().split('\n').map(JSON.parse);

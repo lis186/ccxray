@@ -11,7 +11,7 @@ const { calculateCost } = require('./pricing');
 const { broadcast, broadcastSessionStatus } = require('./sse-broadcast');
 const { isUpstreamAuthenticated } = require('./auth');
 const { stripAuthParams } = require('./url-sanitize');
-const { isInternalHeader } = require('./internal-headers');
+const { buildForwardHeaders } = require('./forward-headers');
 const { agentForProvider, matchOpenAIWireClient, resolveOpenAIWireAgent } = require('./providers');
 const { buildIndexLine, deploymentFields } = require('./entry');
 const sessionIdx = require('./session-index');
@@ -48,25 +48,6 @@ const WS_SKIP_EVENTS = new Set([
 const WS_TS_ANCHORS = new Set(['response.created', 'response.completed', 'response.done']);
 
 const WS_TERMINAL_STATUSES = new Set(['completed', 'incomplete', 'failed', 'cancelled']);
-
-const HOP_BY_HOP_HEADERS = new Set([
-  'connection',
-  'keep-alive',
-  'proxy-authenticate',
-  'proxy-authorization',
-  'te',
-  'trailer',
-  'transfer-encoding',
-  'upgrade',
-]);
-
-const WS_HANDSHAKE_HEADERS = new Set([
-  'sec-websocket-accept',
-  'sec-websocket-extensions',
-  'sec-websocket-key',
-  'sec-websocket-protocol',
-  'sec-websocket-version',
-]);
 
 const wss = new WebSocket.Server({
   noServer: true,
@@ -173,27 +154,8 @@ function isAuthorized(req) {
   return isUpstreamAuthenticated(req);
 }
 
-// INVARIANT: same shared prefix rule as index.js — see server/internal-headers.js.
-// Fixing the HTTP path alone leaves the WS handshake forwarding the namespace.
-
 function buildWebSocketHeaders(clientHeaders, upstream) {
-  const headers = {};
-  const connectionTokens = String(clientHeaders.connection || '')
-    .split(',')
-    .map(token => token.trim().toLowerCase())
-    .filter(Boolean);
-
-  for (const [name, value] of Object.entries(clientHeaders)) {
-    const lower = name.toLowerCase();
-    if (HOP_BY_HOP_HEADERS.has(lower)) continue;
-    if (WS_HANDSHAKE_HEADERS.has(lower)) continue;
-    if (isInternalHeader(lower)) continue;
-    if (connectionTokens.includes(lower)) continue;
-    if (lower === 'host') continue;
-    headers[name] = value;
-  }
-  headers.host = upstream.host;
-  return headers;
+  return buildForwardHeaders(clientHeaders, upstream);
 }
 
 function getWebSocketProtocols(clientHeaders) {
