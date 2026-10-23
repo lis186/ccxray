@@ -295,6 +295,7 @@ it('routing fix and provider header hygiene at fake upstreams', async t => {
       }
     });
     await t.test('header-aware routing (#745)', async () => {
+      const outputStart = output.length;
       const openaiBefore = openaiReceived.length;
       for (const headers of [claudeHeaders, { authorization: 'Bearer sk-ant-synthetic' }]) {
         const before = received.length;
@@ -334,7 +335,7 @@ it('routing fix and provider header hygiene at fake upstreams', async t => {
         assert.equal((await request(port, '/api/hello', method)).status, 200);
       }
       assert.equal(received.length, before + 2);
-      assert.doesNotMatch(output, /refused (?:HEAD|GET) \/api\/hello/);
+      assert.doesNotMatch(output.slice(outputStart), /refused (?:HEAD|GET) \/api\/hello/);
     });
     for (const agentType of ['codex', 'claude']) {
       if (agentType === 'claude') assert.equal((await registerClient(home, agentType)).ok, true);
@@ -572,21 +573,25 @@ it('routing fix and provider header hygiene at fake upstreams', async t => {
       assert.deepEqual(counts(), before);
     });
     await t.test('routing fix: follow-up to #747', async () => {
-      const before = xaiReceived.length;
       const otherBefore = [received.length, openaiReceived.length, chatgptReceived.length];
       assert.equal((await request(port, '/v1/responses', 'POST', {
         'user-agent': 'grok-shell/0.2.93', authorization: 'Bearer xai-dummy-000',
         'x-api-key': ['xai-dummy-000', 'xai-dummy-000'],
         'openai-organization': 'dummy-org', 'openai-project': 'dummy-project',
-        'x-openai-extra': 'dummy', 'x-grok-client-version': 'dummy',
+        'x-openai-extra': 'dummy', 'x-grok-client-version': 'multiauth-probe',
         'x-xai-extra': 'dummy', 'x-stainless-extra': 'dummy',
       }, '{}')).status, 200);
-      assert.equal(xaiReceived.length, before + 1);
-      const headers = xaiReceived.at(-1).headers;
+      // Grok also starts a background /v1/billing?format=credits request,
+      // which copies x-grok-client-version. Match both the probe and its path.
+      const probes = xaiReceived.filter(row => row.url === '/v1/responses'
+        && row.headers['x-grok-client-version'] === 'multiauth-probe');
+      assert.equal(probes.length, 1);
+      const headers = probes[0].headers;
       for (const name of ['openai-organization', 'openai-project', 'x-openai-extra']) {
         assert.equal(headers[name], undefined);
       }
-      for (const name of ['x-grok-client-version', 'x-xai-extra', 'x-stainless-extra']) {
+      assert.equal(headers['x-grok-client-version'], 'multiauth-probe');
+      for (const name of ['x-xai-extra', 'x-stainless-extra']) {
         assert.equal(headers[name], 'dummy');
       }
       assert.equal(headers.authorization, 'Bearer xai-dummy-000');
