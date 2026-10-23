@@ -484,3 +484,28 @@ it('routing fix: every duplicate header value with raw, distinct, and joined hea
     }
   }
 });
+
+
+it('routing fix: multiple Authorization values', () => {
+  for (const upstream of [config.UPSTREAMS.anthropic, config.UPSTREAMS.openai,
+    config.UPSTREAMS.openaiChatGPT, config.UPSTREAMS.xai]) {
+    for (const url of ['/v1/messages', '/v1/responses', '/v1/models', '/v1/alpha/search',
+      '/v1/codex/test', '/v1/alpha/unlisted', '/api/hello']) {
+      const req = { method: 'GET', url, headers: { authorization: 'Bearer sk-proj-dummy-000' },
+        rawHeaders: ['Authorization', 'Bearer sk-proj-dummy-000', 'Authorization', 'Bearer sk-ant-dummy-000'] };
+      let status, body;
+      assert.equal(checkHttpRoute(req, {
+        writeHead(value) { status = value; }, end(value) { body = JSON.parse(value); },
+      }, upstream), false);
+      assert.equal(status, 421);
+      assert.equal(body.error.type, 'ccxray_unknown_route');
+    }
+  }
+  let response;
+  const socket = { destroyed: false, write(value) { response = value; }, destroy() { this.destroyed = true; } };
+  assert.equal(handleWebSocketUpgrade({ url: '/v1/responses', headers: {
+    authorization: 'Bearer sk-proj-dummy-000, Bearer sk-ant-dummy-000',
+  } }, socket, Buffer.alloc(0)), true);
+  assert.match(response, /^HTTP\/1\.1 421 /);
+  assert.equal(socket.destroyed, true);
+});

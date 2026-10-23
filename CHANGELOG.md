@@ -16,6 +16,8 @@
 
 ### Fixed
 
+- Routing fix: requests with multiple conflicting Authorization values are refused locally (follow-up to #747)
+
 - Routing fix: per-upstream header allowlist with distinct OpenAI/ChatGPT defaults, xAI and MCP transport names, launcher declarations (including Herdr), operator additions, and whitespace/duplicate header handling (follow-up to #745).
 
 - Routing fix (#745): header-aware routing for shared models and OpenAI paths, gateway bearers, empty header values, Grok header/hub path consistency, Anthropic-shaped `x-api-key`, explicit Codex/ChatGPT conflicts, and preconnects; log label fix (#744).

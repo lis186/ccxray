@@ -85,6 +85,7 @@ it('routing fix and provider header hygiene at fake upstreams', async t => {
     res.end('{"synthetic":true}');
   });
   const wsConnections = [];
+  const upstreamConnections = [];
   const wss = new WebSocket.Server({ noServer: true });
   const xaiReceived = [];
   const xai = http.createServer((req, res) => {
@@ -93,6 +94,7 @@ it('routing fix and provider header hygiene at fake upstreams', async t => {
     res.end('{"synthetic":true}');
   });
   for (const server of [upstream, openai, chatgpt, xai]) {
+    server.on('connection', () => upstreamConnections.push(server));
     server.on('upgrade', (req, socket, head) => {
       wsConnections.push({ server, url: req.url, headers: req.headers });
       wss.handleUpgrade(req, socket, head, ws => ws.on('message', data => ws.send(data)));
@@ -134,6 +136,65 @@ it('routing fix and provider header hygiene at fake upstreams', async t => {
       await delay(100);
     }
     assert.ok(ready, output);
+    await t.test('routing fix: multiple Authorization values', async () => {
+      const counts = () => [received.length, openaiReceived.length, chatgptReceived.length, xaiReceived.length];
+      assert.deepEqual(counts(), [0, 0, 0, 0]);
+      const anthropic = 'Bearer\tsk-ant-dummy-000';
+      const other = 'Bearer sk-proj-dummy-000';
+      const cases = [
+        ['Authorization', other, 'Authorization', anthropic],
+        ['Authorization', anthropic, 'Authorization', other],
+        ['Authorization', `${other}, ${anthropic}`],
+        ['Authorization', `${anthropic}, ${other}`],
+        ['X-Api-Key', 'dummy-other', 'X-Api-Key', 'sk-ant-dummy-000'],
+        ['X-Api-Key', 'sk-ant-dummy-000', 'X-Api-Key', 'dummy-other'],
+        ['X-Api-Key', 'sk-ant-dummy-000, dummy-other'],
+        ['X-Api-Key', 'sk-ant-dummy-000', 'X-Api-Key', 'sk-ant-dummy-001'],
+        ['Authorization', 'Bearer dummy.payload.signature', 'X-Api-Key', 'sk-ant-dummy-000'],
+      ];
+      for (const identity of [null, 'claude', 'codex', 'grok']) {
+        if (identity) assert.equal((await registerClient(home, identity)).ok, true);
+        const prefix = identity ? `/_ccxray/client/${process.pid}` : '';
+        for (const [url, method] of [
+          ['/v1/messages', 'POST'], ['/v1/responses', 'POST'], ['/v1/models', 'GET'],
+          ['/v1/alpha/search', 'POST'], ['/v1/codex/test', 'GET'],
+          ['/v1/alpha/unlisted', 'POST'], ['/api/hello', 'HEAD'],
+        ]) {
+          for (const values of cases) {
+            for (const account of [false, true]) {
+              const headers = ['Host', `127.0.0.1:${port}`, ...values,
+                ...(account ? ['chatgpt-account-id', 'dummy-account'] : [])];
+              const result = await request(port, prefix + url, method, headers);
+              assert.equal(result.status, 421, `${identity}: ${method} ${url}`);
+              if (method !== 'HEAD') assert.equal(JSON.parse(result.data).error.type, 'ccxray_unknown_route');
+              assert.deepEqual(counts(), [0, 0, 0, 0]);
+              assert.deepEqual(upstreamConnections, []);
+            }
+          }
+        }
+      }
+      for (const values of cases.slice(0, 4)) {
+        const response = await new Promise((resolve, reject) => {
+          const socket = net.connect(port, '127.0.0.1');
+          let data = '';
+          socket.setTimeout(3000, () => socket.destroy(new Error('routing fix: timed out')));
+          socket.once('error', reject);
+          socket.once('connect', () => socket.write([
+            'GET /v1/responses HTTP/1.1', `Host: 127.0.0.1:${port}`,
+            'Connection: Upgrade', 'Upgrade: websocket', 'Sec-WebSocket-Version: 13',
+            'Sec-WebSocket-Key: ZHVtbXktMDAwMDAwMDAwMA==',
+            ...Array.from({ length: values.length / 2 }, (_, i) => `${values[i * 2]}: ${values[i * 2 + 1]}`),
+            '', '',
+          ].join('\r\n')));
+          socket.on('data', chunk => { data += chunk; });
+          socket.once('end', () => resolve(data));
+        });
+        assert.match(response, /^HTTP\/1\.1 421 /);
+        assert.equal(wsConnections.length, 0);
+        assert.deepEqual(upstreamConnections, []);
+        assert.deepEqual(counts(), [0, 0, 0, 0]);
+      }
+    });
     assert.equal((await registerClient(home, 'codex')).ok, true);
     const unknown = await request(port, '/v1/alpha/unlisted?probe=synthetic', 'POST', {}, '{}');
     assert.equal(unknown.status, 421);
@@ -509,6 +570,28 @@ it('routing fix and provider header hygiene at fake upstreams', async t => {
         }
       }
       assert.deepEqual(counts(), before);
+    });
+    await t.test('routing fix: follow-up to #747', async () => {
+      const before = xaiReceived.length;
+      const otherBefore = [received.length, openaiReceived.length, chatgptReceived.length];
+      assert.equal((await request(port, '/v1/responses', 'POST', {
+        'user-agent': 'grok-shell/0.2.93', authorization: 'Bearer xai-dummy-000',
+        'x-api-key': ['xai-dummy-000', 'xai-dummy-000'],
+        'openai-organization': 'dummy-org', 'openai-project': 'dummy-project',
+        'x-openai-extra': 'dummy', 'x-grok-client-version': 'dummy',
+        'x-xai-extra': 'dummy', 'x-stainless-extra': 'dummy',
+      }, '{}')).status, 200);
+      assert.equal(xaiReceived.length, before + 1);
+      const headers = xaiReceived.at(-1).headers;
+      for (const name of ['openai-organization', 'openai-project', 'x-openai-extra']) {
+        assert.equal(headers[name], undefined);
+      }
+      for (const name of ['x-grok-client-version', 'x-xai-extra', 'x-stainless-extra']) {
+        assert.equal(headers[name], 'dummy');
+      }
+      assert.equal(headers.authorization, 'Bearer xai-dummy-000');
+      assert.equal(headers['x-api-key'], 'xai-dummy-000, xai-dummy-000');
+      assert.deepEqual([received.length, openaiReceived.length, chatgptReceived.length], otherBefore);
     });
     await stop(); child = null;
     const rows = fs.readFileSync(path.join(logs, 'index.ndjson'), 'utf8').trim().split('\n').map(JSON.parse);

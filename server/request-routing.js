@@ -1,13 +1,13 @@
 'use strict';
 
-const { isOpenAISide, isAnthropicSide } = require('./request-signals');
+const { isOpenAISide, isAnthropicSide, hasConflictingAuthValues } = require('./request-signals');
 
 const lastWarnings = new Map();
 const WARNING_INTERVAL_MS = 60_000;
 const WARNING_CAP = 500;
 
 function checkHttpRoute(req, res, upstream) {
-  if (upstream
+  if (!hasConflictingAuthValues(req.headers, req) && upstream
       && !(upstream.provider === 'anthropic' && isOpenAISide(req.headers, req))
       && !(upstream.provider === 'openai' && isAnthropicSide(req.headers, req))) return true;
   const pathname = (req.url || '/').split('?')[0];
