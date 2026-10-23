@@ -40,15 +40,16 @@ function isJwtShaped(authHeader) {
 }
 
 function hasConflictingAuthValues(headers = {}, req) {
-  const authorization = headerValues(headers, 'authorization', req);
-  if (authorization.length > 1) return true;
   const xKeys = headerValues(headers, 'x-api-key', req).filter(Boolean);
-  if (new Set(xKeys).size > 1 && xKeys.some(value => /^sk-ant-/i.test(value))) return true;
+  if (new Set(xKeys).size > 1) return true;
   const values = [
-    ...authorization.filter(Boolean).map(value => /^Bearer\s+sk-ant-/i.test(value)),
-    ...xKeys.map(value => /^sk-ant-/i.test(value)),
-  ];
-  return values.includes(true) && values.includes(false);
+    ...headerValues(headers, 'authorization', req).map(value => value.replace(/^Bearer\s+/i, '')),
+    ...xKeys,
+  ].filter(Boolean);
+  const anthropic = values.some(value => /^sk-ant-/i.test(value));
+  const openai = values.some(value => (/^sk-/i.test(value) && !/^sk-ant-/i.test(value))
+    || (/^\S+$/.test(value) && isJwtShaped(`Bearer ${value}`)));
+  return anthropic && openai;
 }
 
 function hasHeaderValue(value) {

@@ -16,7 +16,7 @@
 
 ### Fixed
 
-- Routing fix: requests with multiple conflicting Authorization values are refused locally (follow-up to #747)
+- Routing fix: Anthropic-shaped and OpenAI-shaped values together across Authorization and x-api-key return local 421, as do distinct nonempty x-api-key values; an Anthropic key with a gateway bearer follows Anthropic (follow-up to #747)
 
 - Prune fix (#748): startup retains body-less proxy index rows within retention, including rows outside the 5000-entry memory window, and preserves their imported twins. Expired rows with no surviving request or response files are still pruned.
 

@@ -136,7 +136,7 @@ it('routing fix and provider header hygiene at fake upstreams', async t => {
       await delay(100);
     }
     assert.ok(ready, output);
-    await t.test('routing fix: multiple Authorization values', async () => {
+    await t.test('routing fix: Anthropic and OpenAI-shaped values together or distinct x-api-key values', async () => {
       const counts = () => [received.length, openaiReceived.length, chatgptReceived.length, xaiReceived.length];
       assert.deepEqual(counts(), [0, 0, 0, 0]);
       const anthropic = 'Bearer\tsk-ant-dummy-000';
@@ -146,11 +146,17 @@ it('routing fix and provider header hygiene at fake upstreams', async t => {
         ['Authorization', anthropic, 'Authorization', other],
         ['Authorization', `${other}, ${anthropic}`],
         ['Authorization', `${anthropic}, ${other}`],
-        ['X-Api-Key', 'dummy-other', 'X-Api-Key', 'sk-ant-dummy-000'],
-        ['X-Api-Key', 'sk-ant-dummy-000', 'X-Api-Key', 'dummy-other'],
-        ['X-Api-Key', 'sk-ant-dummy-000, dummy-other'],
+        ['X-Api-Key', 'gw-dummy-000', 'X-Api-Key', 'sk-ant-dummy-000'],
+        ['X-Api-Key', 'sk-ant-dummy-000', 'X-Api-Key', 'gw-dummy-000'],
+        ['X-Api-Key', 'sk-ant-dummy-000, gw-dummy-000'],
         ['X-Api-Key', 'sk-ant-dummy-000', 'X-Api-Key', 'sk-ant-dummy-001'],
-        ['Authorization', 'Bearer dummy.payload.signature', 'X-Api-Key', 'sk-ant-dummy-000'],
+        ['Authorization', 'Bearer aaaaaaaaaaaa.bbbb.cccc', 'X-Api-Key', 'sk-ant-dummy-000'],
+        ['Authorization', anthropic, 'X-Api-Key', 'sk-proj-dummy-000'],
+        ['Authorization', anthropic, 'X-Api-Key', 'aaaaaaaaaaaa.bbbb.cccc'],
+        ['X-Api-Key', 'xai-dummy-000', 'X-Api-Key', 'sk-proj-dummy-000'],
+        ['X-Api-Key', 'xai-dummy-000, sk-proj-dummy-000'],
+        ['X-Api-Key', 'gw-dummy-000', 'X-Api-Key', 'xai-dummy-000'],
+        ['X-Api-Key', 'gw-dummy-000, xai-dummy-000'],
       ];
       for (const identity of [null, 'claude', 'codex', 'grok']) {
         if (identity) assert.equal((await registerClient(home, identity)).ok, true);
@@ -173,7 +179,7 @@ it('routing fix and provider header hygiene at fake upstreams', async t => {
           }
         }
       }
-      for (const values of cases.slice(0, 4)) {
+      for (const values of cases) {
         const response = await new Promise((resolve, reject) => {
           const socket = net.connect(port, '127.0.0.1');
           let data = '';
@@ -227,6 +233,30 @@ it('routing fix and provider header hygiene at fake upstreams', async t => {
     assert.deepEqual(openaiReceived, []);
     assert.equal(fs.readFileSync(path.join(logs, 'index.ndjson'), 'utf8'), '');
     assert.deepEqual(fs.readdirSync(logs).filter(f => /_(req|res)\.json$/.test(f)), []);
+    await t.test('routing fix: Anthropic key with gateway bearer and multiple Authorization values', async () => {
+      for (const identity of [null, 'claude']) {
+        if (identity) assert.equal((await registerClient(home, identity)).ok, true);
+        const prefix = identity ? `/_ccxray/client/${process.pid}` : '';
+        for (const values of [
+          ['Authorization', 'Bearer gw-dummy-000', 'X-Api-Key', 'sk-ant-dummy-000'],
+          ['Authorization', 'Bearer sk-ant-dummy-000', 'X-Api-Key', 'gw-dummy-000'],
+          ['Authorization', 'Bearer gw-dummy-000', 'Authorization', 'Bearer xai-dummy-000'],
+          ['Authorization', 'Bearer sk-ant-dummy-000', 'Authorization', 'Bearer gw-dummy-000'],
+          ['Authorization', 'Bearer gw-dummy-000, Bearer sk-ant-dummy-000'],
+        ]) {
+          const before = received.length;
+          const otherBefore = [openaiReceived.length, chatgptReceived.length, xaiReceived.length];
+          const connectionsBefore = upstreamConnections.length;
+          const result = await request(port, prefix + '/v1/messages', 'POST', [
+            'Host', `127.0.0.1:${port}`, 'anthropic-version', '2023-06-01', ...values,
+          ], '{}');
+          assert.equal(result.status, 200);
+          assert.equal(received.length, before + 1);
+          assert.deepEqual([openaiReceived.length, chatgptReceived.length, xaiReceived.length], otherBefore);
+          assert.ok(upstreamConnections.slice(connectionsBefore).every(server => server === upstream));
+        }
+      }
+    });
     await t.test('routing fix: Codex search path goes to the ChatGPT upstream', async () => {
       const before = chatgptReceived.length;
       const openaiBefore = openaiReceived.length;
@@ -572,7 +602,7 @@ it('routing fix and provider header hygiene at fake upstreams', async t => {
       }
       assert.deepEqual(counts(), before);
     });
-    await t.test('routing fix: follow-up to #747', async () => {
+    await t.test('routing fix: xAI header forwarding with identical x-api-key values', async () => {
       const otherBefore = [received.length, openaiReceived.length, chatgptReceived.length];
       assert.equal((await request(port, '/v1/responses', 'POST', {
         'user-agent': 'grok-shell/0.2.93', authorization: 'Bearer xai-dummy-000',

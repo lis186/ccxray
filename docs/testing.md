@@ -29,11 +29,17 @@ failure if any group fails. For a system Chrome install, use
 empty header values, trimmed string/array Grok `x-api-key` shapes, explicit
 Codex/ChatGPT conflicts, Grok header/hub path consistency, and request identity
 at both gates. Its e2e companion checks separate Anthropic, OpenAI, ChatGPT, and
-xAI fakes. Routing fix: `request-signals.test.js` and the routing tests cover multiple Authorization values, local HTTP/WS 421 responses, zero connections at all four fakes, and xAI header forwarding (follow-up to #747). `fixtures/routing/header-names.json` records names only from real clients
+xAI fakes. `fixtures/routing/header-names.json` records names only from real clients
 against a recording fake upstream; MCP transport names are separate spec-derived
 cases pending capture. Header allowlist tests cover launcher declarations, operator
 family scopes, and HTTP/WS forwarding to those fakes. Codex noise-path defaults use a ChatGPT-shaped
 bearer and account header; the Anthropic positive control keeps its own headers.
+
+Routing fix: `request-signals.test.js` and the routing tests cover Anthropic-shaped
+and OpenAI-shaped values together and distinct nonempty `x-api-key` values
+(local HTTP/WS 421 with zero connections at all four fakes), identical repeats,
+Anthropic keys with gateway bearers (Anthropic), and xAI header forwarding
+(follow-up to #747).
 
 ## Test hygiene
 

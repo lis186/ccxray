@@ -111,7 +111,7 @@ it('header allowlist: WS declarations and operator scopes use the resolved famil
   } finally { config.FORWARD_HEADERS = before; }
 });
 
-it('routing fix: follow-up to #747', () => {
+it('routing fix: xAI omits openai-* and x-openai-*', () => {
   const names = ['x-openai-subagent', 'x-openai-session-id', 'x-openai-agent-type',
     'x-grok-session-id', 'x-grok-conv-id', 'x-grok-turn-idx', 'x-grok-req-id',
     'x-grok-model-override', 'x-grok-client-identifier', 'x-grok-agent-id',
