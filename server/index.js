@@ -173,7 +173,8 @@ const { startExportSync, stopExportSync, flushExport, awaitPendingFlush } = expo
 const { forwardRequest, setStatusLineEnabled, getStatusLineEnabled, setSessionAnchorRecorder } = require('./forward');
 const { readSettings, hudStatusText } = require('./settings');
 const { broadcastSessionStatus, broadcastPendingRequest } = require('./sse-broadcast');
-const { dispatch, mintAutoOpenUrl, formatAutoOpenUrl } = require('./auth');
+const { dispatch, mintAutoOpenUrl, formatAutoOpenUrl, verifyDashboardWrite } = require('./auth');
+const { failRequest } = require('./routes/route-errors');
 const { findSharedPrefix } = require('./delta-helpers');
 const { extractPromptAgentType } = require('./system-prompt');
 const providers = require('./providers');
@@ -502,7 +503,7 @@ const getCodexCwdFallback = getAgentCwdFallback;
 
 
 // ── Server ──────────────────────────────────────────────────────────
-const server = http.createServer((clientReq, clientRes) => {
+function handleHttpRequest(clientReq, clientRes) {
   hub.applyClientRoute(clientReq);
 
   // ── Hub API (health, register, unregister, status) ──
@@ -526,6 +527,7 @@ const server = http.createServer((clientReq, clientRes) => {
 
   // ── Auth check (Phase 1.2 dispatcher; Phase 2.3 enforce) ──
   if (!dispatch(clientReq).verify(clientReq, clientRes)) return;
+  if (!verifyDashboardWrite(clientReq, clientRes)) return;
 
   // ── SSE ──
   if (handleSSERoute(clientReq, clientRes)) return;
@@ -567,7 +569,8 @@ const server = http.createServer((clientReq, clientRes) => {
     }
     reqChunks.push(chunk);
   });
-  clientReq.on('end', () => {
+  clientReq.on('end', () => { try { onRequestBodyEnd(); } catch (err) { failRequest(clientRes, err); } });
+  function onRequestBodyEnd() {
     if (rejected) return;
     const rawBody = Buffer.concat(reqChunks);
     let parsedBody = null;
@@ -794,7 +797,16 @@ const server = http.createServer((clientReq, clientRes) => {
     }
 
     forwardRequest(ctx);
-  });
+  }
+}
+
+// A synchronous throw while routing answers 500 for that request only.
+const server = http.createServer((clientReq, clientRes) => {
+  try {
+    handleHttpRequest(clientReq, clientRes);
+  } catch (err) {
+    failRequest(clientRes, err);
+  }
 });
 
 server.headersTimeout = 60_000;    // 60s — only header phase, safe

@@ -1,13 +1,17 @@
 #!/usr/bin/env node
 // Generate a ~300k-line / ~500MB synthetic index.ndjson for #348 benchmarking.
-// Usage: node scripts/bench/gen-348-fixture.js /tmp/ccxray-bench-348
+// Usage: node scripts/bench/gen-348-fixture.js [dir] [lines]
+// Without a dir, a fresh private temp dir is created and printed.
 'use strict';
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
-const dir = process.argv[2] || '/tmp/ccxray-bench-348';
+const dir = process.argv[2] || fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-bench-348-'));
+console.log(`fixture dir: ${dir}`);
 fs.mkdirSync(path.join(dir, 'logs', 'shared'), { recursive: true });
-const out = fs.createWriteStream(path.join(dir, 'logs', 'index.ndjson'));
+// 'wx': fail rather than overwrite an existing file
+const out = fs.createWriteStream(path.join(dir, 'logs', 'index.ndjson'), { flags: 'wx' });
 
 const TARGET = parseInt(process.argv[3] || '300000', 10);
 const sessions = 200;
