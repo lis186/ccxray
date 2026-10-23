@@ -233,30 +233,6 @@ it('routing fix and provider header hygiene at fake upstreams', async t => {
     assert.deepEqual(openaiReceived, []);
     assert.equal(fs.readFileSync(path.join(logs, 'index.ndjson'), 'utf8'), '');
     assert.deepEqual(fs.readdirSync(logs).filter(f => /_(req|res)\.json$/.test(f)), []);
-    await t.test('routing fix: Anthropic key with gateway bearer and multiple Authorization values', async () => {
-      for (const identity of [null, 'claude']) {
-        if (identity) assert.equal((await registerClient(home, identity)).ok, true);
-        const prefix = identity ? `/_ccxray/client/${process.pid}` : '';
-        for (const values of [
-          ['Authorization', 'Bearer gw-dummy-000', 'X-Api-Key', 'sk-ant-dummy-000'],
-          ['Authorization', 'Bearer sk-ant-dummy-000', 'X-Api-Key', 'gw-dummy-000'],
-          ['Authorization', 'Bearer gw-dummy-000', 'Authorization', 'Bearer xai-dummy-000'],
-          ['Authorization', 'Bearer sk-ant-dummy-000', 'Authorization', 'Bearer gw-dummy-000'],
-          ['Authorization', 'Bearer gw-dummy-000, Bearer sk-ant-dummy-000'],
-        ]) {
-          const before = received.length;
-          const otherBefore = [openaiReceived.length, chatgptReceived.length, xaiReceived.length];
-          const connectionsBefore = upstreamConnections.length;
-          const result = await request(port, prefix + '/v1/messages', 'POST', [
-            'Host', `127.0.0.1:${port}`, 'anthropic-version', '2023-06-01', ...values,
-          ], '{}');
-          assert.equal(result.status, 200);
-          assert.equal(received.length, before + 1);
-          assert.deepEqual([openaiReceived.length, chatgptReceived.length, xaiReceived.length], otherBefore);
-          assert.ok(upstreamConnections.slice(connectionsBefore).every(server => server === upstream));
-        }
-      }
-    });
     await t.test('routing fix: Codex search path goes to the ChatGPT upstream', async () => {
       const before = chatgptReceived.length;
       const openaiBefore = openaiReceived.length;
@@ -627,6 +603,30 @@ it('routing fix and provider header hygiene at fake upstreams', async t => {
       assert.equal(headers.authorization, 'Bearer xai-dummy-000');
       assert.equal(headers['x-api-key'], 'xai-dummy-000, xai-dummy-000');
       assert.deepEqual([received.length, openaiReceived.length, chatgptReceived.length], otherBefore);
+    });
+    await t.test('routing fix: Anthropic key with gateway bearer and multiple Authorization values', async () => {
+      for (const identity of [null, 'claude']) {
+        if (identity) assert.equal((await registerClient(home, identity)).ok, true);
+        const prefix = identity ? `/_ccxray/client/${process.pid}` : '';
+        for (const values of [
+          ['Authorization', 'Bearer gw-dummy-000', 'X-Api-Key', 'sk-ant-dummy-000'],
+          ['Authorization', 'Bearer sk-ant-dummy-000', 'X-Api-Key', 'gw-dummy-000'],
+          ['Authorization', 'Bearer gw-dummy-000', 'Authorization', 'Bearer xai-dummy-000'],
+          ['Authorization', 'Bearer sk-ant-dummy-000', 'Authorization', 'Bearer gw-dummy-000'],
+          ['Authorization', 'Bearer gw-dummy-000, Bearer sk-ant-dummy-000'],
+        ]) {
+          const before = received.length;
+          const otherBefore = [openaiReceived.length, chatgptReceived.length, xaiReceived.length];
+          const connectionsBefore = upstreamConnections.length;
+          const result = await request(port, prefix + '/v1/messages', 'POST', [
+            'Host', `127.0.0.1:${port}`, 'anthropic-version', '2023-06-01', ...values,
+          ], '{}');
+          assert.equal(result.status, 200);
+          assert.equal(received.length, before + 1);
+          assert.deepEqual([openaiReceived.length, chatgptReceived.length, xaiReceived.length], otherBefore);
+          assert.ok(upstreamConnections.slice(connectionsBefore).every(server => server === upstream));
+        }
+      }
     });
     await stop(); child = null;
     const rows = fs.readFileSync(path.join(logs, 'index.ndjson'), 'utf8').trim().split('\n').map(JSON.parse);
