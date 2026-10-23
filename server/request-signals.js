@@ -39,6 +39,19 @@ function isJwtShaped(authHeader) {
   });
 }
 
+function hasConflictingAuthValues(headers = {}, req) {
+  const xKeys = headerValues(headers, 'x-api-key', req).filter(Boolean);
+  if (new Set(xKeys).size > 1) return true;
+  const values = [
+    ...headerValues(headers, 'authorization', req).map(value => value.replace(/^Bearer\s+/i, '')),
+    ...xKeys,
+  ].filter(Boolean);
+  const anthropic = values.some(value => /^sk-ant-/i.test(value));
+  const openai = values.some(value => (/^sk-/i.test(value) && !/^sk-ant-/i.test(value))
+    || (/^\S+$/.test(value) && isJwtShaped(`Bearer ${value}`)));
+  return anthropic && openai;
+}
+
 function hasHeaderValue(value) {
   return Array.isArray(value) ? value.some(hasHeaderValue)
     : typeof value === 'string' && value.trim().length > 0;
@@ -79,4 +92,5 @@ function isOpenAISide(headers = {}, req, includeBareBearer = true) {
       && !hasAnthropicHeaders(headers, req));
 }
 
-module.exports = { isChatGPTSide, clientAgentType, isJwtShaped, isOpenAISide, isAnthropicSide, matchOpenAIWireClient };
+module.exports = { isChatGPTSide, clientAgentType, isJwtShaped, isOpenAISide, isAnthropicSide, matchOpenAIWireClient,
+  hasConflictingAuthValues };

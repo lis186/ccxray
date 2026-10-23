@@ -35,6 +35,12 @@ cases pending capture. Header allowlist tests cover launcher declarations, opera
 family scopes, and HTTP/WS forwarding to those fakes. Codex noise-path defaults use a ChatGPT-shaped
 bearer and account header; the Anthropic positive control keeps its own headers.
 
+Routing fix: `request-signals.test.js` and the routing tests cover Anthropic-shaped
+and OpenAI-shaped values together and distinct nonempty `x-api-key` values
+(local HTTP/WS 421 with zero connections at all four fakes), identical repeats,
+Anthropic keys with gateway bearers (Anthropic), and xAI header forwarding
+(follow-up to #747).
+
 ## Test hygiene
 
 A test must produce the same result on the author's machine and on a clean CI

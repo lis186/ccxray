@@ -49,8 +49,7 @@ it('header allowlist: family names, prefixes, and foreign names', () => {
     chatgpt: ['authorization', 'chatgpt-account-id', 'originator', 'version', 'session-id',
       'session_id', 'thread-id', 'thread_id', 'conversation_id', 'openai-extra',
       'x-openai-extra', 'x-codex-extra', 'x-stainless-extra', 'mcp-session-id', 'last-event-id'],
-    xai: ['authorization', 'x-api-key', 'x-xai-extra', 'x-grok-extra', 'x-stainless-extra', 'openai-extra',
-      'openai-organization', 'openai-project', 'x-openai-extra'],
+    xai: ['authorization', 'x-api-key', 'x-xai-extra', 'x-grok-extra', 'x-stainless-extra'],
   };
   const allNames = new Set([...common, ...Object.values(families).flat(), 'x-foo', 'cookie',
     'x-ccxray-future', 'accept-encoding', 'sec-websocket-key', 'upgrade', 'transfer-encoding']);
@@ -112,13 +111,16 @@ it('header allowlist: WS declarations and operator scopes use the resolved famil
   } finally { config.FORWARD_HEADERS = before; }
 });
 
-it('header allowlist: Grok OpenAI-wire names', () => {
+it('routing fix: xAI omits openai-* and x-openai-*', () => {
   const names = ['x-openai-subagent', 'x-openai-session-id', 'x-openai-agent-type',
     'x-grok-session-id', 'x-grok-conv-id', 'x-grok-turn-idx', 'x-grok-req-id',
     'x-grok-model-override', 'x-grok-client-identifier', 'x-grok-agent-id',
     'x-request-id', 'x-client-request-id'];
   const input = Object.fromEntries(names.map(name => [name, 'synthetic']));
-  assert.deepEqual(buildForwardHeaders(input, config.UPSTREAMS.xai), { ...input, host: config.UPSTREAMS.xai.host });
+  assert.deepEqual(buildForwardHeaders(input, config.UPSTREAMS.xai), {
+    ...Object.fromEntries(Object.entries(input).filter(([name]) => !name.startsWith('x-openai-'))),
+    host: config.UPSTREAMS.xai.host,
+  });
 });
 
 it('header allowlist: config reads operator names once at startup', () => {
