@@ -547,16 +547,17 @@ async function buildVersionIndex(knownHashes) {
 }
 
 // ── Prune index.ndjson lines whose _req/_res files are gone (#344) ───
-// Pure decision function: given the raw index content plus which req files
-// still survive on disk and which ids are star/in-memory protected, return the
+// Pure decision function: given the raw index content, surviving req/res files,
+// retention cutoff and star/in-memory protected ids, return the
 // lines to keep and the drop count. No I/O — the caller owns read/write so this
 // is unit-testable in isolation.
 //
 // Rules (see #344):
 //   • Protected (starred cascade / in-memory) line → always kept.
-//   • Proxy (non-imported) line → kept iff its _req.json survives on disk. This
-//     also cleans PRE-EXISTING ghosts left by prunes from before this fix, not
-//     just files deleted in the current pass.
+//   • Proxy (non-imported) line → kept if its _req.json OR _res.json survives,
+//     or its id date is within this pass's retention window (#748). Body-less
+//     requests never write _req.json; recent rows need no file to be retained.
+//     Past-retention rows with neither file are dropped, including old ghosts.
 //   • Imported line (never had _req/_res, by design) → kept, UNLESS it is the
 //     orphaned duplicate of a pruned proxy turn: it carries a responseId that
 //     some proxy line also carried (a read-time merge twin, #333/#329) and NO
@@ -575,6 +576,15 @@ async function buildVersionIndex(knownHashes) {
 // Per-line keep decision, shared by the in-memory pruneIndexLines (tests) and
 // the streaming prune passes in pruneLogs. `ctx` carries the survivor/protection
 // sets plus the responseId pre-scan.
+function _proxyIndexLineSurvives(m, ctx) {
+  return ctx.protectedIds.has(m.id)
+    || ctx.survivingReqIds.has(m.id)
+    || ctx.survivingResIds.has(m.id)
+    // Match the date-prefix shape used by the age-based file deletion pass.
+    || (ctx.cutoffStr != null && /^\d{4}-\d{2}-\d{2}/.test(m.id)
+      && m.id.slice(0, 10) >= ctx.cutoffStr);
+}
+
 function _shouldKeepIndexLine(m, ctx) {
   if (!m || !m.id) return true;                     // unclassifiable — keep verbatim
   if (ctx.protectedIds.has(m.id)) return true;
@@ -583,24 +593,24 @@ function _shouldKeepIndexLine(m, ctx) {
     const orphanDup = rid && ctx.proxyResponseIds.has(rid) && !ctx.survivingProxyResponseIds.has(rid);
     return !orphanDup;
   }
-  return ctx.survivingReqIds.has(m.id);             // proxy line: keep iff its _req.json is on disk
+  return _proxyIndexLineSurvives(m, ctx);
 }
 
 // Pre-scan a list of parsed metas: responseIds carried by any proxy line, and
-// the subset that still has a surviving (loadable) proxy copy.
-function _buildResponseIdSets(metas, { survivingReqIds, protectedIds }) {
+// the subset whose proxy copy is retained by the same per-line rule.
+function _buildResponseIdSets(metas, ctx) {
   const proxyResponseIds = new Set();
   const survivingProxyResponseIds = new Set();
   for (const m of metas) {
     if (!m || !m.id || m.imported || !m.responseId) continue;
     proxyResponseIds.add(m.responseId);
-    if (protectedIds.has(m.id) || survivingReqIds.has(m.id)) survivingProxyResponseIds.add(m.responseId);
+    if (_proxyIndexLineSurvives(m, ctx)) survivingProxyResponseIds.add(m.responseId);
   }
   return { proxyResponseIds, survivingProxyResponseIds };
 }
 
 // In-memory variant (tests / small indexes). pruneLogs uses the streaming passes.
-function pruneIndexLines(indexContent, { survivingReqIds, protectedIds }) {
+function pruneIndexLines(indexContent, { survivingReqIds, survivingResIds = new Set(), protectedIds, cutoffStr = null }) {
   const parsed = [];
   for (const line of (indexContent || '').split('\n')) {
     if (!line) continue;
@@ -608,8 +618,9 @@ function pruneIndexLines(indexContent, { survivingReqIds, protectedIds }) {
     try { m = JSON.parse(line); } catch {}
     parsed.push({ line, m });
   }
-  const sets = _buildResponseIdSets(parsed.map(p => p.m), { survivingReqIds, protectedIds });
-  const ctx = { survivingReqIds, protectedIds, ...sets };
+  const survivors = { survivingReqIds, survivingResIds, protectedIds, cutoffStr };
+  const sets = _buildResponseIdSets(parsed.map(p => p.m), survivors);
+  const ctx = { ...survivors, ...sets };
   const keptLines = [];
   let dropped = 0;
   for (const { line, m } of parsed) {
@@ -755,20 +766,25 @@ async function pruneLogs({ retentionDays = config.LOG_RETENTION_DAYS } = {}) {
     let statBefore;
     try { statBefore = fs.statSync(indexPath); } catch { statBefore = null; }
 
-    // Re-list AFTER deletion so survivingReqIds reflects the _req.json files
+    // Re-list AFTER deletion so req/res survivor sets reflect the files
     // actually on disk. deletedIds would be keyed on ANY artifact, so a _res
-    // delete that succeeded while its _req delete FAILED must not drop a
+    // delete that succeeded while its _req delete FAILED (or vice versa) must not drop a
     // still-loadable line — the authoritative signal is the file itself (M6). If
     // the re-list fails we can't compute survivors safely → skip the rewrite
     // rather than risk dropping loadable lines or retaining ghosts.
     let filesNow;
     try { filesNow = await config.storage.list(); } catch { return; }
     const survivingReqIds = new Set();
+    const survivingResIds = new Set();
     for (const filename of filesNow) {
       if (filename.endsWith('_req.json') && !filename.endsWith('_req.received.json')) {
         survivingReqIds.add(filename.slice(0, -'_req.json'.length));
       }
+      if (filename.endsWith('_res.json')) {
+        survivingResIds.add(filename.slice(0, -'_res.json'.length));
+      }
     }
+    const survivors = { survivingReqIds, survivingResIds, protectedIds, cutoffStr };
 
     // Pass 1: responseId sets (for the imported-orphan-dup rule). Built inline
     // to avoid holding every meta in memory — mirrors _buildResponseIdSets.
@@ -778,9 +794,9 @@ async function pruneLogs({ retentionDays = config.LOG_RETENTION_DAYS } = {}) {
       let m; try { m = JSON.parse(line); } catch { continue; }
       if (!m || !m.id || m.imported || !m.responseId) continue;
       proxyResponseIds.add(m.responseId);
-      if (protectedIds.has(m.id) || survivingReqIds.has(m.id)) survivingProxyResponseIds.add(m.responseId);
+      if (_proxyIndexLineSurvives(m, survivors)) survivingProxyResponseIds.add(m.responseId);
     }
-    const ctx = { survivingReqIds, protectedIds, proxyResponseIds, survivingProxyResponseIds };
+    const ctx = { ...survivors, proxyResponseIds, survivingProxyResponseIds };
 
     // Pass 2: count drops; bail without rewriting when nothing is droppable.
     let dropped = 0;
