@@ -131,6 +131,12 @@ with only synthetic excluded turns; the latter must retain the identity failure
 and prune hold. Durable status renders stored filter counts, using `unknown` for
 older attempt records that lack those facts.
 
+`test/prune-index-sync.test.js` uses an isolated home and 5000 synthetic filler
+rows with only a few log files. It runs restore then streaming prune to check
+body-less rows outside memory, expired rows, response-file orphans and imported
+twins. Pure cases cover the inclusive retention boundary and response survival;
+the streaming cases also check an explicit retention override (#748).
+
 Atomic-write tests run two barrier-controlled children with the same simulated PID
 and synthetic status/index data in a temporary home. They inspect each private
 temp before allowing rename; prune's second writer must lose its CAS cleanly.
