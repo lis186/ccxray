@@ -580,7 +580,9 @@ function _proxyIndexLineSurvives(m, ctx) {
   return ctx.protectedIds.has(m.id)
     || ctx.survivingReqIds.has(m.id)
     || ctx.survivingResIds.has(m.id)
-    || (ctx.cutoffStr != null && m.id.slice(0, 10) >= ctx.cutoffStr);
+    // Match the date-prefix shape used by the age-based file deletion pass.
+    || (ctx.cutoffStr != null && /^\d{4}-\d{2}-\d{2}/.test(m.id)
+      && m.id.slice(0, 10) >= ctx.cutoffStr);
 }
 
 function _shouldKeepIndexLine(m, ctx) {

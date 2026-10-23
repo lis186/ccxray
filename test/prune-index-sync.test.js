@@ -48,6 +48,21 @@ describe('pruneIndexLines (pure)', () => {
     }
   });
 
+  it('uses file survival for non-date proxy ids even with a retention cutoff (#748)', () => {
+    for (const id of ['ghost', '2026-xx-23T00-00-00-000']) {
+      for (const res of [false, true]) {
+        const { keptLines, dropped } = pruneIndexLines(L({ id }), {
+          survivingReqIds: new Set(),
+          survivingResIds: new Set(res ? [id] : []),
+          protectedIds: new Set(),
+          cutoffStr: '2026-10-09',
+        });
+        assert.equal(dropped, res ? 0 : 1, `${id}, response survives: ${res}`);
+        assert.deepEqual(keptLines.map(l => JSON.parse(l).id), res ? [id] : []);
+      }
+    }
+  });
+
   it('drops a proxy line whose _req.json is gone; keeps one whose file survives', () => {
     const content = [
       L({ id: 'a', sessionId: 's1' }),          // file gone → drop
