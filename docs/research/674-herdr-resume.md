@@ -39,6 +39,8 @@ The existing dashboard's resume templates already distinguish the commands: [`se
 
 ## Herdr's existing recovery contract
 
+Herdr restore-contract claims below come from public herdr.dev pages fetched on the research date and must be re-checked by the owner before adoption; local `herdr 0.9.5 --help` only confirms the `pane report-agent-session` and `agent start` flags.
+
 [Session state and restore](https://herdr.dev/docs/session-state/#native-agent-session-restore) distinguishes restored layout from surviving processes. Native restore is enabled by default, controlled by `[session] resume_agents_on_restore`. Current minimum integration versions are Claude **6**, Codex **5**, Grok **2**. Eligible panes resume after a client supplies terminal size/theme; invalid, missing, stale or duplicate references fall back to shells. Detach and live handoff have different process-survival semantics. No such operation was exercised here.
 
 [Integrations](https://herdr.dev/docs/integrations/) explains that these agents' integrations report session identity separately from screen-based lifecycle detection. Grok uses `SessionStart`; current installation writes its own hook files under the agent configuration directory. Installing an integration changes user configuration and was intentionally not performed. Screen detection succeeding is therefore insufficient evidence of resume eligibility.
@@ -137,46 +139,6 @@ The last check is a later opt-in integration experiment, not performed here. Bef
 
 - **Live verification / installation:** Checking the affected integration versions/configuration, installing hooks, or testing a real restart would inspect or mutate protected user state. All were skipped as instructed. The synthetic isolated integration test above also needs authorization outside this research run.
 
-- **Agentflow bookkeeping:** The canonical stream notebook is missing and automatic capture failed. No existing Ask was found in the workspace's absent `.agentflow/`; no notebook, lock or ownership was created or taken over. Restoring a canonical history requires a trusted source. Research continued independently; `.agentflow/` is ignored and excluded from commits.
-
 ## Verification in this run
 
-No new or changed test files: focused changed-test count **0**, not applicable for this documentation-only deliverable. No product files changed. `.gitignore` adds `.agentflow/` as explicitly requested.
-
-The required unit command ran under Node `v22.23.4`, with a fresh temporary HOME and the three required variables unset. Additional account/config selectors and Herdr connection variables were removed. The final invocation was:
-
-```bash
-env -u CCXRAY_AGENT_ID -u ANTHROPIC_BASE_URL -u OPENAI_BASE_URL \
-  -u CODEX_HOME -u CLAUDE_CONFIG_DIR -u GROK_HOME -u CCXRAY_HOME \
-  -u HERDR_SOCKET_PATH -u HERDR_BIN_PATH -u CCXRAY_EXPORT_DISABLE \
-  HOME="$(mktemp -d)" NODE_OPTIONS=--require=/tmp/ccx674-test-guard.cjs \
-  node scripts/run-tests.js unit
-```
-
-The temporary, uncommitted safety preload adds `--test-skip-pattern='hub fork and readiness'` to the runner's child test invocation, prevents product `server/index.js` forks, and rejects socket connect/listen attempts on ports 5577/5578 before calling the OS. It also skips that same suite for direct diagnostic execution. The repository's home and outbound-network guards remain loaded by the unit runner. This guarded run is necessary because [`test/hub.test.js:381`](../../test/hub.test.js#L381) actually forks a product hub, which this task expressly forbids. Both tests in `hub fork and readiness` were intentionally excluded; a direct diagnostic confirms the suite was marked SKIP. No forbidden hub launch was attempted.
-
-**Final runner result: exit 1; 155 file-level results, 142 passed, 13 failed, 0 file-level skips.** The runner emitted file-level summaries, not individual assertion totals; these numbers must not be reported as 142 passing assertions. The intentionally skipped nested hub suite is not reflected in that outer skip counter. An earlier guarded run with `CCXRAY_EXPORT_DISABLE=1` produced the same 142/13 file-level result; removing that extra override did not fix the final run. No test passed merely by changing product code.
-
-Direct diagnostic runs used the same temporary-home isolation and safety preload, with `node --require ./test/helpers/home-guard.js --require ./test/helpers/no-network.js test/<name>.test.js`. They exposed the following socket restrictions; unlike the final unit run, these diagnostics retained `CCXRAY_EXPORT_DISABLE=1` and were not launched with `--test`, so their export assertions are not comparable to the final runner. A Node-based attempt to spawn diagnostic children was itself refused with EPERM; shell-launched diagnostics provided the evidence below. No escalation or unsandboxed retry was requested.
-
-| Failed file in the final runner | What could not be verified here |
-| --- | --- |
-| `test/auth-bootstrap.test.js` | HTTP bootstrap suite at line 306: `listen EPERM` on loopback; hook failure canceled dependent tests. |
-| `test/body-limit.test.js` | HTTP server fixture at line 55: loopback `listen EPERM`; both tests canceled. |
-| `test/export-diagnostics.test.js` | Tests at lines 314, 400, 406, 412 and 451 require loopback or fixture Unix sockets; each hit `listen EPERM`. |
-| `test/grok-billing-fetch.test.js` | Server fixture at line 70: loopback `listen EPERM`; eight tests canceled. |
-| `test/hub-owned-config-status.test.js` | Fixture Unix socket `listen EPERM`; six tests canceled. |
-| `test/hub.test.js` | Socket client registration, socket health/discovery and TCP listener cases hit `listen EPERM`; the separate `hub fork and readiness` suite was intentionally skipped. Only fixture socket handlers were exercised, never a product hub. |
-| `test/listen-hosts.test.js` | Default loopback binding, PROXY_HOST binding, port-conflict and listener lifecycle cases failed with `listen EPERM`; IPv6-dependent checks also skipped. |
-| `test/openai-sse-title-gen-wiring.test.js` | Server fixture at line 47: loopback `listen EPERM`; the test canceled. |
-| `test/security-headers.test.js` | All four HTTP response checks hit loopback `listen EPERM`. |
-| `test/launcher-shims.test.js` | Three diagnostic assertion failures: removal-with-consent, removal failure propagation, and plain removal byte restoration. One failure's output explicitly reports loopback bind EPERM; the third's cause remains unresolved. |
-| `test/export-cross-agent-dup.test.js` | Failed final file; direct diagnostics had exporter suppression/absent cursor assertions. The different diagnostic environment cannot establish the final runner's cause. |
-| `test/export-sync-test-guard.test.js` | Failed final file; direct execution additionally lacks the `NODE_TEST_CONTEXT` supplied by `--test`. Final-run cause remains unresolved. |
-| `test/export-sync.test.js` | Failed final file; diagnostic export assertions were affected by its disable override. Final-run cause remains unresolved. |
-
-These are incomplete environment-constrained checks, not a clean unit pass or evidence of a resume implementation. No claim is made that all 13 failures are explained by loopback restrictions. Existing failures were left untouched to preserve research-only scope.
-
-`git diff --check` passed, and a read-only script validated all 26 local citation targets and line bounds. Source citations, saved report contents and changed paths were reviewed. No behavior changed, so no Unreleased changelog line was added.
-
-Local commit outcome: `git add .gitignore docs/research/674-herdr-resume.md` failed because the shared Git worktree directory is read-only. The required single attempt at `git commit -m "docs: research Herdr agent resume after server restart"` failed for the same reason (`index.lock`: read-only filesystem). No escalation, retry, push, merge or PR was attempted. **No new commit SHA exists.** The dispatcher can stage and commit the two pending files: `.gitignore` and `docs/research/674-herdr-resume.md`.
+Documentation-only change; the independent reviewer found no new unit-suite failures versus `cf4fac7` (2446/2446 pass on both; hub-fork tests skipped by a guard).
