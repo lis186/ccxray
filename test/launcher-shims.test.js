@@ -642,3 +642,133 @@ describe('profile writes are atomic and roll back exactly (round 2, must-fix 3)'
     assert.ok(!fs.existsSync(home));
   });
 });
+
+describe('zsh interactive PATH ordering', () => {
+  const zshOptions = () => overrides({ env: { SHELL: '/usr/bin/zsh', ZDOTDIR: root }, platform: 'darwin' });
+  const zfiles = () => ['.zshenv', '.zshrc'].map(name => path.join(root, name));
+  const assertLast = file => {
+    const text = fs.readFileSync(file, 'utf8');
+    assert.equal(text.split(shims.BLOCK_START).length - 1, 1);
+    assert.ok(text.endsWith(`${shims.BLOCK_END}\n`), `${file}: block must be last`);
+  };
+
+  it('previews and records both ZDOTDIR files, keeping the block last on reinstall', async () => {
+    const zdot = path.join(root, 'dotfiles');
+    fs.mkdirSync(zdot);
+    const o = overrides({ env: { SHELL: '/bin/zsh', ZDOTDIR: zdot }, platform: 'darwin' });
+    const files = ['.zshenv', '.zshrc'].map(name => path.join(zdot, name));
+    fs.writeFileSync(files[1], 'export PATH="$HOME/.local/bin:$PATH"\n');
+    const before = snapshot(root);
+    assert.equal(await setup.runSetup(['--wrap-binaries', '--dry-run'], o), 0);
+    for (const file of files) assert.ok(out.join('\n').includes(file));
+    assert.deepEqual(snapshot(root), before);
+    assert.equal(await install([], o), 0);
+    const manifest = JSON.parse(fs.readFileSync(path.join(home, 'shims.json')));
+    assert.deepEqual(manifest.profiles.map(p => p.file), files);
+    for (const file of files) assertLast(file);
+    const first = snapshot(root);
+    assert.equal(await install([], o), 0);
+    assert.deepEqual(snapshot(root), first);
+    fs.appendFileSync(files[1], 'export LATER=1\n');
+    assert.equal(await install([], o), 0);
+    for (const file of files) assertLast(file);
+    assert.equal(await setup.runSetup(['--wrap-binaries', '--remove'], o), 0);
+    assert.equal(fs.readFileSync(files[1], 'utf8'), 'export PATH="$HOME/.local/bin:$PATH"\nexport LATER=1\n');
+    assert.ok(!fs.existsSync(files[0]));
+  });
+
+  for (const plain of [false, true]) {
+    it(`restores raw bytes in both files and keeps later edits (${plain ? 'plain' : 'shim'} removal)`, async () => {
+      const files = zfiles();
+      const originals = [Buffer.from([35, 32, 255, 10]), Buffer.from('export KEEP=1')];
+      files.forEach((file, i) => fs.writeFileSync(file, originals[i]));
+      const o = zshOptions();
+      for (const edited of [false, true]) {
+        assert.equal(await install([], o), 0);
+        if (edited) for (const file of files) fs.appendFileSync(file, '# later\n');
+        const args = plain ? ['--remove', '--yes'] : ['--wrap-binaries', '--remove'];
+        const deps = plain ? { ...o, env: o.shims.env, homedir: () => root, logger: o.shims.logger } : o;
+        assert.equal(await setup.runSetup(args, deps), 0);
+        files.forEach((file, i) => assert.deepEqual(fs.readFileSync(file),
+          Buffer.concat([originals[i], Buffer.from(edited ? '# later\n' : '')])));
+      }
+    });
+  }
+
+  for (const upgrade of [false, true]) {
+    it(`${upgrade ? 'upgrades' : 'removes'} a previous .zshenv-only manifest`, async () => {
+      const o = zshOptions();
+      assert.equal(await install([], o), 0);
+      const manifestPath = path.join(home, 'shims.json');
+      const m = JSON.parse(fs.readFileSync(manifestPath));
+      m.profiles = m.profiles.filter(p => p.file.endsWith('.zshenv'));
+      fs.unlinkSync(zfiles()[1]);
+      fs.writeFileSync(zfiles()[0], shims.renderPathBlock(path.join(home, 'shims')));
+      fs.writeFileSync(manifestPath, JSON.stringify(m));
+      assert.equal(await setup.runSetup(['--wrap-binaries', '--check'], o), 0);
+      assert.match(out.join('\n'), /warn interactive login zsh:.*\.zshrc/);
+      if (upgrade) {
+        assert.equal(await install([], o), 0);
+        assert.equal(JSON.parse(fs.readFileSync(manifestPath)).profiles.length, 2);
+        zfiles().forEach(assertLast);
+      }
+      assert.equal(await setup.runSetup(['--wrap-binaries', '--remove'], o), 0);
+      assert.deepEqual(snapshot(root), {});
+    });
+  }
+
+  it('warns about interactive login ordering independently of the current PATH', async () => {
+    const o = zshOptions();
+    assert.equal(await install([], o), 0);
+    assert.equal(await setup.runSetup(['--wrap-binaries', '--check'], o), 0);
+    assert.match(out.join('\n'), /interactive login zsh:.*last.*static/);
+    fs.appendFileSync(zfiles()[1], 'export PATH="$HOME/.local/bin:$PATH"\n');
+    assert.equal(await setup.runSetup(['--wrap-binaries', '--check'], o), 0);
+    assert.match(out.join('\n'), /warn interactive login zsh:.*real binary.*\.zshrc/);
+    assert.match(out.join('\n'), /this process's PATH/);
+    assert.equal(await install([], o), 0);
+    fs.writeFileSync(path.join(root, '.zlogin'), 'export PATH="$HOME/.local/bin:$PATH"\n');
+    assert.equal(await setup.runSetup(['--wrap-binaries', '--check'], o), 0);
+    assert.match(out.join('\n'), /warn interactive login zsh:.*\.zlogin/);
+    fs.writeFileSync(path.join(root, '.zlogin'), Buffer.alloc(256 * 1024 + 1));
+    assert.equal(await setup.runSetup(['--wrap-binaries', '--check'], o), 0);
+    assert.match(out.join('\n'), /warn interactive login zsh:.*could not be checked/);
+  });
+
+  it('does not warn about .zlogin lines unrelated to PATH', async () => {
+    const o = zshOptions();
+    assert.equal(await install([], o), 0);
+    fs.writeFileSync(path.join(root, '.zlogin'), '# PATH comment\nfortune\n');
+    out.length = 0;
+    assert.equal(await setup.runSetup(['--wrap-binaries', '--check'], o), 0);
+    assert.match(out.join('\n'), /ok   interactive login zsh/);
+    fs.appendFileSync(path.join(root, '.zlogin'), 'path=(/other $path)\n');
+    out.length = 0;
+    assert.equal(await setup.runSetup(['--wrap-binaries', '--check'], o), 0);
+    assert.match(out.join('\n'), /warn interactive login zsh:.*\.zlogin/);
+  });
+
+  it('bounds profile presence reads for both zsh startup files', async () => {
+    const o = zshOptions();
+    assert.equal(await install([], o), 0);
+    for (const file of zfiles()) {
+      const original = fs.readFileSync(file);
+      fs.appendFileSync(file, Buffer.alloc(256 * 1024));
+      out.length = 0;
+      assert.equal(await setup.runSetup(['--wrap-binaries', '--check'], o), 1);
+      assert.ok(out.some(line => line.includes(`PATH block in ${file} missing`)));
+      fs.writeFileSync(file, original);
+    }
+  });
+
+  it('rolls back both profiles exactly when the manifest write fails', async () => {
+    zfiles().forEach(file => fs.writeFileSync(file, Buffer.from([35, 255])));
+    const before = snapshot(root);
+    const o = zshOptions();
+    o.shims.fs = failingFs((op, args) => {
+      if (op === 'writeFileSync' && path.basename(String(args[0])).startsWith('shims.json')) throw new Error('disk full');
+    });
+    assert.equal(await install([], o), 1);
+    assert.deepEqual(snapshot(root), before);
+  });
+});
