@@ -106,24 +106,28 @@ function renderShim(deps, lay, strict) {
     .replace('@STRICT@', strict ? '1' : '0');
 }
 
-function renderPathBlock(shimDir) {
+function renderPathBlock(shimDir, shell) {
+  // zsh's path array removes previous literal entries before prepending; (b)
+  // escapes pattern characters in directory names for the exclusion pattern.
   return [
     BLOCK_START,
     `ccxray_shim_dir=${quotePosix(shimDir)}`,
-    'case ":$PATH" in ":$ccxray_shim_dir:"*) ;; *) PATH="$ccxray_shim_dir:$PATH"; export PATH ;; esac',
+    shell === 'zsh'
+      ? 'case ":$PATH" in ":$ccxray_shim_dir:"*) ;; *) path=("$ccxray_shim_dir" "${(@)path:#${(b)ccxray_shim_dir}}"); export PATH ;; esac'
+      : 'case ":$PATH" in ":$ccxray_shim_dir:"*) ;; *) PATH="$ccxray_shim_dir:$PATH"; export PATH ;; esac',
     'unset ccxray_shim_dir',
     BLOCK_END,
     '',
   ].join('\n');
 }
 
-// Startup files that every shell of this kind reads, including non-interactive
-// ones where the file exists for that purpose (.zshenv). bash reads no file for
+// zsh reads .zshenv for non-interactive coverage and .zshrc after login PATH
+// initialization and interactive user edits. bash reads no file for
 // a non-interactive non-login shell: that case is covered by the session PATH
 // (environment.d / --shim-dir), not by a profile.
 function profileTargets(options, deps, lay) {
   const shell = options.shell || path.basename(deps.env.SHELL || '');
-  if (shell === 'zsh') return { shell, files: [path.join(deps.env.ZDOTDIR || lay.userHome, '.zshenv')] };
+  if (shell === 'zsh') return { shell, files: ['.zshenv', '.zshrc'].map(name => path.join(deps.env.ZDOTDIR || lay.userHome, name)) };
   if (shell === 'bash' || shell === 'sh' || shell === '') {
     const login = ['.bash_profile', '.bash_login', '.profile']
       .map(name => path.join(lay.userHome, name)).find(file => deps.fs.existsSync(file))
@@ -332,6 +336,7 @@ async function install(options, deps, lay) {
     return 1;
   }
   // Re-run: restore the original state first so the recorded "previous state" stays the original.
+  // Appending below also moves a block behind any user edits added since setup.
   if (previous) {
     const problems = undo(previous, lay, deps);
     for (const problem of problems) log.error(`warning: ${problem.message}`);
@@ -367,7 +372,7 @@ async function install(options, deps, lay) {
       atomicWrite(target, shimBytes, 0o755, deps);
       manifest.files.push({ path: target, sha256: sha(shimBytes) });
     }
-    const block = renderPathBlock(lay.shimDir);
+    const block = renderPathBlock(lay.shimDir, p.targets.shell);
     for (const file of p.targets.files) {
       const originalBytes = profileBytes.get(file);
       const original = originalBytes === null ? null : toText(originalBytes);
@@ -434,7 +439,7 @@ async function dryRun(options, deps, lay) {
   for (const action of p.actions) log.log(`  would ${action}`);
   if (p.targets.files.length) {
     log.log('  PATH block:');
-    for (const line of renderPathBlock(lay.shimDir).trimEnd().split('\n')) log.log(`    ${line}`);
+    for (const line of renderPathBlock(lay.shimDir, p.targets.shell).trimEnd().split('\n')) log.log(`    ${line}`);
   }
   if (p.envFile) log.log(`  ${p.envFile} would contain: PATH=${lay.shimDir}:$PATH`);
   log.log(`  strict mode default: ${p.strict ? 'on (refuse when the proxy is down)' : 'off (fail open)'}`);
@@ -452,6 +457,44 @@ function resolveOnPath(tool, pathVar, deps) {
     } catch { /* keep looking */ }
   }
   return null;
+}
+
+// Static checks never execute startup code. Bound the additional reads and avoid
+// blocking on special files; unknown layouts only produce a warning.
+function checkZshLayout(manifest, deps) {
+  const envProfile = manifest.profiles.find(p => path.basename(p.file) === '.zshenv');
+  if (!envProfile) return;
+  const rc = path.join(path.dirname(envProfile.file), '.zshrc');
+  const login = path.join(path.dirname(envProfile.file), '.zlogin');
+  const read = file => {
+    let fd;
+    try {
+      fd = deps.fs.openSync(file, deps.fs.constants.O_RDONLY | deps.fs.constants.O_NONBLOCK);
+      const st = deps.fs.fstatSync(fd);
+      if (!st.isFile() || st.size > 256 * 1024) throw new Error('not a small regular file');
+      const bytes = Buffer.alloc(st.size);
+      const n = deps.fs.readSync(fd, bytes, 0, bytes.length, 0);
+      if (n !== bytes.length) throw new Error('startup file changed during check');
+      return toText(bytes);
+    } catch (err) {
+      if (err.code === 'ENOENT') return '';
+      throw err;
+    } finally { if (fd !== undefined) deps.fs.closeSync(fd); }
+  };
+  let reason;
+  try {
+    const text = read(rc);
+    const range = blockRange(text);
+    const expected = toText(Buffer.from(renderPathBlock(manifest.shimDir, 'zsh')));
+    if (!manifest.profiles.some(p => p.file === rc) || !range || text.slice(range.start) !== expected) {
+      reason = `${rc} lacks the current PATH block as its last content; re-run setup --wrap-binaries --shell zsh`;
+    } else if (read(login).split('\n').some(line => line.trim() && !line.trim().startsWith('#'))) {
+      reason = `${login} runs after .zshrc and may change PATH`;
+    }
+  } catch (err) { reason = `startup layout could not be checked (${err.message})`; }
+  deps.logger.log(reason
+    ? `warn interactive login zsh: a real binary may resolve before the shim: ${reason} (static check; startup code was not executed)`
+    : 'ok   interactive login zsh: .zshrc PATH block is last (static check; dynamic startup code and system .zlogin may still override PATH)');
 }
 
 async function check(options, deps, lay) {
@@ -488,6 +531,7 @@ async function check(options, deps, lay) {
     try { present = toText(deps.fs.readFileSync(profile.file)).includes(BLOCK_START); } catch { /* missing */ }
     flag(present, `PATH block in ${profile.file} ${present ? 'present' : 'missing'}`);
   }
+  checkZshLayout(manifest, deps);
   const port = shimProbe.discoverPort({ ...deps.env, CCXRAY_SHIM_HOME: lay.home }, lay.home);
   const health = await shimProbe.probeHealth(port, shimProbe.timeoutMs(deps.env));
   log.log(`${health.ok ? 'ok  ' : 'warn'} proxy on 127.0.0.1:${port}: ${health.ok ? 'healthy (launches are recorded)' : `not reachable (${health.reason}); launches run directly and are logged as bypasses`}`);

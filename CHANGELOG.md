@@ -16,6 +16,8 @@
 
 ### Fixed
 
+- Launcher shims: zsh setup now writes both `.zshenv` and a final `.zshrc` PATH block (honoring `ZDOTDIR`), keeping shims ahead of macOS login initialization and existing interactive PATH edits without duplicate shim entries. Reinstall moves the block back to the end, removal tracks both files, and `--check` warns about interactive login startup ordering.
+
 - Routing fix: Anthropic-shaped and OpenAI-shaped values together across Authorization and x-api-key return local 421, as do distinct nonempty x-api-key values; an Anthropic key with a gateway bearer follows Anthropic (follow-up to #747)
 
 - Prune fix (#748): startup retains body-less proxy index rows within retention, including rows outside the 5000-entry memory window, and preserves their imported twins. Expired rows with no surviving request or response files are still pruned.

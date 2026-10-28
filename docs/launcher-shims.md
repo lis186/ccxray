@@ -127,6 +127,21 @@ A spawned program uses the `PATH` it inherited. Coverage depends on where that `
 bash reads no startup file for a non-interactive, non-login shell, so for `bash -c` parents the session PATH
 (or `--shim-dir`) is what matters, not the profile.
 
+For zsh, setup writes `.zshenv` for non-interactive shells and appends the same marked block to the end of
+`.zshrc` for interactive shells, both under `ZDOTDIR` when set (otherwise `$HOME`). On macOS, this runs after
+the login `path_helper` in `/etc/zprofile` and after existing `.zshrc` PATH edits. The zsh block moves an existing
+shim entry to the front instead of adding another copy. Re-running setup removes the recorded blocks and
+appends fresh blocks, so a block followed by later user edits moves back to the end; those edits are kept.
+Both files are recorded in `shims.json` and removed by either removal command. Older `.zshenv`-only manifests
+remain removable and gain `.zshrc` on reinstall. Bash still uses its first existing login file
+(`.bash_profile`, `.bash_login`, or `.profile`, defaulting to `.profile`) plus `.bashrc`; Linux `environment.d`
+is unchanged.
+
+`--check` keeps the current-process PATH warning and adds a bounded, static zsh layout check. It warns when
+the current block is missing or no longer last in `.zshrc`, or when `.zlogin` contains commands that run later
+and may let the real binary win. It never executes startup files and does not fail the check for an unknown
+layout. Dynamic startup code and system `.zlogin` can still override PATH; the static check cannot predict them.
+
 ## Fail-open shims vs fail-closed tool config
 
 The alternative is writing the proxy URL into each tool's own config (`openai_base_url` in
