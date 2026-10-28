@@ -884,7 +884,10 @@ function handleHubRoutes(clientReq, clientRes) {
     // Health stays public for port discovery, but the export report contains
     // local paths and config diagnostics. Reuse the dashboard's exact trust
     // predicate here because this route runs before the normal auth gate.
-    const reportTrusted = require('./auth').isDashboardAuthenticated(clientReq);
+    const auth = require('./auth');
+    const reportTrusted = auth.isDashboardAuthenticated(clientReq);
+    const shimProof = auth.shimIdentityProof(
+      clientReq.headers?.['x-ccxray-shim-challenge'], clientReq.socket?.localPort);
     clientRes.writeHead(200, { 'Content-Type': 'application/json' });
     // app/pid/hub identify the listener to probePortOccupant (#555) so a
     // port-conflict message can tell a standalone ccxray from a foreign
@@ -899,6 +902,7 @@ function handleHubRoutes(clientReq, clientRes) {
       gitSha: require('./git-sha').getGitSha(),
       ...(!reportTrusted ? { exportReportUnavailableReason: 'authentication-required' } : {}),
       capabilities: [],
+      ...(shimProof ? { shimProof } : {}),
     }));
     return true;
   }

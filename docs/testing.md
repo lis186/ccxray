@@ -555,7 +555,7 @@ test did not create.
 `test/multi-agent-proxy.e2e.test.js` and `test/websocket-proxy.test.js` exercise
 native Herdr pane attribution with synthetic launch IDs and plugin-generated
 proxy URLs. They use temporary `CCXRAY_HOME` directories and local mock upstreams;
-no Herdr session or real provider credentials are needed. `test/hub.test.js`
+no Herdr session or real provider accounts are needed. `test/hub.test.js`
 covers malformed and oversized internal pane routes.
 
 `test/forward-proxy.test.js` loads the private HTTP and WebSocket deployment
@@ -572,3 +572,18 @@ Header allowlist (follow-up to #745): `test/fixtures/routing/header-names.json`
 contains observed Claude/Codex header names and documented Grok header names,
 with synthetic values supplied by tests. `test/unknown-path.e2e.test.js` uses
 a temporary home and four local recording upstreams for HTTP and WebSocket.
+
+Launcher listener identity tests use temporary homes with dummy 32-byte `local-secret` files at `0600`.
+`launcher-shims.proxy.e2e.test.js` also starts real standalone and hub servers in fresh temporary homes:
+once unchallenged health responds, the root secret must already exist (32 bytes, `0600`, home `0700`)
+and `probeListener()` must verify it. Startup preserves existing secrets and creates no secret file with a dummy `AUTH_TOKEN`.
+A directory at `local-secret` or a mode-000 file must leave the server listening and challenged health
+answering 200 without `shimProof`; the mode-000 case skips under uid 0 and on Windows.
+`shim-probe.test.js` and `launcher-shims.e2e.test.js` compute challenge proofs on ephemeral loopback listeners;
+foreign listeners, different-port proofs and unusable local files must produce bypasses.
+Both cover `PROXY_PORT` discovery without `hub.json` or `CCXRAY_SHIM_PORT`, including verified standalone routing
+and unverified-listener bypass/refusal. The probe suite checks default discovery of 5577 without binding that port.
+`shim-listener-identity.test.js` also connects the real shared handler to the decision path through an
+in-process HTTP fixture, including uid checks and verification before registration.
+`health-capabilities.test.js` checks the shared hub/standalone health handler's proof and unchanged
+unchallenged response bytes, including repeated requests with an unreadable local identity directory. These fixtures never need the real ccxray home or provider accounts.

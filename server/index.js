@@ -173,7 +173,7 @@ const { startExportSync, stopExportSync, flushExport, awaitPendingFlush } = expo
 const { forwardRequest, setStatusLineEnabled, getStatusLineEnabled, setSessionAnchorRecorder } = require('./forward');
 const { readSettings, hudStatusText } = require('./settings');
 const { broadcastSessionStatus, broadcastPendingRequest } = require('./sse-broadcast');
-const { dispatch, mintAutoOpenUrl, formatAutoOpenUrl } = require('./auth');
+const { dispatch, mintAutoOpenUrl, formatAutoOpenUrl, getSecrets } = require('./auth');
 const { findSharedPrefix } = require('./delta-helpers');
 const { extractPromptAgentType } = require('./system-prompt');
 const providers = require('./providers');
@@ -1563,6 +1563,12 @@ async function startServer({ onListen } = {}) {
         );
       }
     }
+  }
+
+  // Both standalone and hub listeners need a local identity before accepting
+  // the first shim probe. AUTH_TOKEN uses the same path without creating a file.
+  try { getSecrets(); } catch (err) {
+    console.warn(`launcher listener identity unavailable: ${err?.code || 'unknown'}; launches will run directly`);
   }
 
   await config.storage.init();

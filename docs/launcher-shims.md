@@ -31,7 +31,14 @@ Options: `--shim-dir D` installs the two shims into a directory that is already 
    kills the helper, so a hung Node start, a stalled synchronous read (for example `hub.json` replaced by a FIFO) or
    blocked I/O cannot keep the tool from starting. The probe asks `GET /_api/health` on the proxy port
    (`CCXRAY_SHIM_PORT`, else `hub.json`, else `PROXY_PORT`, else 5577) with a 300 ms budget
-   (`CCXRAY_SHIM_TIMEOUT_MS`). The launch-time cost has several parts, each with its own bound: a Node start, the HTTP health check
+   (`CCXRAY_SHIM_TIMEOUT_MS`). The shim verifies the listener is this user's ccxray instance before routing;
+   otherwise it runs the tool directly and logs a bypass (`unverified-listener`; strict mode refuses).
+   Each launch sends a fresh challenge and checks a nonce-and-port-bound HMAC proof. Its key is derived from
+   either `AUTH_TOKEN` when set or a usable `<CCXRAY_HOME>/local-secret`: a regular, non-symlink, 32-byte file
+   owned by this user with no group/other permissions. Ownership checks are skipped on Windows or without
+   `getuid`; the proof is still required. A user-set loopback base URL is passed through unchanged and is not
+   verified; the shim changes nothing on that path.
+   The launch-time cost has several parts, each with its own bound: a Node start, the HTTP health check
    (300 ms by default), and, on a hub, a socket registration of the launch. The whole helper phase is capped by
    the shell deadline (2 s by default). When the helper is unusable, the fallback log adds at most about 1 s, plus
    up to about 1 s more before a stuck logging command is killed. `scripts/measure-shim-latency.js` measures
@@ -46,7 +53,7 @@ Options: `--shim-dir D` installs the two shims into a directory that is already 
    override, a base URL pointing at a ccxray listener) and non-model subcommands (`--version`, `mcp`,
    `codex login`, …) pass through untouched. Codex arguments are parsed with option arity: prompt text that merely
    mentions `openai_base_url`, or an option value such as `-m help`, is not configuration or a subcommand.
-4. **Not usable** (refused, timeout, error, not ccxray, the listener requires authentication, helper crash or
+4. **Not usable** (refused, timeout, error, not ccxray, unverified listener, the listener requires authentication, helper crash or
    deadline, a hub that cannot register this launch): the real binary runs directly with your original args and
    environment, and one JSON line is appended to `<CCXRAY_HOME>/shim-bypass.log`: `{t, tool, cwd, reason, action}`.
    No args, prompts, env values or secrets.
@@ -57,6 +64,17 @@ Options: `--shim-dir D` installs the two shims into a directory that is already 
    hatch): the launch is refused with exit code 111 and a message, and logged with `action: "refused"`. This holds
    for every failure path: no listener, auth required, helper exception, helper crash and the deadline.
    `CCXRAY_SHIM_DISABLE=1` skips everything.
+
+## Known limits
+
+The proof binds the port number, but not the address family or interface. Port-mapped setups where the
+listener sees a different port (for example host port 15577 mapped to listener port 5577) fail verification
+and run directly by default (strict mode refuses).
+
+Verification happens once at launch. If the listener exits and another process takes the port before the
+tool connects, the launch-time check does not cover that later connection or the rest of the session.
+If local identity initialization fails, the server still listens and health omits `shimProof` while the
+identity remains unavailable; shim launches run directly by default.
 
 ## Attribution and lifetime
 
@@ -71,7 +89,9 @@ The probe keeps the listener's own claim from `/_api/health` (`hub: true`). If t
 registration cannot be established (no `hub.json`, a stale socket, a lock for another port, a refusal, a timeout),
 the launch is **not** routed through a bare hub URL: such a URL would be attributed to whichever client's cwd the hub
 guesses (a bystander's) and nothing would keep the hub alive. It runs directly and logs the fixed reason
-`hub-registration-failed` (strict mode refuses). The plain URL is used only for a non-hub listener.
+`hub-registration-failed` (strict mode refuses). Registration reads `hub.json` only as a regular, non-symlink
+file owned by this user, with no group/other write permissions (ownership checks are skipped on Windows or
+without `getuid`). The plain URL is used only for a non-hub listener.
 
 ## The bypass log
 

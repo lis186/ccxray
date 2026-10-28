@@ -27,6 +27,7 @@
 
 | Date | Agent | Version | Change |
 |------|-------|---------|--------|
+| 2026-10-28 | Codex / ccxray | ccxray Unreleased | Launcher health probes send `X-Ccxray-Shim-Challenge` (32–128 hex characters). The shared hub/standalone handler adds `shimProof` = base64url HMAC-SHA256 over `ccxray-shim-identity/v1\n<nonce>\n<socket local port>`, using HKDF-SHA256 with the root secret, empty salt, label `ccxray/v1/shim-identity`, and 32-byte output. Missing or malformed challenges, or unavailable local identity material, leave health bytes unchanged. This is a `contractual` ccxray convention; it does not change provider traffic. |
 | 2026-10-23 | Codex | ccxray Unreleased | Header allowlist (follow-up to #745): distinct OpenAI/ChatGPT defaults, xAI names, MCP transport names (spec-derived, pending capture), structural declared-name checks, and Herdr launcher declarations. |
 | 2026-10-23 | Codex | ccxray Unreleased | Header allowlist (follow-up to #745): Claude launcher user-name declarations, operator family opt-ins, resolved WS families, and xAI `x-openai-*` names. |
 | 2026-10-23 | Codex | ccxray Unreleased | Routing fix (#745): shared models and OpenAI paths, gateway bearers, empty header values, Grok header/hub path consistency, Anthropic-shaped `x-api-key`, and explicit Codex/ChatGPT conflicts; log label fix (#744). |
