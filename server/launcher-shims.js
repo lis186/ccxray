@@ -489,7 +489,7 @@ async function check(options, deps, lay) {
     flag(present, `PATH block in ${profile.file} ${present ? 'present' : 'missing'}`);
   }
   const port = shimProbe.discoverPort({ ...deps.env, CCXRAY_SHIM_HOME: lay.home }, lay.home);
-  const health = await shimProbe.probeHealth(port, shimProbe.timeoutMs(deps.env));
+  const health = await shimProbe.probeListener(port, shimProbe.timeoutMs(deps.env), deps.env, lay.home);
   log.log(`${health.ok ? 'ok  ' : 'warn'} proxy on 127.0.0.1:${port}: ${health.ok ? 'healthy (launches are recorded)' : `not reachable (${health.reason}); launches run directly and are logged as bypasses`}`);
   log.log(renderBypassLine(summarizeBypasses(lay.home, { now: deps.now() })));
   return bad ? 1 : 0;

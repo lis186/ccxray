@@ -14,6 +14,7 @@
 
 const fs = require('fs');
 const http = require('http');
+const crypto = require('crypto');
 const net = require('net');
 const os = require('os');
 const path = require('path');
@@ -45,8 +46,17 @@ async function main() {
     if (code !== 0) throw new Error('shim install failed');
     const shims = path.join(home, 'shims');
 
+    const identityRoot = Buffer.alloc(32, 0x42);
+    fs.writeFileSync(path.join(home, 'local-secret'), identityRoot, { mode: 0o600 });
+    const identityKey = crypto.hkdfSync('sha256', identityRoot, Buffer.alloc(0), Buffer.from('ccxray/v1/shim-identity'), 32);
     let delay = 0;
-    const proxy = http.createServer((req, res) => setTimeout(() => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: true, app: 'ccxray' })); }, delay));
+    const proxy = http.createServer((req, res) => setTimeout(() => {
+      const nonce = req.headers['x-ccxray-shim-challenge'];
+      const shimProof = nonce && crypto.createHmac('sha256', identityKey)
+        .update(`ccxray-shim-identity/v1\n${nonce}\n${req.socket.localPort}`).digest('base64url');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, app: 'ccxray', ...(shimProof ? { shimProof } : {}) }));
+    }, delay));
     await new Promise(r => proxy.listen(0, '127.0.0.1', r));
     const closedPort = await new Promise(r => { const s = net.createServer().listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => r(port)); }); });
     const base = { HOME: root, CCXRAY_HOME: home };

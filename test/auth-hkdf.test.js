@@ -26,7 +26,7 @@ after(() => {
 });
 
 describe('deriveSecrets(rootKey) — HKDF label separation', () => {
-  it('returns three Buffer keys with the expected labels', () => {
+  it('returns four Buffer keys with the expected labels', () => {
     const root = crypto.randomBytes(32);
     const out = auth.deriveSecrets(root);
     assert.ok(Buffer.isBuffer(out.K_upstream), 'K_upstream is a Buffer');
@@ -35,6 +35,9 @@ describe('deriveSecrets(rootKey) — HKDF label separation', () => {
     assert.equal(out.K_upstream.length, 32);
     assert.equal(out.K_session.length, 32);
     assert.equal(out.K_bootstrap.length, 32);
+    assert.ok(Buffer.isBuffer(out.K_shim));
+    assert.equal(out.K_shim.length, 32);
+    assert.deepEqual(out.K_shim, Buffer.from(crypto.hkdfSync('sha256', root, Buffer.alloc(0), Buffer.from('ccxray/v1/shim-identity'), 32)));
   });
 
   it('is deterministic — same root produces identical secrets', () => {
@@ -44,11 +47,13 @@ describe('deriveSecrets(rootKey) — HKDF label separation', () => {
     assert.deepEqual(a.K_upstream, b.K_upstream);
     assert.deepEqual(a.K_session, b.K_session);
     assert.deepEqual(a.K_bootstrap, b.K_bootstrap);
+    assert.deepEqual(a.K_shim, b.K_shim);
   });
 
-  it('produces three pairwise-distinct keys (label separation)', () => {
+  it('produces four pairwise-distinct keys (label separation)', () => {
     const root = crypto.randomBytes(32);
-    const { K_upstream, K_session, K_bootstrap } = auth.deriveSecrets(root);
+    const { K_upstream, K_session, K_bootstrap, K_shim } = auth.deriveSecrets(root);
+    for (const other of [K_upstream, K_session, K_bootstrap]) assert.notDeepEqual(K_shim, other);
     assert.notDeepEqual(K_upstream, K_session);
     assert.notDeepEqual(K_session, K_bootstrap);
     assert.notDeepEqual(K_upstream, K_bootstrap);
@@ -60,6 +65,7 @@ describe('deriveSecrets(rootKey) — HKDF label separation', () => {
     assert.notDeepEqual(a.K_upstream, b.K_upstream);
     assert.notDeepEqual(a.K_session, b.K_session);
     assert.notDeepEqual(a.K_bootstrap, b.K_bootstrap);
+    assert.notDeepEqual(a.K_shim, b.K_shim);
   });
 });
 

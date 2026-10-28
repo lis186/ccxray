@@ -9,6 +9,7 @@ const { describe, it, before, after, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const http = require('http');
+const crypto = require('crypto');
 const net = require('net');
 const os = require('os');
 const path = require('path');
@@ -25,6 +26,8 @@ let proxy;
 let proxyPort;
 let proxyDelayMs = 0;
 let proxyApp = 'ccxray';
+let proxyIdentity = true;
+const identityRoot = Buffer.alloc(32, 0x42);
 
 function quiet() { return { log() {}, error() {} }; }
 
@@ -87,11 +90,19 @@ before(async () => {
     homedir: () => root, platform: 'linux', logger: quiet(),
   });
   assert.equal(code, 0);
+  fs.writeFileSync(path.join(ccxrayHome, 'local-secret'), identityRoot, { mode: 0o600 });
   shimDir = path.join(ccxrayHome, 'shims');
   proxy = http.createServer((req, res) => {
     setTimeout(() => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, app: proxyApp }));
+      const body = { ok: true, app: proxyApp };
+      const nonce = req.headers['x-ccxray-shim-challenge'];
+      if (proxyIdentity && nonce) {
+        const key = crypto.hkdfSync('sha256', identityRoot, Buffer.alloc(0), Buffer.from('ccxray/v1/shim-identity'), 32);
+        body.shimProof = crypto.createHmac('sha256', key)
+          .update(`ccxray-shim-identity/v1\n${nonce}\n${proxyPort}`).digest('base64url');
+      }
+      res.end(JSON.stringify(body));
     }, proxyDelayMs);
   });
   await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
@@ -106,6 +117,7 @@ after(async () => {
 beforeEach(() => {
   proxyDelayMs = 0;
   proxyApp = 'ccxray';
+  proxyIdentity = true;
   fs.rmSync(path.join(ccxrayHome, 'shim-bypass.log'), { force: true });
 });
 
@@ -163,6 +175,25 @@ describe('proxy healthy (criterion 1)', () => {
     const r = await run('claude', ['x'], { env: { FAKE_HANG: '1' }, onStdout: (out, child) => { if (/WHO:claude\n/.test(out)) child.kill('SIGTERM'); } });
     assert.equal(r.signal, 'SIGTERM');
   });
+});
+
+describe('foreign listener', () => {
+  for (const tool of ['claude', 'codex']) {
+    it(`runs ${tool} directly and logs the unverified listener`, async () => {
+      proxyIdentity = false;
+      const args = tool === 'claude' ? ['-p', 'hello'] : ['exec', 'hello'];
+      const result = await run(tool, args);
+      assert.equal(result.code, 0);
+      assert.match(result.stdout, /BASE:\n/);
+      assert.ok(result.stdout.includes(`ARGS:${args.join(' ')}\n`));
+      assert.equal(bypassLines().at(-1).reason, 'unverified-listener');
+      const strict = await run(tool, args, { env: { CCXRAY_SHIM_STRICT: '1' } });
+      assert.equal(strict.code, 111);
+      assert.doesNotMatch(strict.stdout, /ARGS:/);
+      assert.equal(bypassLines().at(-1).action, 'refused');
+      assert.match(strict.stderr, /unverified-listener/);
+    });
+  }
 });
 
 describe('proxy down (criterion 2)', () => {

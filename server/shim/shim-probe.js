@@ -53,7 +53,7 @@ function discoverPort(env, home) {
 
 // Resolves { ok:true } for a ccxray listener, else { ok:false, reason }.
 // `reason` is a fixed vocabulary so the log carries no remote-controlled text.
-function probeHealth(port, ms) {
+function probeHealth(port, ms, identity) {
   return new Promise(resolve => {
     let settled = false;
     const done = result => {
@@ -64,7 +64,8 @@ function probeHealth(port, ms) {
       resolve(result);
     };
     const timer = setTimeout(() => done({ ok: false, reason: 'timeout' }), ms);
-    const req = http.get({ host: '127.0.0.1', port, path: '/_api/health', agent: false }, res => {
+    const req = http.get({ host: '127.0.0.1', port, path: '/_api/health', agent: false,
+      ...(identity ? { headers: { 'X-Ccxray-Shim-Challenge': identity.nonce } } : {}) }, res => {
       let body = '';
       res.setEncoding('utf8');
       res.on('data', chunk => { if (body.length < 65536) body += chunk; });
@@ -72,6 +73,9 @@ function probeHealth(port, ms) {
         try {
           const parsed = JSON.parse(body);
           if (res.statusCode !== 200 || !parsed || parsed.app !== 'ccxray' || parsed.ok !== true) return done({ ok: false, reason: 'not-ccxray' });
+          if (identity && !verifyIdentity(parsed.shimProof, identity, port)) {
+            return done({ ok: false, reason: 'unverified-listener' });
+          }
           // Public health says the listener, not the shim's environment, gates
           // loopback: an unauthenticated probe is told so, and model traffic
           // from this shim (which holds no proxy credential) would 401.
@@ -127,6 +131,62 @@ function codexAlreadyRouted(overrides) {
 
 const O_NOFOLLOW = fs.constants.O_NOFOLLOW || 0;
 const O_NONBLOCK = fs.constants.O_NONBLOCK || 0;
+
+// Descriptor checks keep local identity material private and avoid following links.
+function readIdentityFile(file, privateMode, maxBytes) {
+  let fd;
+  try {
+    // O_NOFOLLOW is unavailable on some platforms; also check the path there.
+    if (!O_NOFOLLOW && fs.lstatSync(file).isSymbolicLink()) return null;
+    fd = fs.openSync(file, fs.constants.O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+    const st = fs.fstatSync(fd);
+    const checkOwner = process.platform !== 'win32' && typeof process.getuid === 'function';
+    if (!st.isFile() || (checkOwner && st.uid !== process.getuid())
+        || (st.mode & (privateMode ? 0o077 : 0o022)) !== 0
+        || st.size > maxBytes || (privateMode && st.size !== 32)) return null;
+    const data = Buffer.alloc(maxBytes + 1);
+    let length = 0;
+    while (length < data.length) {
+      const n = fs.readSync(fd, data, length, data.length - length, null);
+      if (!n) break;
+      length += n;
+    }
+    if (length > maxBytes || (privateMode && length !== 32)) return null;
+    return data.subarray(0, length);
+  } catch { return null; }
+  finally { if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* closed */ } } }
+}
+
+function launchIdentity(env, home) {
+  try {
+    const root = env.AUTH_TOKEN
+      ? crypto.createHash('sha256').update(env.AUTH_TOKEN, 'utf8').digest()
+      : readIdentityFile(path.join(home, 'local-secret'), true, 32);
+    if (!root) return null;
+    return {
+      nonce: crypto.randomBytes(32).toString('hex'),
+      key: Buffer.from(crypto.hkdfSync('sha256', root, Buffer.alloc(0),
+        Buffer.from('ccxray/v1/shim-identity', 'utf8'), 32)),
+    };
+  } catch { return null; }
+}
+
+async function probeListener(port, ms, env, home) {
+  try {
+    // Still probe without a usable secret so refused/timeout keep their existing reasons.
+    const identity = launchIdentity(env, home) || { nonce: crypto.randomBytes(32).toString('hex') };
+    return await probeHealth(port, ms, identity);
+  } catch { return { ok: false, reason: 'helper-error' }; }
+}
+
+function verifyIdentity(proof, identity, port) {
+  try {
+    if (!identity.key || typeof proof !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(proof)) return false;
+    const expected = crypto.createHmac('sha256', identity.key)
+      .update(`ccxray-shim-identity/v1\n${identity.nonce}\n${port}`, 'utf8').digest('base64url');
+    return crypto.timingSafeEqual(Buffer.from(proof), Buffer.from(expected));
+  } catch { return false; }
+}
 
 // Opens the log for appending only if it is (or becomes) a regular, non-symlink
 // file owned well enough to be made private: O_NOFOLLOW refuses a symlink at the
@@ -202,7 +262,9 @@ function registerWithHub(home, port, env, cwd, ms) {
     if (!Number.isInteger(pid) || pid <= 0 || pid > 4194304 || !cwd || cwd.length > 4096) return resolve(false);
     let sockPath;
     try {
-      const lock = JSON.parse(fs.readFileSync(path.join(home, 'hub.json'), 'utf8'));
+      const data = readIdentityFile(path.join(home, 'hub.json'), false, 65536);
+      if (!data) return resolve(false);
+      const lock = JSON.parse(data.toString('utf8'));
       if (Number(lock.port) !== port || typeof lock.sockPath !== 'string') return resolve(false);
       sockPath = lock.sockPath;
     } catch { return resolve(false); }
@@ -250,7 +312,7 @@ async function decide(tool, args, env, now = new Date(), cwd = safeCwd()) {
   if (hasForeignUrl) return fail('custom-base-url');
 
   const port = discoverPort(env, home);
-  const health = await probeHealth(port, ms);
+  const health = await probeListener(port, ms, env, home);
   if (!health.ok) return fail(health.reason);
   let base = `http://127.0.0.1:${port}`;
   if (await registerWithHub(home, port, env, cwd, ms)) base += `/_ccxray/client/${Number(env.CCXRAY_SHIM_PID)}`;
@@ -283,4 +345,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { decide, runProbe, safeCwd, probeHealth, discoverPort, timeoutMs, ccxrayHome, appendBypass, parseCodexArgs, codexAlreadyRouted, registerWithHub, failureLine };
+module.exports = { decide, runProbe, safeCwd, probeHealth, probeListener, discoverPort, timeoutMs, ccxrayHome, appendBypass, parseCodexArgs, codexAlreadyRouted, registerWithHub, failureLine };

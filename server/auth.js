@@ -60,6 +60,7 @@ const LABELS = Object.freeze({
   K_upstream: 'ccxray/v1/upstream',
   K_session: 'ccxray/v1/session-hmac',
   K_bootstrap: 'ccxray/v1/bootstrap',
+  K_shim: 'ccxray/v1/shim-identity',
 });
 
 function hkdf(rootKey, label, len = 32) {
@@ -71,7 +72,16 @@ function deriveSecrets(rootKey) {
     K_upstream: hkdf(rootKey, LABELS.K_upstream),
     K_session: hkdf(rootKey, LABELS.K_session),
     K_bootstrap: hkdf(rootKey, LABELS.K_bootstrap),
+    K_shim: hkdf(rootKey, LABELS.K_shim),
   };
+}
+
+// A proof binds one launch challenge to this listener's own local port.
+function shimIdentityProof(nonce, port) {
+  if (typeof nonce !== 'string' || nonce.length < 32 || nonce.length > 128 || /[^0-9a-fA-F]/.test(nonce)
+      || !Number.isInteger(port) || port < 1 || port > 65535) return undefined;
+  return crypto.createHmac('sha256', getSecrets().K_shim)
+    .update(`ccxray-shim-identity/v1\n${nonce}\n${port}`, 'utf8').digest('base64url');
 }
 
 // ─── Stateless HMAC session cookie ───────────────────────────────────
@@ -454,6 +464,7 @@ const AUTH_TOKEN = process.env.AUTH_TOKEN || null;
 module.exports = {
   // HKDF + cookie primitives
   deriveSecrets,
+  shimIdentityProof,
   getRootSecret,
   signCookie,
   verifyCookie,

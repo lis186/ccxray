@@ -7,6 +7,7 @@ const { describe, it, before, after, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const http = require('http');
+const crypto = require('crypto');
 const net = require('net');
 const os = require('os');
 const path = require('path');
@@ -14,26 +15,135 @@ const path = require('path');
 const probe = require('../server/shim/shim-probe');
 const { summarizeBypasses } = require('../server/shim-bypass');
 
+const identityRoot = Buffer.alloc(32, 0x42);
+function proofFor(nonce, port, rootKey = identityRoot) {
+  const key = crypto.hkdfSync('sha256', rootKey, Buffer.alloc(0), Buffer.from('ccxray/v1/shim-identity'), 32);
+  return crypto.createHmac('sha256', key).update(`ccxray-shim-identity/v1\n${nonce}\n${port}`).digest('base64url');
+}
 let root; let health; let healthPort; let healthBody; let seenPath;
+let proveIdentity; let proofPort; let proofRoot; let seenNonces;
 
 before(async () => {
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-probe-')));
   health = http.createServer((req, res) => {
     seenPath = req.url;
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(healthBody));
+    const nonce = req.headers['x-ccxray-shim-challenge'];
+    if (nonce) seenNonces.push(nonce);
+    const body = { ...healthBody };
+    if (proveIdentity && nonce) body.shimProof = proofFor(nonce, proofPort ?? healthPort, proofRoot);
+    res.end(JSON.stringify(body));
   });
   await new Promise(resolve => health.listen(0, '127.0.0.1', resolve));
   healthPort = health.address().port;
 });
 after(async () => { await new Promise(resolve => health.close(resolve)); fs.rmSync(root, { recursive: true, force: true }); });
-beforeEach(() => { healthBody = { ok: true, app: 'ccxray' }; });
+beforeEach(() => { healthBody = { ok: true, app: 'ccxray' }; proveIdentity = true; proofPort = undefined; proofRoot = identityRoot; seenNonces = []; });
 
 const envFor = (extra = {}) => ({ CCXRAY_SHIM_HOME: path.join(root, 'home'), CCXRAY_SHIM_PORT: String(healthPort), ...extra });
 const logLines = () => {
   try { return fs.readFileSync(path.join(root, 'home', 'shim-bypass.log'), 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse); } catch { return []; }
 };
-beforeEach(() => fs.rmSync(path.join(root, 'home'), { recursive: true, force: true }));
+beforeEach(() => {
+  const home = path.join(root, 'home');
+  fs.rmSync(home, { recursive: true, force: true });
+  fs.mkdirSync(home, { mode: 0o700 });
+  fs.writeFileSync(path.join(home, 'local-secret'), identityRoot, { mode: 0o600 });
+});
+
+describe('listener identity', () => {
+  for (const body of [
+    { app: 'ccxray', ok: true },
+    { app: 'ccxray', ok: true, hub: true },
+    { app: 'ccxray', ok: true, shimProof: 'A'.repeat(43) },
+  ]) {
+    for (const tool of ['claude', 'codex']) {
+      it(`bypasses an unverified listener for ${tool} (${JSON.stringify(body)})`, async () => {
+        healthBody = body;
+        proveIdentity = false;
+        assert.equal(await probe.decide(tool, ['hello'], envFor()), 'direct');
+        assert.equal(logLines().at(-1).reason, 'unverified-listener');
+        assert.equal(summarizeBypasses(path.join(root, 'home')).byReason['unverified-listener'], 1);
+        assert.match(await probe.decide(tool, ['hello'], envFor({ CCXRAY_SHIM_STRICT: '1' })), /^refuse .*unverified-listener/);
+        assert.equal(logLines().at(-1).action, 'refused');
+      });
+    }
+  }
+
+  it('rejects a proof from a different port or root', async () => {
+    for (const tool of ['claude', 'codex']) {
+      proofPort = healthPort === 65535 ? 65534 : healthPort + 1;
+      assert.equal(await probe.decide(tool, ['hello'], envFor()), 'direct');
+      assert.equal(logLines().at(-1).reason, 'unverified-listener');
+      proofPort = undefined;
+      proofRoot = Buffer.alloc(32, 0x43);
+      assert.equal(await probe.decide(tool, ['hello'], envFor()), 'direct');
+      assert.equal(logLines().at(-1).reason, 'unverified-listener');
+      proofRoot = identityRoot;
+    }
+  });
+
+  it('rejects a proof saved from a previous launch', async () => {
+    assert.match(await probe.decide('claude', ['hello'], envFor()), /^claude http:/);
+    healthBody.shimProof = proofFor(seenNonces.at(-1), healthPort);
+    proveIdentity = false;
+    assert.equal(await probe.decide('claude', ['hello'], envFor()), 'direct');
+    assert.equal(logLines().at(-1).reason, 'unverified-listener');
+  });
+
+  it('uses a fresh challenge for each launch', async () => {
+    for (const tool of ['claude', 'codex']) assert.match(await probe.decide(tool, ['hello'], envFor()), new RegExp(`^${tool} http:`));
+    assert.equal(seenNonces.length, 2);
+    for (const nonce of seenNonces) assert.match(nonce, /^[0-9a-f]{64}$/);
+    assert.notEqual(seenNonces[0], seenNonces[1]);
+  });
+
+  for (const kind of ['missing', 'symlink', '0644', 'short', 'long', 'directory']) {
+    it(`does not use a ${kind} local-secret`, async () => {
+      const file = path.join(root, 'home', 'local-secret');
+      fs.unlinkSync(file);
+      if (kind === 'symlink') {
+        const target = path.join(root, 'dummy-secret');
+        fs.writeFileSync(target, identityRoot, { mode: 0o600 });
+        fs.symlinkSync(target, file);
+      } else if (kind === 'directory') fs.mkdirSync(file);
+      else if (kind !== 'missing') fs.writeFileSync(file, kind === 'short' ? Buffer.alloc(31) : kind === 'long' ? Buffer.alloc(33) : identityRoot, { mode: kind === '0644' ? 0o644 : 0o600 });
+      if (kind === '0644') fs.chmodSync(file, 0o644);
+      for (const tool of ['claude', 'codex']) {
+        assert.equal(await probe.decide(tool, ['hello'], envFor()), 'direct');
+        assert.equal(logLines().at(-1).reason, 'unverified-listener');
+      }
+    });
+  }
+
+  it('uses AUTH_TOKEN before a local-secret', async () => {
+    proofRoot = crypto.createHash('sha256').update('dummy-shim-token').digest();
+    fs.unlinkSync(path.join(root, 'home', 'local-secret'));
+    for (const tool of ['claude', 'codex']) assert.match(await probe.decide(tool, ['hello'], envFor({ AUTH_TOKEN: 'dummy-shim-token' })), new RegExp(`^${tool} http:`));
+  });
+
+  it('leaves an already chosen loopback URL unchanged without a proof or secret', async () => {
+    proveIdentity = false;
+    fs.unlinkSync(path.join(root, 'home', 'local-secret'));
+    for (const tool of ['claude', 'codex']) {
+      const name = tool === 'claude' ? 'ANTHROPIC_BASE_URL' : 'OPENAI_BASE_URL';
+      assert.equal(await probe.decide(tool, ['hello'], envFor({ [name]: `http://127.0.0.1:${healthPort}` })), 'passthrough');
+    }
+    assert.deepEqual(logLines(), []);
+  });
+
+  it('keeps the refused reason when no listener answers, even without a secret', async () => {
+    const closed = http.createServer();
+    await new Promise(resolve => closed.listen(0, '127.0.0.1', resolve));
+    const port = closed.address().port;
+    await new Promise(resolve => closed.close(resolve));
+    fs.unlinkSync(path.join(root, 'home', 'local-secret'));
+    for (const tool of ['claude', 'codex']) {
+      assert.equal(await probe.decide(tool, ['hello'], envFor({ CCXRAY_SHIM_PORT: String(port) })), 'direct');
+      assert.equal(logLines().at(-1).reason, 'refused');
+    }
+  });
+});
 
 describe('codex argument parsing (finding 6)', () => {
   const routed = args => probe.codexAlreadyRouted(probe.parseCodexArgs(args).overrides);
@@ -168,6 +278,22 @@ describe('hub client registration (should-fix 1)', () => {
     assert.equal(codex, `codex http://127.0.0.1:${healthPort}/_ccxray/client/4242`);
     assert.equal(received.at(-1).cwd, '/project/b');
   });
+
+  for (const kind of ['symlink', 'group-writable', 'other-writable', 'directory']) {
+    it(`does not register through a ${kind} hub.json`, async () => {
+      writeLock();
+      const file = path.join(root, 'home', 'hub.json');
+      if (kind === 'symlink') {
+        fs.renameSync(file, file + '.real');
+        fs.symlinkSync(file + '.real', file);
+      } else if (kind === 'directory') { fs.unlinkSync(file); fs.mkdirSync(file); }
+      else fs.chmodSync(file, kind === 'group-writable' ? 0o620 : 0o602);
+      healthBody.hub = true;
+      assert.equal(await probe.decide('claude', ['hello'], envFor({ CCXRAY_SHIM_PID: '4242' })), 'direct');
+      assert.equal(logLines().at(-1).reason, 'hub-registration-failed');
+      assert.equal(received.length, 0);
+    });
+  }
 
   it('falls back to the plain URL (never a guessed route) without a usable registration', async () => {
     const base = `http://127.0.0.1:${healthPort}`;
