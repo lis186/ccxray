@@ -53,6 +53,11 @@ Anthropic keys with gateway bearers (Anthropic), and xAI header forwarding
 
 ## Test hygiene
 
+`test/ratelimit-log.test.js` uses synthetic response headers, a temporary sample
+directory, and VM-loaded production modules with an in-memory HTTP transport.
+It checks append/deduplication and write-failure recovery through `forwardRequest`
+without starting ccxray, a hub, or a loopback listener; it never reads host sessions.
+
 A test must produce the same result on the author's machine and on a clean CI
 runner. The failure mode this section exists to prevent: a test silently reads
 the developer's real data, passes locally, and fails (or worse, passes for the

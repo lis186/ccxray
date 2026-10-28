@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { resolveCcxrayHome } = require('./paths');
+const { resolveCcxrayHome, HOME_DIR_MODE } = require('./paths');
 
 // Append-only log of `anthropic-ratelimit-*` headers observed from upstream responses.
 // Used for future calibration of plan-specific limits (Max 5x vs 20x tokens5h quota).
@@ -11,10 +11,17 @@ const { resolveCcxrayHome } = require('./paths');
 const CCXRAY_HOME = resolveCcxrayHome();
 const SAMPLES_FILE = path.join(CCXRAY_HOME, 'ratelimit-samples.jsonl');
 
-// Dedupe per model: skip writing if headers identical to last sample for
-// the same model. Anthropic usually returns identical limits for consecutive
-// requests; we only care about transitions (rolling window reset, plan change).
+// Dedupe per model: preserve legacy limit transitions and changes in any
+// unified value, including subscription utilization and rolling-window resets.
 const _lastSigByModel = new Map();
+let _writeFailureReported = false;
+
+function reportWriteFailure(err) {
+  if (_writeFailureReported) return;
+  _writeFailureReported = true;
+  // Error messages can contain local paths; report only the filesystem code.
+  try { console.warn(`[ccxray] ratelimit sample write failed (${err?.code || 'unknown'}); further warnings suppressed`); } catch {}
+}
 
 function buildSignature(sample) {
   return [
@@ -22,6 +29,7 @@ function buildSignature(sample) {
     sample.inputLimit,
     sample.outputLimit,
     sample.requestsLimit,
+    JSON.stringify(sample.unified || null),
   ].join('|');
 }
 
@@ -42,8 +50,15 @@ function collectRatelimitHeaders(headers) {
   const requestsRemaining= num('anthropic-ratelimit-requests-remaining');
   const requestsReset    = g('anthropic-ratelimit-requests-reset') || null;
 
+  // Subscription windows are a different header family from API token limits.
+  // Preserve their raw values (including fractional utilization) for calibration;
+  // sorted keys keep deduplication independent of HTTP header ordering.
+  const unified = Object.fromEntries(Object.entries(headers)
+    .filter(([key, value]) => key.startsWith('anthropic-ratelimit-unified-') && typeof value === 'string')
+    .sort(([a], [b]) => a.localeCompare(b)));
+
   // Nothing present → skip
-  if (tokensLimit == null && inputLimit == null && requestsLimit == null) {
+  if (tokensLimit == null && inputLimit == null && outputLimit == null && requestsLimit == null && !Object.keys(unified).length) {
     return null;
   }
 
@@ -52,6 +67,7 @@ function collectRatelimitHeaders(headers) {
     inputLimit, inputRemaining, inputReset,
     outputLimit, outputRemaining, outputReset,
     requestsLimit, requestsRemaining, requestsReset,
+    ...(Object.keys(unified).length ? { unified } : {}),
   };
 }
 
@@ -74,10 +90,17 @@ function appendSample({ headers, parsed, model, planHint }) {
       ...rl,
     };
 
-    // Fire-and-forget append; errors are silent (logging must not block proxy)
-    fs.promises.appendFile(SAMPLES_FILE, JSON.stringify(sample) + '\n').catch(() => {});
-  } catch {
-    // never throw
+    // Fire-and-forget: filesystem work never delays or rejects the proxy response.
+    Promise.resolve()
+      .then(() => fs.promises.mkdir(CCXRAY_HOME, { recursive: true, mode: HOME_DIR_MODE }))
+      .then(() => fs.promises.appendFile(SAMPLES_FILE, JSON.stringify(sample) + '\n'))
+      .catch(err => {
+        // A failed append must not suppress an identical future retry.
+        if (_lastSigByModel.get(modelKey) === sig) _lastSigByModel.delete(modelKey);
+        reportWriteFailure(err);
+      });
+  } catch (err) {
+    reportWriteFailure(err);
   }
 }
 
