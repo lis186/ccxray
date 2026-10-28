@@ -4,6 +4,8 @@ Reference for the entry summary objects broadcast from server to dashboard via S
 
 For the **aggregated** schema that `ccxray usage --json` derives from these entries, see [`usage.md`](usage.md).
 
+Consumers of `index.ndjson` must deduplicate logical turns by non-empty `responseId`, the upstream response identity used by `ccxray usage` (Claude's `message.id`, or Codex's `token_usage_record.payload.response_id` when available). A live row and an imported row can have different timestamp-derived `id` values for the same response; the importer skips responses already recorded live or imported. Keep rows without `responseId` separate rather than treating missing values as a shared key; legacy rows and live Codex rows may lack it.
+
 ## Entry summary
 
 Produced by `server/sse-broadcast.js` `summarizeEntry()`. The full request/response payloads are NOT included — they live on disk and are lazy-loaded when a turn is selected.

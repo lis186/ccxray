@@ -1552,7 +1552,7 @@ describe('codex importer', () => {
       assert.deepStrictEqual(merged[0]._mergedIds, ['2026-07-15T10-30-07-000']);
     });
 
-    it('#508: a proxy entry and an imported entry with the same responseId merge, and the session counts it once', async () => {
+    it('#712: a proxy entry suppresses import of the same Codex responseId', async () => {
       const proxyLine = {
         id: '2026-07-15T13-00-00-100', ts: '2026-07-15T13:00:00.100Z', sessionId: 'codex-proxy',
         responseId: 'resp_shared', provider: 'openai', model: 'gpt-5.5', receivedAt: Date.parse('2026-07-15T13:00:00.100Z'),
@@ -1572,8 +1572,8 @@ describe('codex importer', () => {
 
       const result = await scanAndImport();
       await config.storage.drain();
-      // A proxy line never suppresses the import (A-2.1); the read-time merge folds it.
-      assert.strictEqual(result.imported, 1);
+      assert.deepStrictEqual(result, { imported: 0, skipped: 1 });
+      assert.deepStrictEqual(readIndexLines(), [proxyLine], 'no duplicate is written');
       assert.strictEqual(sessionIdx.get('codex-proxy').count, 1, 'count claimed once by responseId');
       const merged = store.mergeByResponseId(readIndexLines());
       assert.strictEqual(merged.length, 1);
