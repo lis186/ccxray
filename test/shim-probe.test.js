@@ -51,6 +51,60 @@ beforeEach(() => {
   fs.writeFileSync(path.join(home, 'local-secret'), identityRoot, { mode: 0o600 });
 });
 
+describe('port discovery fallback', () => {
+  const fallbackEnv = () => ({ CCXRAY_SHIM_HOME: path.join(root, 'home'), PROXY_PORT: String(healthPort) });
+
+  function assertFallback(env) {
+    assert.equal(fs.existsSync(path.join(env.CCXRAY_SHIM_HOME, 'hub.json')), false);
+    assert.equal(Object.hasOwn(env, 'CCXRAY_SHIM_PORT'), false);
+    assert.equal(probe.discoverPort(env, env.CCXRAY_SHIM_HOME), healthPort);
+  }
+
+  for (const body of [
+    { app: 'ccxray', ok: true },
+    { app: 'ccxray', ok: true, hub: true },
+    { app: 'ccxray', ok: true, shimProof: 'A'.repeat(43) },
+  ]) {
+    for (const tool of ['claude', 'codex']) {
+      it(`bypasses an unverified PROXY_PORT listener for ${tool} (${JSON.stringify(body)})`, async () => {
+        healthBody = body;
+        proveIdentity = false;
+        const env = fallbackEnv();
+        assertFallback(env);
+        const direct = await probe.decide(tool, ['hello'], env);
+        assert.equal(direct, 'direct');
+        assert.doesNotMatch(direct, /^(claude|codex) http:\/\/127\.0\.0\.1:/);
+        assert.equal(logLines().at(-1).reason, 'unverified-listener');
+        assert.equal(logLines().at(-1).action, 'bypass');
+        const strict = await probe.decide(tool, ['hello'], { ...env, CCXRAY_SHIM_STRICT: '1' });
+        assert.match(strict, /^refuse .*unverified-listener/);
+        assert.doesNotMatch(strict, /^(claude|codex) http:\/\/127\.0\.0\.1:/);
+        assert.equal(logLines().at(-1).reason, 'unverified-listener');
+        assert.equal(logLines().at(-1).action, 'refused');
+      });
+    }
+  }
+
+  for (const tool of ['claude', 'codex']) {
+    it(`routes ${tool} through a verified standalone PROXY_PORT listener`, async () => {
+      const env = fallbackEnv();
+      assertFallback(env);
+      assert.equal(await probe.decide(tool, ['hello'], env),
+        `${tool} http://127.0.0.1:${healthPort}${tool === 'claude' ? ' 0' : ''}`);
+      assert.equal(seenNonces.length, 1);
+      assert.deepEqual(logLines(), []);
+    });
+  }
+
+  it('discovers 5577 when no hub file or port variables are present', () => {
+    const env = { CCXRAY_SHIM_HOME: path.join(root, 'home') };
+    assert.equal(fs.existsSync(path.join(env.CCXRAY_SHIM_HOME, 'hub.json')), false);
+    assert.equal(Object.hasOwn(env, 'CCXRAY_SHIM_PORT'), false);
+    assert.equal(Object.hasOwn(env, 'PROXY_PORT'), false);
+    assert.equal(probe.discoverPort(env, env.CCXRAY_SHIM_HOME), 5577);
+  });
+});
+
 describe('listener identity', () => {
   for (const body of [
     { app: 'ccxray', ok: true },

@@ -576,6 +576,8 @@ a temporary home and four local recording upstreams for HTTP and WebSocket.
 Launcher listener identity tests use temporary homes with dummy 32-byte `local-secret` files at `0600`.
 `shim-probe.test.js` and `launcher-shims.e2e.test.js` compute challenge proofs on ephemeral loopback listeners;
 foreign listeners, different-port proofs and unusable local files must produce bypasses.
+Both cover `PROXY_PORT` discovery without `hub.json` or `CCXRAY_SHIM_PORT`, including verified standalone routing
+and unverified-listener bypass/refusal. The probe suite checks default discovery of 5577 without binding that port.
 `shim-listener-identity.test.js` also connects the real shared handler to the decision path through an
 in-process HTTP fixture, including uid checks and verification before registration.
 `health-capabilities.test.js` checks the shared hub/standalone health handler's proof and unchanged

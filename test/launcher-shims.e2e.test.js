@@ -178,6 +178,34 @@ describe('proxy healthy (criterion 1)', () => {
 });
 
 describe('foreign listener', () => {
+  it('uses PROXY_PORT without a hub file and requires a verified standalone listener', async () => {
+    assert.equal(fs.existsSync(path.join(ccxrayHome, 'hub.json')), false);
+    const env = { CCXRAY_SHIM_PORT: undefined, PROXY_PORT: String(proxyPort) };
+    for (const tool of ['claude', 'codex']) {
+      const args = tool === 'claude' ? ['-p', 'hello'] : ['exec', 'hello'];
+      proxyIdentity = false;
+      const direct = await run(tool, args, { env });
+      assert.equal(direct.code, 0);
+      assert.match(direct.stdout, /BASE:\n/);
+      assert.ok(direct.stdout.includes(`ARGS:${args.join(' ')}\n`));
+      assert.doesNotMatch(direct.stdout, /http:\/\/127\.0\.0\.1:/);
+      assert.equal(bypassLines().at(-1).reason, 'unverified-listener');
+      const strict = await run(tool, args, { env: { ...env, CCXRAY_SHIM_STRICT: '1' } });
+      assert.equal(strict.code, 111);
+      assert.doesNotMatch(strict.stdout, /ARGS:/);
+      assert.match(strict.stderr, /unverified-listener/);
+      assert.equal(bypassLines().at(-1).action, 'refused');
+
+      proxyIdentity = true;
+      const bypassCount = bypassLines().length;
+      const routed = await run(tool, args, { env });
+      assert.equal(routed.code, 0);
+      if (tool === 'claude') assert.ok(routed.stdout.includes(`BASE:http://127.0.0.1:${proxyPort}\n`));
+      else assert.ok(routed.stdout.includes(`ARGS:-c openai_base_url="http://127.0.0.1:${proxyPort}/v1" exec hello\n`));
+      assert.equal(bypassLines().length, bypassCount);
+    }
+  });
+
   for (const tool of ['claude', 'codex']) {
     it(`runs ${tool} directly and logs the unverified listener`, async () => {
       proxyIdentity = false;
