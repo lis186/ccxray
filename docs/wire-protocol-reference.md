@@ -115,6 +115,8 @@
 | ~~Rate-limit ≠ context window~~ | `anthropic-ratelimit-tokens-limit` (e.g. `80000`) is a per-window quota, **not** the context window — never use it to size the denominator | N/A | `obs-stable` |
 | Subscription rate-limit samples | `anthropic-ratelimit-unified-*` carries status, utilization, reset and representative-claim values; preserve the raw family under `sample.unified`, without interpreting it as token capacity or plan identity. Firsthand upstream reports: [#12829](https://github.com/anthropics/claude-code/issues/12829), [#29604](https://github.com/anthropics/claude-code/issues/29604). Covered with synthetic headers; no live capture in #576. | Provider-dependent; CLI version not asserted | `obs-fragile` |
 
+The most likely root cause of #576 is that subscription (OAuth) traffic only carries `anthropic-ratelimit-unified-*` headers, so the old collector returned `null`; there was no live capture to confirm which cause occurred on a real hub.
+
 ---
 
 ## 3. Request Shape

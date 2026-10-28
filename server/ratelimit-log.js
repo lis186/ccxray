@@ -93,7 +93,7 @@ function appendSample({ headers, parsed, model, planHint }) {
     // Fire-and-forget: filesystem work never delays or rejects the proxy response.
     Promise.resolve()
       .then(() => fs.promises.mkdir(CCXRAY_HOME, { recursive: true, mode: HOME_DIR_MODE }))
-      .then(() => fs.promises.appendFile(SAMPLES_FILE, JSON.stringify(sample) + '\n'))
+      .then(() => fs.promises.appendFile(SAMPLES_FILE, JSON.stringify(sample) + '\n', { mode: 0o600 }))
       .catch(err => {
         // A failed append must not suppress an identical future retry.
         if (_lastSigByModel.get(modelKey) === sig) _lastSigByModel.delete(modelKey);

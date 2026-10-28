@@ -193,7 +193,10 @@ describe('ratelimit-log', () => {
       await waitFor(() => readSamples(logger).length === 1);
       assert.equal(readSamples(logger)[0].tokensLimit, 220000);
       assert.equal(warnings.length, 0);
-      if (process.platform !== 'win32') assert.equal(fs.statSync(home).mode & 0o777, 0o700);
+      if (process.platform !== 'win32') {
+        assert.equal(fs.statSync(home).mode & 0o777, 0o700);
+        assert.equal(fs.statSync(logger.SAMPLES_FILE).mode & 0o777, 0o600);
+      }
     });
 
     it('dedupes identical unified headers but records utilization and reset transitions', async t => {
