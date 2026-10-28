@@ -28,7 +28,7 @@ const ALLOWLISTS = {
   chatgpt: codexAllowlist(['chatgpt-account-id', 'last-event-id'], ['mcp-']),
   xai: {
     names: new Set(['authorization', 'x-api-key']),
-    prefixes: ['x-xai-', 'x-grok-', 'x-stainless-', 'openai-', 'x-openai-'],
+    prefixes: ['x-xai-', 'x-grok-', 'x-stainless-'],
   },
 };
 const HOP_BY_HOP = new Set([

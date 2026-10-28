@@ -4,7 +4,7 @@ const WebSocket = require('ws');
 const crypto = require('crypto');
 const config = require('./config');
 const hub = require('./hub');
-const { isAnthropicSide } = require('./request-signals');
+const { isAnthropicSide, hasConflictingAuthValues } = require('./request-signals');
 const store = require('./store');
 const helpers = require('./helpers');
 const { calculateCost } = require('./pricing');
@@ -410,6 +410,10 @@ function wsRecordValue(parsed) {
 }
 
 function handleWebSocketUpgrade(req, socket, head, opts = {}) {
+  if (hasConflictingAuthValues(req.headers, req)) {
+    writeSocketResponse(socket, 421, 'Misdirected Request');
+    return true;
+  }
   const upstream = config.getUpstreamForRequestAndHeaders(req.url, req.headers, req);
   if (!isOpenAIWebSocket(req, upstream) || isAnthropicSide(req.headers, req)) {
     writeSocketResponse(socket, 404, 'Not Found');
