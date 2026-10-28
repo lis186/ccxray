@@ -677,7 +677,7 @@ describe('usage --json shape contract', () => {
     sameKeys(sessions.turnDistribution, ['min', 'median', 'p75', 'max']);
     assert.ok(Array.isArray(sessions.topSessions) && sessions.topSessions.length <= 10);
     for (const s of sessions.topSessions) {
-      sameKeys(s, ['sessionId', 'turns', 'cost', 'costAgg', 'durationMin', 'title', 'branch', 'model', 'provider']);
+      sameKeys(s, ['sessionId', 'turns', 'cost', 'costAgg', 'durationMin', 'title', 'branch', 'model', 'provider', 'modelBreakdown']);
       // INVARIANT(ADR 0017): `costAgg` travels WITH `cost` — a consumer of this
       // JSON cannot see the turns, so it cannot re-derive the confidence fold,
       // and rendering `cost` without it is the unmarked-fabrication path.

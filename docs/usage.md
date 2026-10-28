@@ -109,6 +109,7 @@ Each `topSessions[]` element:
 | `title` | string \| null | Best non-continuation title, truncated to 40 chars. `null` if none. |
 | `branch` | string \| null | Git branch of the session's latest-received turn that recorded one (see `branch` in [data-model.md](data-model.md)). `null` when no turn recorded a branch (outside git, detached HEAD, or entries older than branch recording). |
 | `model` | string | The session's **dominant** model (most turns), as a single string — not a map. `"unknown"` if absent. |
+| `modelBreakdown` | array | All models in this session, sorted by turns descending (ties keep first-seen order), with `{model, turns, cost, costAgg}` per model. `cost` is USD rounded independently to 2 dp; `costAgg` uses the confidence fold above. Missing models use `"unknown"`. Unlike the top-level `models`, this array is uncapped. A model switch keeps one `topSessions` entry with combined cost and does not increase `meta.totalSessions` or `sessions.count`; `model` remains the dominant model string. |
 | `provider` | string | Provider of the first turn. |
 
 ### `models`
