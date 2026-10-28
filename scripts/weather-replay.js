@@ -22,6 +22,9 @@
 // cost of the rebuild path's cheaper dedup.
 //
 // READ-ONLY: never writes to ~/.ccxray, never mutates index.ndjson.
+// Parsed turns live only for a session's replay (including shared response groups).
+// Per-row byte ranges and response-ID indexes remain resident: O(rows), roughly
+// 0.3 KB/row in the synthetic bench, plus session summaries and the working set.
 
 const fs = require('fs');
 const os = require('os');
@@ -94,12 +97,14 @@ async function scanIndex(fd, snapshotBytes, provider) {
     if (!m.sessionId) { counts.skippedNoSid++; return; }
     if (provider && m.provider !== provider) { counts.skippedProvider++; return; }
     counts.kept++;
-    const range = { start: offset, length: bytes.length, rid: m.responseId };
+    const range = { start: offset, length: bytes.length, group: null };
     if (!bySid.has(m.sessionId)) bySid.set(m.sessionId, []);
     bySid.get(m.sessionId).push(range);
     if (m.responseId) {
       if (!byRid.has(m.responseId)) byRid.set(m.responseId, []);
-      byRid.get(m.responseId).push(range);
+      // Refer to the shared group directly; don't retain another rid string per row.
+      range.group = byRid.get(m.responseId);
+      range.group.push(range);
       if (!m.isSubagent && !firstMain.has(m.responseId)) firstMain.set(m.responseId, offset);
     }
   }
@@ -140,7 +145,7 @@ function replaySessions(fd, snapshotBytes, ing) {
     // groups, even when another copy claims a different session. A logical
     // session's working set includes these copies; unrelated sessions stay on disk.
     const ranges = new Set(own);
-    for (const r of own) if (r.rid) for (const copy of ing.byRid.get(r.rid)) ranges.add(copy);
+    for (const r of own) if (r.group) for (const copy of r.group) ranges.add(copy);
     const ordered = [...ranges].sort((a, b) => a.start - b.start);
     const all = ordered.map(r => readRange(fd, r, snapshotBytes));
     const offsets = new Map(all.map((m, i) => [m, ordered[i].start]));
