@@ -53,6 +53,12 @@ it('dispatch consults wire parsers, forwards noise intact without entries, and r
   const requests = [], contexts = [];
   const countResponse = JSON.stringify({ input_tokens: 73081 });
   const errorResponse = JSON.stringify({ error: { type: 'not_found', message: 'synthetic 404' } });
+  const messageResponse = JSON.stringify({
+    id: 'msg_synthetic', type: 'message', role: 'assistant', model: 'synthetic-model',
+    content: [{ type: 'text', text: 'pong' }], stop_reason: 'end_turn',
+    usage: { input_tokens: 10, output_tokens: 2 },
+  });
+  let messageStatus = 404;
   // Inject only the upstream transport. Actual forwarding, response handling,
   // parser registry, routing and store registration run in this process.
   t.mock.method(http, 'request', (options, onResponse) => {
@@ -60,8 +66,9 @@ it('dispatch consults wire parsers, forwards noise intact without entries, and r
     req.end = body => {
       requests.push({ ...options, body: Buffer.from(body).toString() });
       const isCount = options.path === '/v1/messages/count_tokens';
-      const response = Readable.from([Buffer.from(isCount ? countResponse : errorResponse)]);
-      response.statusCode = isCount ? 200 : 404;
+      const isMessage = options.path === '/v1/messages' && messageStatus === 200;
+      const response = Readable.from([Buffer.from(isCount ? countResponse : isMessage ? messageResponse : errorResponse)]);
+      response.statusCode = isCount || isMessage ? 200 : 404;
       response.headers = { 'content-type': 'application/json' };
       onResponse(response);
     };
@@ -157,4 +164,18 @@ it('dispatch consults wire parsers, forwards noise intact without entries, and r
   assert.equal(store.entries.length, 1, 'real messages record exactly one entry');
   assert.equal(store.entries[0].path, '/v1/messages');
   await store.entries[0]._writePromise;
+
+  // Exercise successful message handling as well as the error control above.
+  messageStatus = 200;
+  const beforeSuccess = store.entries.length;
+  const success = await send('POST', '/v1/messages', message, anthropicHeaders);
+  assert.equal(success.status, 200);
+  assert.equal(success.body, messageResponse, 'successful message response passes through intact');
+  assert.equal(contexts.at(-1).skipEntry, undefined);
+  assert.equal(store.entries.length, beforeSuccess + 1, 'successful messages record exactly one new entry');
+  const entry = store.entries.at(-1);
+  assert.equal(entry.path, '/v1/messages');
+  assert.equal(entry.status, 200);
+  assert.deepEqual(entry.usage, { input_tokens: 10, output_tokens: 2 }, 'successful message usage is recorded');
+  await entry._writePromise;
 });

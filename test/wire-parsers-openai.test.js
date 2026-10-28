@@ -79,6 +79,10 @@ describe('wire-parsers/openai', () => {
         for (const suffix of ['', '?stream=true', '/child?stream=true']) {
           assert.equal(openai.isNoiseRequest(root + suffix, headers, {}), false, root + suffix);
         }
+        // Pin current isOpenAIConversationPath matching (and the analogous
+        // /v1/messages exemption): exact roots, query or child paths. '-extra' is not
+        // exempt from this client's control-plane noise; this is not the
+        // namespace near-miss=false rule tested above.
         assert.equal(openai.isNoiseRequest(root + '-extra', headers, {}), true);
       }
       assert.equal(openai.isNoiseRequest('', headers, {}), false);
