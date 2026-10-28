@@ -437,6 +437,48 @@ function verifyUpstream(req, res) {
   return false;
 }
 
+// Dashboard state-changing requests (anything but GET/HEAD/OPTIONS): a request
+// that declares a browsing context must be same-origin. Sec-Fetch-Site, when
+// sent, decides (same-origin / none pass). Otherwise the parsed Origin must
+// equal the listener's own origin: same scheme, same effective port (the
+// socket's local port, not the Host header) and a loopback hostname. The three
+// loopback spellings (localhost, 127.0.0.1, [::1]) are treated as one host
+// because the dashboard is opened as http://localhost:<port> while the listener
+// binds 127.0.0.1; they never match across ports or schemes. Requests carrying
+// neither header (CLI, curl, hub clients, tests) are unaffected. Applies to
+// loopback peers too.
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+const LOOPBACK_ORIGIN_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+function passesDashboardWriteOrigin(req) {
+  if (SAFE_METHODS.has(req.method)) return true;
+  const sfs = req.headers['sec-fetch-site'];
+  if (sfs !== undefined) return sfs === 'same-origin' || sfs === 'none';
+  const origin = req.headers.origin;
+  if (origin === undefined) return true;
+  let u;
+  try { u = new URL(origin); } catch { return false; }
+  const scheme = req.socket && req.socket.encrypted ? 'https:' : 'http:';
+  if (u.protocol !== scheme) return false;
+  const localPort = req.socket && req.socket.localPort;
+  if (!Number.isInteger(localPort)) return false;
+  const originPort = u.port !== '' ? Number(u.port) : (scheme === 'https:' ? 443 : 80);
+  return originPort === localPort && LOOPBACK_ORIGIN_HOSTS.has(u.hostname.toLowerCase());
+}
+
+function verifyDashboardWrite(req, res) {
+  if (classifyDomain(req) !== 'dashboard' || passesDashboardWriteOrigin(req)) return true;
+  res.writeHead(403, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: 'forbidden', message: 'Cross-origin dashboard writes are not allowed' }));
+  return false;
+}
+
+// JSON-body write routes require Content-Type: application/json.
+function hasJsonContentType(req) {
+  const ct = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+  return ct === 'application/json';
+}
+
 function dispatch(req) {
   const domain = classifyDomain(req);
   return {
@@ -464,6 +506,8 @@ module.exports = {
   // but may include optional data only for already-trusted callers.
   isDashboardAuthenticated,
   verifyDashboard,
+  verifyDashboardWrite,
+  hasJsonContentType,
   verifyUpstream,
   // Shared upstream credential taxonomy (pure header check)
   verifyUpstreamCredential,

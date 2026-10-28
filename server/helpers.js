@@ -1207,8 +1207,15 @@ function isProtectedByStar(meta, sets) {
   return false;
 }
 
+// decodeURIComponent that reports malformed escapes (e.g. "%FF") as null
+// instead of throwing, so route handlers can answer 400.
+function safeDecodeURIComponent(text) {
+  try { return decodeURIComponent(text); } catch { return null; }
+}
+
 module.exports = {
   B2_MARKER_DEFS,
+  safeDecodeURIComponent,
   timestamp,
   taipeiTime,
   printSeparator,

@@ -158,7 +158,7 @@ async function run(argv) {
         exact.push(newest?.sessionId);
       }
       else if (id === 'costliest') {
-        const bySess = {};
+        const bySess = Object.create(null);
         for (const e of entries) if (e.sessionId) bySess[e.sessionId] = (bySess[e.sessionId] || 0) + (e.cost?.cost || 0);
         exact.push(Object.entries(bySess).sort((a, b) => b[1] - a[1])[0]?.[0]);
       }
@@ -188,7 +188,7 @@ async function run(argv) {
 
   // ponytail: #2 multi-cwd comparison — 2+ cwds → per-project summary via analyze()
   if (args.cwds.length >= 2) {
-    const groups = {};
+    const groups = Object.create(null);
     for (const e of entries) { const k = e.cwd || 'unknown'; if (!groups[k]) groups[k] = []; groups[k].push(e); }
     // No retention opts here on purpose: a group's retention fields are never
     // emitted, so forwarding `since` into them would be dead code no test could
@@ -261,7 +261,7 @@ const emptyCostFold = () => ({ count: 0, fallbackCount: 0, fallbackCost: 0, unkn
 function turnToolCounts(e) {
   if (e.turnToolCalls) return e.turnToolCalls;
   if (e.toolCalls || !e.turnToolCallIds || typeof e.turnToolCallIds !== 'object') return null;
-  const counts = {};
+  const counts = Object.create(null);
   for (const name of Object.values(e.turnToolCallIds)) {
     const n = name || 'unknown';
     counts[n] = (counts[n] || 0) + 1;
@@ -274,11 +274,11 @@ function analyze(entries, opts = {}) {
   entries = dedupeEntries(repricedView(entries));
   const retention = retentionStatus(opts);
   const timestamps = [];
-  const byProvider = {};
-  const bySession = {};
-  const modelMap = {};
-  const toolAgg = {};
-  const skillMap = {}; // skill name → { invocations, sessions: Set }
+  const byProvider = Object.create(null);
+  const bySession = Object.create(null);
+  const modelMap = Object.create(null);
+  const toolAgg = Object.create(null);
+  const skillMap = Object.create(null); // skill name → { invocations, sessions: Set }
   let totalCost = 0, totalToolCalls = 0, failCount = 0, subagentCount = 0, legacySkillCount = 0;
   let totalInput = 0, totalCacheCreate = 0, totalCacheRead = 0, totalOutput = 0;
 
@@ -337,7 +337,7 @@ function analyze(entries, opts = {}) {
   // INVARIANT (ADR 0018): only null/undefined turnToolCalls may reach this
   // cumulative fallback; {} was a parsed zero-call response and was handled above.
   for (const turns of Object.values(bySession)) {
-    const sessMax = {};
+    const sessMax = Object.create(null);
     for (const e of turns) {
       if (turnToolCounts(e)) continue; // already summed in-loop
       if (!e.toolCalls) continue;
@@ -394,7 +394,7 @@ function analyze(entries, opts = {}) {
       return {
         sessionId: sid, turns: turns.length, cost: +cost.toFixed(2), costAgg,
         durationMin: +((dur) / 60).toFixed(1), title, branch,
-        model: turns.reduce((m, e) => { m[e.model || 'unknown'] = (m[e.model || 'unknown'] || 0) + 1; return m; }, {}),
+        model: turns.reduce((m, e) => { m[e.model || 'unknown'] = (m[e.model || 'unknown'] || 0) + 1; return m; }, Object.create(null)),
         provider: turns[0]?.provider || 'unknown',
       };
     })
