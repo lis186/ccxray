@@ -47,6 +47,22 @@ describe('health listener identity', () => {
     return body;
   };
 
+  it('keeps health unchanged and continues serving when local identity cannot be read', () => {
+    const file = path.join(FIX_HOME, 'local-secret');
+    const plain = health();
+    fs.unlinkSync(file);
+    fs.mkdirSync(file);
+    try {
+      for (let i = 0; i < 2; i++) {
+        assert.equal(health('a'.repeat(64)), plain);
+        assert.equal(health(), plain);
+      }
+    } finally {
+      fs.rmdirSync(file);
+      fs.writeFileSync(file, identityRoot, { mode: 0o600 });
+    }
+  });
+
   for (const hubPort of [null, 23456]) {
     it(`proves the socket's own port in ${hubPort ? 'hub' : 'standalone'} mode`, () => {
       hub.setHubPort(hubPort);
@@ -74,5 +90,19 @@ describe('health listener identity', () => {
 
   it('accepts both challenge length boundaries', () => {
     for (const length of [32, 128]) assert.match(JSON.parse(health('a'.repeat(length))).shimProof, /^[A-Za-z0-9_-]{43}$/);
+  });
+
+  it('keeps the initialized proof available if the local identity file changes', () => {
+    const nonce = 'a'.repeat(64);
+    const expected = health(nonce);
+    const file = path.join(FIX_HOME, 'local-secret');
+    fs.unlinkSync(file);
+    fs.mkdirSync(file);
+    try {
+      assert.equal(health(nonce), expected);
+    } finally {
+      fs.rmdirSync(file);
+      fs.writeFileSync(file, identityRoot, { mode: 0o600 });
+    }
   });
 });

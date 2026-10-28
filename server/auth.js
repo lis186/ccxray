@@ -78,10 +78,12 @@ function deriveSecrets(rootKey) {
 
 // A proof binds one launch challenge to this listener's own local port.
 function shimIdentityProof(nonce, port) {
-  if (typeof nonce !== 'string' || nonce.length < 32 || nonce.length > 128 || /[^0-9a-fA-F]/.test(nonce)
-      || !Number.isInteger(port) || port < 1 || port > 65535) return undefined;
-  return crypto.createHmac('sha256', getSecrets().K_shim)
-    .update(`ccxray-shim-identity/v1\n${nonce}\n${port}`, 'utf8').digest('base64url');
+  try {
+    if (typeof nonce !== 'string' || nonce.length < 32 || nonce.length > 128 || /[^0-9a-fA-F]/.test(nonce)
+        || !Number.isInteger(port) || port < 1 || port > 65535) return undefined;
+    return crypto.createHmac('sha256', getSecrets().K_shim)
+      .update(`ccxray-shim-identity/v1\n${nonce}\n${port}`, 'utf8').digest('base64url');
+  } catch { return undefined; }
 }
 
 // ─── Stateless HMAC session cookie ───────────────────────────────────
@@ -466,6 +468,7 @@ module.exports = {
   deriveSecrets,
   shimIdentityProof,
   getRootSecret,
+  getSecrets,
   signCookie,
   verifyCookie,
   compareSecret,

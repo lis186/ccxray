@@ -176,6 +176,47 @@ after(async () => {
 });
 
 describe('root secret is ready before listener health', () => {
+  for (const kind of ['directory', 'mode-000']) {
+    it(`still listens and serves health when local-secret is ${kind}`, {
+      skip: kind === 'mode-000' && (process.platform === 'win32' || process.getuid?.() === 0)
+        ? 'requires file permission enforcement for a non-root user' : false,
+    }, async () => {
+      const startupHome = fs.mkdtempSync(path.join(root, 'unavailable-identity-'));
+      const file = path.join(startupHome, 'local-secret');
+      if (kind === 'directory') fs.mkdirSync(file);
+      else {
+        fs.writeFileSync(file, Buffer.alloc(32, 0x42), { mode: 0o600 });
+        fs.chmodSync(file, 0o000);
+      }
+      const port = await freePort();
+      const proxy = startProxy(port, { env: { CCXRAY_HOME: startupHome } });
+      try {
+        await waitFor(() => health(port), 'health with unavailable local identity');
+        for (let i = 0; i < 2; i++) {
+          const result = await bounded(new Promise((resolve, reject) => {
+            const req = http.get(`http://127.0.0.1:${port}/_api/health`, {
+              headers: { 'X-Ccxray-Shim-Challenge': 'a'.repeat(64) }, timeout: 1000,
+            }, res => {
+              let body = '';
+              res.on('data', chunk => { body += chunk; });
+              res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(body) }));
+            });
+            req.on('error', reject);
+            req.on('timeout', () => req.destroy(new Error('health timed out')));
+          }), 'challenged health');
+          assert.equal(result.status, 200);
+          assert.equal(result.body.ok, true);
+          assert.equal(Object.hasOwn(result.body, 'shimProof'), false);
+          assert.equal(proxy.exitCode, null);
+        }
+        assert.equal(await health(port), true);
+      } finally {
+        await stop(proxy);
+        if (kind === 'mode-000') fs.chmodSync(file, 0o600);
+      }
+    });
+  }
+
   for (const hub of [false, true]) {
     for (const secret of ['fresh', 'existing', 'AUTH_TOKEN']) {
       it(`${hub ? 'hub' : 'standalone'}: ${secret} identity is available on startup`, async () => {

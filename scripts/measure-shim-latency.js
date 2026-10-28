@@ -48,6 +48,7 @@ async function main() {
 
     const identityRoot = Buffer.alloc(32, 0x42);
     fs.writeFileSync(path.join(home, 'local-secret'), identityRoot, { mode: 0o600 });
+    // Keep this fixture's derivation and proof aligned with server/auth.js shimIdentityProof.
     const identityKey = crypto.hkdfSync('sha256', identityRoot, Buffer.alloc(0), Buffer.from('ccxray/v1/shim-identity'), 32);
     let delay = 0;
     const proxy = http.createServer((req, res) => setTimeout(() => {

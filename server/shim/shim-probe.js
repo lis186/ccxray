@@ -44,6 +44,8 @@ function discoverPort(env, home) {
   const explicit = Number(env.CCXRAY_SHIM_PORT);
   if (Number.isInteger(explicit) && explicit > 0 && explicit < 65536) return explicit;
   try {
+    // Discovery only suggests a port; the proof verifies it before routing,
+    // so this read does not need an owner check.
     const port = Number(JSON.parse(fs.readFileSync(path.join(home, 'hub.json'), 'utf8')).port);
     if (Number.isInteger(port) && port > 0 && port < 65536) return port;
   } catch { /* no hub lock: fall through to the default port */ }
@@ -159,14 +161,15 @@ function readIdentityFile(file, privateMode, maxBytes) {
 
 function launchIdentity(env, home) {
   try {
-    const root = env.AUTH_TOKEN
-      ? crypto.createHash('sha256').update(env.AUTH_TOKEN, 'utf8').digest()
-      : readIdentityFile(path.join(home, 'local-secret'), true, 32);
-    if (!root) return null;
+    const roots = [];
+    if (env.AUTH_TOKEN) roots.push(crypto.createHash('sha256').update(env.AUTH_TOKEN, 'utf8').digest());
+    const localRoot = readIdentityFile(path.join(home, 'local-secret'), true, 32);
+    if (localRoot) roots.push(localRoot);
+    if (!roots.length) return null;
     return {
       nonce: crypto.randomBytes(32).toString('hex'),
-      key: Buffer.from(crypto.hkdfSync('sha256', root, Buffer.alloc(0),
-        Buffer.from('ccxray/v1/shim-identity', 'utf8'), 32)),
+      keys: roots.map(root => Buffer.from(crypto.hkdfSync('sha256', root, Buffer.alloc(0),
+        Buffer.from('ccxray/v1/shim-identity', 'utf8'), 32))),
     };
   } catch { return null; }
 }
@@ -181,10 +184,12 @@ async function probeListener(port, ms, env, home) {
 
 function verifyIdentity(proof, identity, port) {
   try {
-    if (!identity.key || typeof proof !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(proof)) return false;
-    const expected = crypto.createHmac('sha256', identity.key)
-      .update(`ccxray-shim-identity/v1\n${identity.nonce}\n${port}`, 'utf8').digest('base64url');
-    return crypto.timingSafeEqual(Buffer.from(proof), Buffer.from(expected));
+    if (!identity.keys || typeof proof !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(proof)) return false;
+    return identity.keys.some(key => {
+      const expected = crypto.createHmac('sha256', key)
+        .update(`ccxray-shim-identity/v1\n${identity.nonce}\n${port}`, 'utf8').digest('base64url');
+      return crypto.timingSafeEqual(Buffer.from(proof), Buffer.from(expected));
+    });
   } catch { return false; }
 }
 

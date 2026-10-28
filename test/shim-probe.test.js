@@ -170,10 +170,15 @@ describe('listener identity', () => {
     });
   }
 
-  it('uses AUTH_TOKEN before a local-secret', async () => {
+  it('accepts an AUTH_TOKEN proof with or without a usable local-secret', async () => {
     proofRoot = crypto.createHash('sha256').update('dummy-shim-token').digest();
+    for (const tool of ['claude', 'codex']) assert.match(await probe.decide(tool, ['hello'], envFor({ AUTH_TOKEN: 'dummy-shim-token' })), new RegExp(`^${tool} http:`));
     fs.unlinkSync(path.join(root, 'home', 'local-secret'));
     for (const tool of ['claude', 'codex']) assert.match(await probe.decide(tool, ['hello'], envFor({ AUTH_TOKEN: 'dummy-shim-token' })), new RegExp(`^${tool} http:`));
+  });
+
+  it('routes using local-secret when the shim has an unrelated AUTH_TOKEN', async () => {
+    for (const tool of ['claude', 'codex']) assert.match(await probe.decide(tool, ['hello'], envFor({ AUTH_TOKEN: 'dummy-unrelated-token' })), new RegExp(`^${tool} http:`));
   });
 
   it('leaves an already chosen loopback URL unchanged without a proof or secret', async () => {

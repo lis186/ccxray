@@ -34,9 +34,10 @@ Options: `--shim-dir D` installs the two shims into a directory that is already 
    (`CCXRAY_SHIM_TIMEOUT_MS`). The shim verifies the listener is this user's ccxray instance before routing;
    otherwise it runs the tool directly and logs a bypass (`unverified-listener`; strict mode refuses).
    Each launch sends a fresh challenge and checks a nonce-and-port-bound HMAC proof. Its key is derived from
-   `AUTH_TOKEN` when set, otherwise from `<CCXRAY_HOME>/local-secret`: a regular, non-symlink, 32-byte file
+   either `AUTH_TOKEN` when set or a usable `<CCXRAY_HOME>/local-secret`: a regular, non-symlink, 32-byte file
    owned by this user with no group/other permissions. Ownership checks are skipped on Windows or without
-   `getuid`; the proof is still required. Existing loopback base URLs pass through as before.
+   `getuid`; the proof is still required. A user-set loopback base URL is passed through unchanged and is not
+   verified; the shim changes nothing on that path.
    The launch-time cost has several parts, each with its own bound: a Node start, the HTTP health check
    (300 ms by default), and, on a hub, a socket registration of the launch. The whole helper phase is capped by
    the shell deadline (2 s by default). When the helper is unusable, the fallback log adds at most about 1 s, plus
@@ -63,6 +64,17 @@ Options: `--shim-dir D` installs the two shims into a directory that is already 
    hatch): the launch is refused with exit code 111 and a message, and logged with `action: "refused"`. This holds
    for every failure path: no listener, auth required, helper exception, helper crash and the deadline.
    `CCXRAY_SHIM_DISABLE=1` skips everything.
+
+## Known limits
+
+The proof binds the port number, but not the address family or interface. Port-mapped setups where the
+listener sees a different port (for example host port 15577 mapped to listener port 5577) fail verification
+and run directly by default (strict mode refuses).
+
+Verification happens once at launch. If the listener exits and another process takes the port before the
+tool connects, the launch-time check does not cover that later connection or the rest of the session.
+If local identity initialization fails, the server still listens and health omits `shimProof` while the
+identity remains unavailable; shim launches run directly by default.
 
 ## Attribution and lifetime
 
