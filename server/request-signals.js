@@ -44,7 +44,7 @@ function hasConflictingAuthValues(headers = {}, req) {
   if (new Set(xKeys).size > 1) return true;
   const values = [
     ...headerValues(headers, 'authorization', req).map(value => value.replace(/^Bearer\s+/i, '')),
-    ...xKeys,
+    ...xKeys.map(value => value.replace(/^Bearer\s+/i, '')),
   ].filter(Boolean);
   const anthropic = values.some(value => /^sk-ant-/i.test(value));
   const openai = values.some(value => (/^sk-/i.test(value) && !/^sk-ant-/i.test(value))

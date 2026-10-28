@@ -152,6 +152,9 @@ it('routing fix and provider header hygiene at fake upstreams', async t => {
         ['X-Api-Key', 'sk-ant-dummy-000', 'X-Api-Key', 'sk-ant-dummy-001'],
         ['Authorization', 'Bearer aaaaaaaaaaaa.bbbb.cccc', 'X-Api-Key', 'sk-ant-dummy-000'],
         ['Authorization', anthropic, 'X-Api-Key', 'sk-proj-dummy-000'],
+        ['X-Api-Key', 'Bearer sk-ant-dummy-000', 'Authorization', other],
+        ['Authorization', anthropic, 'X-Api-Key', 'Bearer sk-proj-dummy-000'],
+        ['Authorization', anthropic, 'X-Api-Key', 'Bearer aaaaaaaaaaaa.bbbb.cccc'],
         ['Authorization', anthropic, 'X-Api-Key', 'aaaaaaaaaaaa.bbbb.cccc'],
         ['X-Api-Key', 'xai-dummy-000', 'X-Api-Key', 'sk-proj-dummy-000'],
         ['X-Api-Key', 'xai-dummy-000, sk-proj-dummy-000'],
@@ -623,6 +626,10 @@ it('routing fix and provider header hygiene at fake upstreams', async t => {
           ], '{}');
           assert.equal(result.status, 200);
           assert.equal(received.length, before + 1);
+          const headers = received.at(-1).headers;
+          const xKeyIndex = values.indexOf('X-Api-Key');
+          assert.equal(headers['x-api-key'], xKeyIndex === -1 ? undefined : values[xKeyIndex + 1]);
+          assert.equal(headers.authorization, values[values.indexOf('Authorization') + 1]);
           assert.deepEqual([openaiReceived.length, chatgptReceived.length, xaiReceived.length], otherBefore);
           assert.ok(upstreamConnections.slice(connectionsBefore).every(server => server === upstream));
         }

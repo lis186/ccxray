@@ -13,6 +13,11 @@ it('routing fix: Anthropic and OpenAI-shaped values together', () => {
     [{ authorization: `Bearer ${jwt}`, 'x-api-key': anthropic }, true],
     [{ authorization: `Bearer ${anthropic}`, 'x-api-key': jwt }, true],
     [{ authorization: `Bearer ${anthropic}`, 'x-api-key': openai }, true],
+    [{ authorization: `Bearer ${openai}`, 'x-api-key': `Bearer ${anthropic}` }, true],
+    [{ authorization: `Bearer ${anthropic}`, 'x-api-key': `Bearer ${openai}` }, true],
+    [{ authorization: `Bearer ${anthropic}`, 'x-api-key': `Bearer ${jwt}` }, true],
+    [{ 'x-api-key': `Bearer ${anthropic}` }, false],
+    [{ authorization: 'Bearer gw-dummy-000', 'x-api-key': `Bearer ${anthropic}` }, false],
     [{ authorization: 'Basic gw-dummy-000', 'x-api-key': anthropic }, false],
     [{ authorization: `Basic ${jwt}`, 'x-api-key': anthropic }, false],
     [{ authorization: `Bearer ${jwt}`, 'x-api-key': '' }, false],
@@ -25,6 +30,11 @@ it('routing fix: Anthropic and OpenAI-shaped values together', () => {
     assert.equal(hasConflictingAuthValues(headers), expected, JSON.stringify(headers));
   }
   for (const gap of [' ', '\t', '   ']) {
+    for (const scheme of ['Bearer', 'bearer', 'bEaReR']) {
+      assert.equal(hasConflictingAuthValues({
+        authorization: `Bearer ${openai}`, 'x-api-key': `${scheme}${gap}${anthropic}`,
+      }), true);
+    }
     for (const values of [
       [`Bearer ${openai}`, `Bearer${gap}${anthropic}`],
       [`Bearer${gap}${anthropic}`, `Bearer ${openai}`],
@@ -56,11 +66,12 @@ it('routing fix: distinct x-api-key values', () => {
     ['gw-dummy-000', 'xai-dummy-000'],
     ['sk-ant-dummy-000', 'sk-proj-dummy-000'],
     ['sk-ant-dummy-000', 'sk-ant-dummy-001'],
+    ['sk-ant-dummy-000', 'Bearer sk-ant-dummy-000'],
   ]) {
     checkValues('x-api-key', values, true);
     checkValues('x-api-key', [...values].reverse(), true);
   }
-  for (const value of ['sk-ant-dummy-000', 'xai-dummy-000', 'gw-dummy-000', 'k']) {
+  for (const value of ['sk-ant-dummy-000', 'Bearer sk-ant-dummy-000', 'xai-dummy-000', 'gw-dummy-000', 'k']) {
     checkValues('x-api-key', [value, value], false);
     checkValues('x-api-key', ['', ` ${value} `, value, ''], false);
   }
