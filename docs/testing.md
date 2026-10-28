@@ -51,6 +51,38 @@ and OpenAI-shaped values together and distinct nonempty `x-api-key` values
 Anthropic keys with gateway bearers (Anthropic), and xAI header forwarding
 (follow-up to #747).
 
+## Weather replay memory check
+
+`test/weather-replay-bounded.test.js` belongs to the heavy lane and generates a
+throwaway interleaved index. It compares stdout against the original whole-corpus
+algorithm, including global cross-session response-ID merges, provider filters,
+`--list-bad`, UTF-8/CRLF, an unterminated final row, an empty index, and appends
+immediately after the size snapshot or after pass 1. Its children use temporary
+HOME and CCXRAY_HOME directories with LOGS_DIR and agent/upstream overrides removed.
+The existing `weather-replay-golden.test.js` remains unchanged.
+
+For the opt-in memory/timing check, run:
+
+```bash
+node scripts/weather-replay-bench.js scripts/weather-replay.js 48
+# Compare a disposable baseline checkout with the same deterministic fixture:
+node scripts/weather-replay-bench.js /tmp/baseline/scripts/weather-replay.js 48
+```
+
+The script generates 81,968,040 bytes (72,000 rows, 6,000 interleaved sessions),
+runs with the requested heap cap, reports wall time, sampled heap and peak RSS,
+and deletes its fixture in `finally`. Heap is sampled every 100 ms and at exit;
+this is a sampled high-water value, not an exact heap peak. OOM runs cannot emit
+exit-time RSS. Use a larger identical cap (e.g. 256) for three successful timing
+runs per revision and compare medians; an OOM duration is not a completion time.
+No real index or recorded session data is needed. No dependencies are installed.
+
+Parsed residency is one session plus all copies of its response-ID groups (even
+copies claiming a different session, to preserve production's global merge).
+Byte ranges and response-ID keys remain proportional to row count; scalar session
+summaries and numeric rate arrays remain for percentiles, stable report ordering,
+`--list-bad` and deltas. No full parsed corpus or field projection is retained.
+
 ## Test hygiene
 
 A test must produce the same result on the author's machine and on a clean CI
