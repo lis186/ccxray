@@ -574,6 +574,9 @@ with synthetic values supplied by tests. `test/unknown-path.e2e.test.js` uses
 a temporary home and four local recording upstreams for HTTP and WebSocket.
 
 Launcher listener identity tests use temporary homes with dummy 32-byte `local-secret` files at `0600`.
+`launcher-shims.proxy.e2e.test.js` also starts real standalone and hub servers in fresh temporary homes:
+once unchallenged health responds, the root secret must already exist (32 bytes, `0600`, home `0700`)
+and `probeListener()` must verify it. Startup preserves existing secrets and creates no secret file with a dummy `AUTH_TOKEN`.
 `shim-probe.test.js` and `launcher-shims.e2e.test.js` compute challenge proofs on ephemeral loopback listeners;
 foreign listeners, different-port proofs and unusable local files must produce bypasses.
 Both cover `PROXY_PORT` discovery without `hub.json` or `CCXRAY_SHIM_PORT`, including verified standalone routing

@@ -15,6 +15,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 
 const { runWrapBinaries } = require('../server/launcher-shims');
+const { probeListener } = require('../server/shim/shim-probe');
 
 const SERVER = path.join(__dirname, '..', 'server', 'index.js');
 const SYSTEM_PATH = '/usr/bin:/bin';
@@ -174,6 +175,44 @@ after(async () => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+describe('root secret is ready before listener health', () => {
+  for (const hub of [false, true]) {
+    for (const secret of ['fresh', 'existing', 'AUTH_TOKEN']) {
+      it(`${hub ? 'hub' : 'standalone'}: ${secret} identity is available on startup`, async () => {
+        const fixture = fs.mkdtempSync(path.join(root, 'startup-'));
+        const startupHome = path.join(fixture, '.ccxray');
+        const secretPath = path.join(startupHome, 'local-secret');
+        const existing = Buffer.alloc(32, 0x42);
+        if (secret === 'existing') {
+          fs.mkdirSync(startupHome, { mode: 0o700 });
+          fs.writeFileSync(secretPath, existing, { mode: 0o600 });
+        }
+        const env = { CCXRAY_HOME: startupHome, ...(secret === 'AUTH_TOKEN' ? { AUTH_TOKEN: 'dummy-startup-token' } : {}) };
+        const port = await freePort();
+        const proxy = startProxy(port, { hub, env });
+        try {
+          await waitFor(() => health(port), 'startup health');
+          // Check before the challenged probe: the probe must not create the secret.
+          if (secret === 'AUTH_TOKEN') {
+            assert.equal(fs.existsSync(secretPath), false);
+          } else {
+            const st = fs.statSync(secretPath);
+            assert.equal(st.size, 32);
+            if (process.platform !== 'win32') {
+              assert.equal(st.mode & 0o777, 0o600);
+              assert.equal(fs.statSync(startupHome).mode & 0o777, 0o700);
+            }
+            if (secret === 'existing') assert.deepEqual(fs.readFileSync(secretPath), existing);
+          }
+          const result = await probeListener(port, 1000, env, startupHome);
+          assert.equal(result.ok, true, JSON.stringify(result));
+          if (secret === 'AUTH_TOKEN') assert.equal(fs.existsSync(secretPath), false);
+        } finally { await stop(proxy); }
+      });
+    }
+  }
+});
+
 describe('plain spawn → shim → real standalone proxy → fake upstream (criterion 1)', () => {
   let port; let proxy;
   before(async () => {
@@ -207,6 +246,8 @@ describe('plain spawn → shim → real standalone proxy → fake upstream (crit
 describe('listener-side authentication (finding 5)', () => {
   it('bypasses a proxy that gates loopback although the shim env does not say so, and refuses in strict mode', async () => {
     const authHome = fs.mkdtempSync(path.join(root, 'auth-home-'));
+    // Share the shim's identity so this exercises verified listener auth gating.
+    fs.writeFileSync(path.join(authHome, 'local-secret'), fs.readFileSync(path.join(home, 'local-secret')), { mode: 0o600 });
     const port = await freePort();
     const proxy = spawn(process.execPath, [SERVER, '--port', String(port), '--no-browser'], {
       env: { PATH: process.env.PATH, HOME: root, CCXRAY_HOME: authHome, CCXRAY_IMPORT_DISABLE: '1', CCXRAY_EXPORT_DISABLE: '1',
@@ -316,8 +357,9 @@ describe('hub mode: attribution and lifetime (should-fix 1)', () => {
       const proj = fs.mkdirSync(path.join(root, 'proj-c'), { recursive: true }) || path.join(root, 'proj-c');
       const barrier = path.join(root, 'release-barrier');
       fs.writeFileSync(barrier, 'go'); // nothing to wait for here
-      // The shim looks for hub.json in an empty home: the hub is healthy but registration cannot happen.
+      // Share the hub's identity, but omit hub.json so verification succeeds and registration cannot happen.
       const noLock = fs.mkdtempSync(path.join(root, 'no-lock-'));
+      fs.writeFileSync(path.join(noLock, 'local-secret'), fs.readFileSync(path.join(fx.hubHome, 'local-secret')), { mode: 0o600 });
       const before = hits.length;
       const entriesBefore = indexEntries().length;
       const l = launchCodex(fx.hubShims, proj, 'sess-c', { CCXRAY_SHIM_HOME: noLock, CCXRAY_SHIM_PORT: String(fx.port) });
