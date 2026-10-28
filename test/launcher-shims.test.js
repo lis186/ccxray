@@ -735,6 +735,32 @@ describe('zsh interactive PATH ordering', () => {
     assert.match(out.join('\n'), /warn interactive login zsh:.*could not be checked/);
   });
 
+  it('does not warn about .zlogin lines unrelated to PATH', async () => {
+    const o = zshOptions();
+    assert.equal(await install([], o), 0);
+    fs.writeFileSync(path.join(root, '.zlogin'), '# PATH comment\nfortune\n');
+    out.length = 0;
+    assert.equal(await setup.runSetup(['--wrap-binaries', '--check'], o), 0);
+    assert.match(out.join('\n'), /ok   interactive login zsh/);
+    fs.appendFileSync(path.join(root, '.zlogin'), 'path=(/other $path)\n');
+    out.length = 0;
+    assert.equal(await setup.runSetup(['--wrap-binaries', '--check'], o), 0);
+    assert.match(out.join('\n'), /warn interactive login zsh:.*\.zlogin/);
+  });
+
+  it('bounds profile presence reads for both zsh startup files', async () => {
+    const o = zshOptions();
+    assert.equal(await install([], o), 0);
+    for (const file of zfiles()) {
+      const original = fs.readFileSync(file);
+      fs.appendFileSync(file, Buffer.alloc(256 * 1024));
+      out.length = 0;
+      assert.equal(await setup.runSetup(['--wrap-binaries', '--check'], o), 1);
+      assert.ok(out.some(line => line.includes(`PATH block in ${file} missing`)));
+      fs.writeFileSync(file, original);
+    }
+  });
+
   it('rolls back both profiles exactly when the manifest write fails', async () => {
     zfiles().forEach(file => fs.writeFileSync(file, Buffer.from([35, 255])));
     const before = snapshot(root);
@@ -744,36 +770,5 @@ describe('zsh interactive PATH ordering', () => {
     });
     assert.equal(await install([], o), 1);
     assert.deepEqual(snapshot(root), before);
-  });
-
-  it('real zsh resolves the shim after user PATH edits, including login and repeated sourcing', async t => {
-    const { spawnSync } = require('node:child_process');
-    const zsh = ['/usr/bin/zsh', '/bin/zsh'].find(file => fs.existsSync(file));
-    if (!zsh) { t.skip('zsh is not installed; startup-file layout is tested separately'); return; }
-    const bin = path.join(root, '.local', 'bin');
-    fs.mkdirSync(bin, { recursive: true });
-    fs.writeFileSync(path.join(bin, 'codex'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-    fs.writeFileSync(zfiles()[1], 'export PATH="$HOME/.local/bin:$PATH"\n');
-    // GLOBAL_RCS disables all global files after the unavoidable global zshenv.
-    fs.writeFileSync(zfiles()[0], 'unsetopt GLOBAL_RCS\n');
-    assert.equal(await install([], zshOptions()), 0);
-    const noninteractive = spawnSync(zsh, ['-c', 'command -v codex'], {
-      env: { HOME: root, ZDOTDIR: root, PATH: `${bin}:${home}/shims:/usr/bin:/bin`, TERM: 'dumb' },
-      encoding: 'utf8', timeout: 5000,
-    });
-    assert.equal(noninteractive.status, 0, noninteractive.stderr || String(noninteractive.error));
-    assert.equal(noninteractive.stdout.trim(), path.join(home, 'shims', 'codex'));
-    for (const flags of [['-i'], ['-l', '-i']]) {
-      const result = spawnSync(zsh, [...flags, '-c',
-        'source "$ZDOTDIR/.zshrc"; source "$ZDOTDIR/.zshrc"; command -v codex; print -l -- $path'], {
-        env: { HOME: root, ZDOTDIR: root, PATH: `/usr/bin:${home}/shims:/bin`, TERM: 'dumb' },
-        encoding: 'utf8', timeout: 5000,
-      });
-      assert.equal(result.status, 0, result.stderr || String(result.error));
-      const lines = result.stdout.trim().split('\n');
-      assert.equal(lines[0], path.join(home, 'shims', 'codex'));
-      assert.equal(lines[1], path.join(home, 'shims'));
-      assert.equal(lines.slice(1).filter(p => p === path.join(home, 'shims')).length, 1);
-    }
   });
 });

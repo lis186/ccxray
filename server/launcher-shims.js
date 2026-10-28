@@ -107,13 +107,13 @@ function renderShim(deps, lay, strict) {
 }
 
 function renderPathBlock(shimDir, shell) {
-  // zsh's path array removes previous literal entries before prepending; (b)
-  // escapes pattern characters in directory names for the exclusion pattern.
+  // Local zsh options preserve the whole path array under sh/ksh emulation.
+  // Quote the exclusion pattern to match only the literal shim directory.
   return [
     BLOCK_START,
     `ccxray_shim_dir=${quotePosix(shimDir)}`,
     shell === 'zsh'
-      ? 'case ":$PATH" in ":$ccxray_shim_dir:"*) ;; *) path=("$ccxray_shim_dir" "${(@)path:#${(b)ccxray_shim_dir}}"); export PATH ;; esac'
+      ? 'case ":$PATH" in ":$ccxray_shim_dir:"*) ;; *) () { emulate -L zsh; path=("$ccxray_shim_dir" "${(@)path:#"$ccxray_shim_dir"}"); }; export PATH ;; esac'
       : 'case ":$PATH" in ":$ccxray_shim_dir:"*) ;; *) PATH="$ccxray_shim_dir:$PATH"; export PATH ;; esac',
     'unset ccxray_shim_dir',
     BLOCK_END,
@@ -459,36 +459,37 @@ function resolveOnPath(tool, pathVar, deps) {
   return null;
 }
 
-// Static checks never execute startup code. Bound the additional reads and avoid
-// blocking on special files; unknown layouts only produce a warning.
+// Static checks never execute startup code. Bound zsh reads and avoid blocking
+// on special files; unknown layouts only produce a warning.
+function readZshStartupFile(file, deps) {
+  let fd;
+  try {
+    fd = deps.fs.openSync(file, deps.fs.constants.O_RDONLY | deps.fs.constants.O_NONBLOCK);
+    const st = deps.fs.fstatSync(fd);
+    if (!st.isFile() || st.size > 256 * 1024) throw new Error('not a small regular file');
+    const bytes = Buffer.alloc(st.size);
+    const n = deps.fs.readSync(fd, bytes, 0, bytes.length, 0);
+    if (n !== bytes.length) throw new Error('startup file changed during check');
+    return toText(bytes);
+  } catch (err) {
+    if (err.code === 'ENOENT') return '';
+    throw err;
+  } finally { if (fd !== undefined) deps.fs.closeSync(fd); }
+}
+
 function checkZshLayout(manifest, deps) {
   const envProfile = manifest.profiles.find(p => path.basename(p.file) === '.zshenv');
   if (!envProfile) return;
   const rc = path.join(path.dirname(envProfile.file), '.zshrc');
   const login = path.join(path.dirname(envProfile.file), '.zlogin');
-  const read = file => {
-    let fd;
-    try {
-      fd = deps.fs.openSync(file, deps.fs.constants.O_RDONLY | deps.fs.constants.O_NONBLOCK);
-      const st = deps.fs.fstatSync(fd);
-      if (!st.isFile() || st.size > 256 * 1024) throw new Error('not a small regular file');
-      const bytes = Buffer.alloc(st.size);
-      const n = deps.fs.readSync(fd, bytes, 0, bytes.length, 0);
-      if (n !== bytes.length) throw new Error('startup file changed during check');
-      return toText(bytes);
-    } catch (err) {
-      if (err.code === 'ENOENT') return '';
-      throw err;
-    } finally { if (fd !== undefined) deps.fs.closeSync(fd); }
-  };
   let reason;
   try {
-    const text = read(rc);
+    const text = readZshStartupFile(rc, deps);
     const range = blockRange(text);
     const expected = toText(Buffer.from(renderPathBlock(manifest.shimDir, 'zsh')));
     if (!manifest.profiles.some(p => p.file === rc) || !range || text.slice(range.start) !== expected) {
       reason = `${rc} lacks the current PATH block as its last content; re-run setup --wrap-binaries --shell zsh`;
-    } else if (read(login).split('\n').some(line => line.trim() && !line.trim().startsWith('#'))) {
+    } else if (readZshStartupFile(login, deps).split('\n').some(line => !line.trim().startsWith('#') && /\b(?:PATH|path)\b/.test(line))) {
       reason = `${login} runs after .zshrc and may change PATH`;
     }
   } catch (err) { reason = `startup layout could not be checked (${err.message})`; }
@@ -528,7 +529,11 @@ async function check(options, deps, lay) {
   }
   for (const profile of manifest.profiles) {
     let present = false;
-    try { present = toText(deps.fs.readFileSync(profile.file)).includes(BLOCK_START); } catch { /* missing */ }
+    try {
+      const text = ['.zshenv', '.zshrc'].includes(path.basename(profile.file))
+        ? readZshStartupFile(profile.file, deps) : toText(deps.fs.readFileSync(profile.file));
+      present = text.includes(BLOCK_START);
+    } catch { /* missing or not safely readable */ }
     flag(present, `PATH block in ${profile.file} ${present ? 'present' : 'missing'}`);
   }
   checkZshLayout(manifest, deps);

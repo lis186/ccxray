@@ -21,10 +21,14 @@ This deliberately includes mocked and one-shot child-process tests in the serial
 group. If a new test spawns through a helper rather than importing child_process,
 name it `*.e2e.test.js` so it runs serially. All groups retain the HOME guard. The `unit` group also preloads `test/helpers/no-network.js` (non-loopback connections throw; loopback and unix sockets stay allowed). `scripts/run-tests.js` also sets `CCXRAY_NETWORK_GUARD_ENFORCE=1` for the unit group, which makes a blocked attempt sticky: it prints a `no-network guard: BLOCKED …` line and forces a non-zero exit code for that test file's process even if the code under test catches the thrown error. A unit test that reaches the network therefore fails instead of downloading anything (#717). Without the variable (stryker, ad-hoc runs) the guard only throws; guard self-tests run their probe children non-enforcing. A test that forks the hub must point `CCXRAY_PRICING_CACHE` at a seeded temp cache (see `test/hub.test.js`).
 
-`launcher-shims.test.js` includes zsh startup-file layout, manifest upgrade/removal, and real interactive/login
-shell checks. Each uses temporary HOME/ZDOTDIR paths and a fake real binary. The real-zsh check disables
-`GLOBAL_RCS` in the temporary `.zshenv` (the system zshenv is unavoidable), has a five-second timeout, and skips
-with a reason when zsh is absent; file-layout assertions always run.
+`launcher-shims.test.js` keeps the filesystem-only zsh startup layout, manifest upgrade/removal,
+and static check tests in the unit lane. Real shell checks live in the heavy-lane
+`launcher-shims.e2e.test.js`, independently of its loopback proxy fixtures. They use temporary
+HOME/ZDOTDIR paths and a fake real binary, disable `GLOBAL_RCS` in the temporary `.zshenv`
+(the system zshenv is unavoidable), and simulate a macOS login PATH rebuild in `.zprofile`
+with `zsh -l -i`. Generated blocks are also sourced under KSH_ARRAYS, sh/ksh emulation,
+and both GLOB_SUBST settings with literal glob-special directories. Shell processes have a
+five-second timeout and skip with a reason when zsh is absent; filesystem assertions always run.
 
 Tests must not pass `process.env` to `getAgentLaunch('codex')`: OAuth-mode launches read the user's Codex `config.toml` (`$CODEX_HOME` or `$HOME/.codex`); pass a minimal env with a temp `CODEX_HOME`.
 `npm test` attempts every group even if an earlier group fails and returns a

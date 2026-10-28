@@ -5,14 +5,14 @@
 // loopback fake on an ephemeral port (or a closed one). Nothing here touches the
 // real shell profiles, PATH configuration, ~/.claude, ~/.codex or ~/.ccxray.
 
-const { describe, it, before, after, beforeEach } = require('node:test');
+const { describe, it, before, after, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const http = require('http');
 const net = require('net');
 const os = require('os');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 
 const { runWrapBinaries } = require('../server/launcher-shims');
 
@@ -76,6 +76,7 @@ const bypassLines = () => {
   try { return fs.readFileSync(path.join(ccxrayHome, 'shim-bypass.log'), 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l)); } catch { return []; }
 };
 
+describe('installed launcher shims', () => {
 before(async () => {
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-shim-e2e-')));
   ccxrayHome = path.join(root, '.ccxray');
@@ -818,4 +819,85 @@ describe('real-binary override is always an explicit path (round 2, must-fix 1)'
     assert.equal(r.code, 0);
     assert.match(r.stdout, /WHO:claude/);
   });
+});
+
+});
+
+// Startup checks need no proxy and remain independent of the loopback fixtures.
+describe('real zsh PATH blocks', () => {
+  const zsh = ['/usr/bin/zsh', '/bin/zsh'].find(file => fs.existsSync(file));
+  let home;
+  let shims;
+  beforeEach(async () => {
+    home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-zsh-e2e-')));
+    shims = path.join(home, '.ccxray', 'shims');
+    // Global zshenv is unavoidable; disable later system startup files.
+    fs.writeFileSync(path.join(home, '.zshenv'), 'unsetopt GLOBAL_RCS\n');
+    assert.equal(await runWrapBinaries({ yes: true, shell: 'zsh', noSessionEnv: true }, {
+      env: { HOME: home, ZDOTDIR: home, CCXRAY_HOME: path.join(home, '.ccxray'), PATH: SYSTEM_PATH },
+      homedir: () => home, platform: 'darwin', logger: quiet(),
+    }), 0);
+  });
+  afterEach(() => fs.rmSync(home, { recursive: true, force: true }));
+
+  function shell(t, args, initialPath) {
+    if (!zsh) { t.skip('zsh is not installed; startup-file layout is tested separately'); return; }
+    const result = spawnSync(zsh, args, {
+      env: { HOME: home, ZDOTDIR: home, PATH: initialPath, TERM: 'dumb' },
+      encoding: 'utf8', timeout: 5000,
+    });
+    assert.equal(result.status, 0, result.stderr || (result.error ? String(result.error) : `zsh exited ${result.status}`));
+    return result.stdout.trim().split('\n');
+  }
+
+  it('resolves the shim after user and login PATH rebuilds and repeated sourcing', t => {
+    const bin = path.join(home, '.local', 'bin');
+    makeFake(path.join(bin, 'codex'), 'exit 0');
+    // Model macOS login PATH rebuilding between .zshenv and .zshrc.
+    fs.writeFileSync(path.join(home, '.zprofile'), 'export PATH="$HOME/.local/bin:$PATH"\n');
+    const rc = path.join(home, '.zshrc');
+    fs.writeFileSync(rc, 'export PATH="$HOME/.local/bin:$PATH"\n' + fs.readFileSync(rc, 'utf8'));
+    const noninteractive = shell(t, ['-c', 'command -v codex'], `${bin}:${shims}:${SYSTEM_PATH}`);
+    if (!noninteractive) return;
+    assert.deepEqual(noninteractive, [path.join(shims, 'codex')]);
+    for (const flags of [['-i'], ['-l', '-i']]) {
+      const lines = shell(t, [...flags, '-c',
+        'command -v codex; source "$ZDOTDIR/.zshrc"; source "$ZDOTDIR/.zshrc"; print -l -- "${path[@]}"'],
+      `/opt/a:/usr/bin:${shims}:/opt/b:/bin`);
+      assert.equal(lines[0], path.join(shims, 'codex'));
+      assert.equal(lines[1], shims);
+      assert.equal(lines.slice(1).filter(p => p === shims).length, 1);
+      for (const entry of [bin, '/opt/a', '/usr/bin', '/opt/b', '/bin']) assert.ok(lines.includes(entry));
+    }
+  });
+
+  for (const mode of ['setopt ksh_arrays', 'emulate sh', 'emulate ksh']) {
+    it(`preserves every PATH entry under ${mode}`, t => {
+      const initial = `/opt/a:/usr/bin:${shims}:/opt/b:/bin`;
+      // -f prevents startup blocks running before the option set under test.
+      const command = mode.startsWith('emulate')
+        ? `${mode} -c 'source "$ZDOTDIR/.zshrc"; [[ -o ksharrays ]]' || exit $?; print -r -- "$PATH"`
+        : `${mode}; source "$ZDOTDIR/.zshrc"; print -r -- "$PATH"; [[ -o ksharrays ]]`;
+      const lines = shell(t, ['-f', '-c', command], initial);
+      if (lines) assert.deepEqual(lines, [`${shims}:/opt/a:/usr/bin:/opt/b:/bin`]);
+    });
+  }
+
+  for (const dir of ['we[ir]d*?', 'par(en)']) {
+    for (const globsubst of [false, true]) {
+      it(`deduplicates only the literal ${dir} with GLOB_SUBST ${globsubst ? 'on' : 'off'}`, t => {
+        // Use the generated block with a literal glob-special shim directory.
+        const { renderPathBlock } = require('../server/launcher-shims');
+        const shim = path.join(home, dir);
+        const block = path.join(home, 'block.zsh');
+        fs.writeFileSync(block, renderPathBlock(shim, 'zsh'));
+        const similar = ['weid', 'weird', 'paren'].map(name => path.join(home, name));
+        const tail = ['/usr/bin', ...similar, '/bin'];
+        const initial = [tail[0], shim, ...tail.slice(1), shim].join(':');
+        const lines = shell(t, ['-f', '-c',
+          `${globsubst ? 'setopt' : 'unsetopt'} GLOB_SUBST; source "$ZDOTDIR/block.zsh"; source "$ZDOTDIR/block.zsh"; print -r -- "$PATH"`], initial);
+        if (lines) assert.deepEqual(lines, [[shim, ...tail].join(':')]);
+      });
+    }
+  }
 });
