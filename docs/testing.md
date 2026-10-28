@@ -588,3 +588,14 @@ Header allowlist (follow-up to #745): `test/fixtures/routing/header-names.json`
 contains observed Claude/Codex header names and documented Grok header names,
 with synthetic values supplied by tests. `test/unknown-path.e2e.test.js` uses
 a temporary home and four local recording upstreams for HTTP and WebSocket.
+
+`test/noise-dispatch.test.js` executes the complete HTTP callback from
+`server/index.js` in a VM, with real wire parsers, forwarding and entry storage.
+It replaces the upstream HTTP transport with synthetic in-memory responses;
+it does not execute the launcher, listen on a socket or import transcripts.
+Its temporary `HOME`, `CCXRAY_HOME`, `LOGS_DIR` and absent pricing-cache path
+are set before loading server modules and restored after pending writes and
+session-index flush complete. Classification positives and boundary negatives
+live in `test/wire-parsers-anthropic.test.js` and
+`test/wire-parsers-openai.test.js`. The dispatch test belongs to the unit lane
+(the runner classifies by filename and imports), despite integrating modules.
