@@ -201,7 +201,9 @@ describe('PROXY_HOST opt-in', () => {
       assert.equal(addrs[0].address, '0.0.0.0');
       assert.equal((await get('127.0.0.1', port)).status, 200);
       const lan = firstNonLoopbackIPv4();
-      if (lan) assert.equal(await canListenOnPort(lan, port), false);
+      // Linux rejects this re-bind; macOS/BSD permits a specific address
+      // to bind the same port as a wildcard listener.
+      if (lan && process.platform === 'linux') assert.equal(await canListenOnPort(lan, port), false);
     } finally {
       delete process.env.PROXY_HOST;
       await closeServer(srv);

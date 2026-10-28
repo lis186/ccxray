@@ -340,8 +340,8 @@ describe('statusline-setup helpers (#687)', () => {
       fs.renameSync = realRename;
     }
     assert.equal(renames.length, 1);
-    assert.equal(path.dirname(renames[0][0]), sc.claudeHome, 'tmp file lives beside the target');
-    assert.equal(renames[0][1], sc.settingsPath);
+    assert.equal(fs.realpathSync(path.dirname(renames[0][0])), fs.realpathSync(sc.claudeHome), 'tmp file lives beside the target');
+    assert.equal(fs.realpathSync(renames[0][1]), fs.realpathSync(sc.settingsPath));
     assert.equal(fs.readFileSync(sc.settingsPath, 'utf8'), originalRaw);
     assert.ok(!fs.readdirSync(sc.claudeHome).some(n => n.endsWith('.tmp')));
   });

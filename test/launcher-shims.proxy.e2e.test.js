@@ -379,6 +379,9 @@ describe('an installed Codex accepts the injected config override (round 2, shou
     assert.equal(ok.code, 0, ok.out);
     const bad = await exec(['-c', 'no-equals-sign', 'features', 'list'], env);
     assert.notEqual(bad.code, 0, 'control: an override without key=value must fail, or this check proves nothing');
-    assert.deepEqual(fs.readdirSync(env.CODEX_HOME), [], 'the sandboxed CODEX_HOME stayed untouched');
+    // Codex may create runtime scratch space even for a parse-only command.
+    const runtimeScratchEntries = new Set(['tmp']);
+    assert.deepEqual(fs.readdirSync(env.CODEX_HOME).filter(name => !runtimeScratchEntries.has(name)), [],
+      'the sandboxed CODEX_HOME contains no entries other than runtime scratch');
   });
 });
