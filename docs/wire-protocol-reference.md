@@ -27,6 +27,7 @@
 
 | Date | Agent | Version | Change |
 |------|-------|---------|--------|
+| 2026-10-29 | Codex | ccxray Unreleased; Claude Code version unspecified in #707 | Pasted-content wrappers are removed from firstPrompt while retaining their text, including an opening tag without a closing tag; synthetic regression coverage (#707). |
 | 2026-10-23 | Codex | ccxray Unreleased | Routing fix: Anthropic-shaped and OpenAI-shaped values together or distinct nonempty `x-api-key` values return local 421 over HTTP and WS; an Anthropic key with a gateway bearer follows Anthropic; xAI omits `openai-*` and `x-openai-*` (follow-up to #747). |
 | 2026-10-23 | Codex | ccxray Unreleased | Header allowlist (follow-up to #745): distinct OpenAI/ChatGPT defaults, xAI names, MCP transport names (spec-derived, pending capture), structural declared-name checks, and Herdr launcher declarations. |
 | 2026-10-23 | Codex | ccxray Unreleased | Header allowlist (follow-up to #745): Claude launcher user-name declarations, operator family opt-ins, resolved WS families, and xAI `x-openai-*` names. |
@@ -138,6 +139,7 @@
 | Aspect | Claude Code | Codex | Confidence |
 |--------|-------------|-------|------------|
 | User text | `{role:"user", content:[{type:"text", text:"..."}]}` | `{type:"message", role:"user", content:[{type:"input_text", text:"..."}]}` | `contractual` |
+| Pasted user text | Text may contain `<pasted_content id="…">…</pasted_content>`; firstPrompt keeps the inner text even without a closing tag (#707). | — | `obs-fragile` (issue-reported; Claude Code version unspecified; synthetic fixtures only) |
 | Assistant text | `{role:"assistant", content:[{type:"text", text:"..."}]}` | `{type:"message", role:"assistant", content:[{type:"output_text", text:"..."}]}` | `contractual` |
 | System in conversation | `{role:"user", content:[{type:"text", text:"<system>..."}]}` (injected tags) | `{type:"message", role:"developer", content:[...]}` | `obs-stable` |
 | Tool invocation | In assistant message: `{type:"tool_use", id, name, input}` | Response output items include `function_call`, `tool_call`, `custom_tool_call`, `computer_call`, `local_shell_call`, `web_search_call`, `file_search_call`, `code_interpreter_call`, `mcp_call`, and `image_generation_call` | `contractual` |
