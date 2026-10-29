@@ -53,6 +53,12 @@ Anthropic keys with gateway bearers (Anthropic), and xAI header forwarding
 
 ## Test hygiene
 
+`bodyless-session.e2e.test.js` uses two keep-alive clients with synthetic agent ids,
+UUIDs and cwd, a fake upstream, and a child proxy with temporary HOME/CCXRAY_HOME
+and import/export disabled. It checks body-less attribution in index.ndjson and
+SSE; the entries API returns `{ entries, sessionTitles, restore }` and its default
+session scope excludes rows without a session id.
+
 A test must produce the same result on the author's machine and on a clean CI
 runner. The failure mode this section exists to prevent: a test silently reads
 the developer's real data, passes locally, and fails (or worse, passes for the
