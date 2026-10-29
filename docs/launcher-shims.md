@@ -58,6 +58,19 @@ Options: `--shim-dir D` installs the two shims into a directory that is already 
    for every failure path: no listener, auth required, helper exception, helper crash and the deadline.
    `CCXRAY_SHIM_DISABLE=1` skips everything.
 
+## Agent identity
+
+When `CCXRAY_AGENT_ID` is set, hub launches register it with `agentType` equal to the
+wrapped tool (`claude` or `codex`) through the existing PID client route. Codex uses
+this registration, so its HTTP and WebSocket traffic needs no extra CLI config or
+provider headers. Claude also merges `X-Ccxray-Agent-Id` into
+`ANTHROPIC_CUSTOM_HEADERS`, preserving existing custom headers and print mode;
+this supports identity on a standalone proxy too. Codex identity requires a hub.
+The existing internal-header filter removes all `x-ccxray-*` headers before upstream forwarding.
+IDs must contain 1–512 ASCII letters, digits, or `._:@/-`; other values (including
+CR/LF, commas, and whitespace) are ignored. An unset ID leaves launch behavior
+unchanged. Re-run `ccxray setup --wrap-binaries --yes` to update installed shims.
+
 ## Attribution and lifetime
 
 Against a **hub**, the probe registers the launching pid (the shim `exec`s, so that pid *is* the tool) and its cwd

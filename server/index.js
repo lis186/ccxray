@@ -672,12 +672,13 @@ const server = http.createServer((clientReq, clientRes) => {
     if (reqSessionId) store.linkParentSession(reqSessionId, parsedBody, isSubagentHint);
 
     // Extract and store cwd (after linkParentSession — see #223)
-    // openai getCwd has a runtime fallback (hub client cwd / process.cwd) that
-    // depends on index.js state — applied after the adapter's wire-level extraction.
+    // Both wire families can lack cwd in the body: use the registered hub cwd.
+    // OpenAI also allows the launcher process cwd via its provider module.
+    // Apply these runtime fallbacks after the adapter's wire-level extraction.
     // Grok vs Codex share openai wire; set session agent from header/model when available.
     if (parsedBody && reqSessionId) {
       const cwd = parser.getCwd(parsedBody, clientReq.headers)
-        || (provider === 'openai' ? getAgentCwdFallback(clientReq) : null);
+        || (provider === 'openai' ? getAgentCwdFallback(clientReq) : hub.lookupClientCwdForRequest(clientReq));
       if (!store.sessionMeta[reqSessionId]) store.sessionMeta[reqSessionId] = {};
       if (provider === 'anthropic') store.cacheConfigDir(reqSessionId, parsedBody);
       store.sessionMeta[reqSessionId].provider = provider;

@@ -21,6 +21,11 @@ This deliberately includes mocked and one-shot child-process tests in the serial
 group. If a new test spawns through a helper rather than importing child_process,
 name it `*.e2e.test.js` so it runs serially. All groups retain the HOME guard. The `unit` group also preloads `test/helpers/no-network.js` (non-loopback connections throw; loopback and unix sockets stay allowed). `scripts/run-tests.js` also sets `CCXRAY_NETWORK_GUARD_ENFORCE=1` for the unit group, which makes a blocked attempt sticky: it prints a `no-network guard: BLOCKED …` line and forces a non-zero exit code for that test file's process even if the code under test catches the thrown error. A unit test that reaches the network therefore fails instead of downloading anything (#717). Without the variable (stryker, ad-hoc runs) the guard only throws; guard self-tests run their probe children non-enforcing. A test that forks the hub must point `CCXRAY_PRICING_CACHE` at a seeded temp cache (see `test/hub.test.js`).
 
+`launcher-shims.proxy.e2e.test.js` uses temporary HOME and synthetic agents/upstreams to check shim identity registration, Claude custom-header merging, header stripping, rejected identities, and fail-open launches.
+`http-session-cwd.test.js` runs the HTTP session-cwd assignment in a VM with synthetic
+requests, real wire parsers, and index encoding to check Claude/Codex cwd fallback
+and wire-cwd precedence without a listener.
+
 `launcher-shims.test.js` keeps the filesystem-only zsh startup layout, manifest upgrade/removal,
 and static check tests in the unit lane. Real shell checks live in the heavy-lane
 `launcher-shims.e2e.test.js`, independently of its loopback proxy fixtures. They use temporary

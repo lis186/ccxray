@@ -67,7 +67,7 @@ Unless noted, a variable is read once at process start. In hub mode the hub's ow
 | `CCXRAY_FAIL_CLOSED` | — | `1` exits on attach/startup failure instead of launching the plain agent. | `server/index.js`, `server/launch-decision.js` |
 | `CCXRAY_DISPLAY_NAME` | `ccxray` | Process/display name used by the launcher and forked hub. | `server/providers.js`, `server/hub.js` |
 | `CCXRAY_HUB_CLIENT_PID` | _(set by ccxray)_ | Set by a hub client before spawning its agent; routes that agent's traffic to its client registration. Not meant to be set by hand. | `server/index.js`, `server/providers.js` |
-| `CCXRAY_AGENT_ID` | — | Agent identity stamped on traffic (e.g. by the Herdr plugin), also hashed into export summaries. | `server/index.js`, `server/export-sync.js` |
+| `CCXRAY_AGENT_ID` | — | Agent identity stamped on traffic (e.g. by the Herdr plugin), also hashed into export summaries. Launcher shims accept 1–512 ASCII letters, digits, or `._:@/-` and register it with the hub; Claude also adds an internal header. | `server/index.js`, `server/export-sync.js`, `server/shim/shim-probe.js` |
 | `CCXRAY_AGENT_TYPE` | — | Agent type paired with `CCXRAY_AGENT_ID`. | `server/index.js`, `server/forward.js` |
 | `CLAUDE_CONFIG_DIR` | `~` | Where the Claude launcher looks for `.claude.json` to read the launch account. | `server/providers.js` |
 | `OPENAI_API_KEY` | — | When set, `ccxray codex` routes through a `model_providers.ccxray` entry; otherwise through `openai_base_url` only (`chatgpt_base_url` is left at Codex's default so ChatGPT workspace discovery works, #671). | `server/providers.js` |
