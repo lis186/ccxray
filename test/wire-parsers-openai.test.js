@@ -30,6 +30,66 @@ describe('wire-parsers/openai', () => {
       }
     });
 
+    // Every URL from the former Codex suppression e2e, paired with a
+    // segment-boundary near miss (query strings must not change classification).
+    const startupCases = [
+      ['/v1/plugins/featured?platform=codex', '/v1/plugins-extra/featured?platform=codex'],
+      ['/v1/plugins/list', '/v1/plugins-extra/list'],
+      ['/v1/ps/plugins/installed?scope=GLOBAL', '/v1/ps/plugins-extra/installed?scope=GLOBAL'],
+      ['/v1/ps/plugins/installed?scope=WORKSPACE&includeDownloadUrls=true', '/v1/ps/plugins-extra/installed?scope=WORKSPACE&includeDownloadUrls=true'],
+      ['/v1/api/codex/apps', '/v1/api/codex-extra/apps'],
+      ['/v1/api/codex/usage', '/v1/api/codex-extra/usage'],
+      ['/v1/connectors/directory/list?external_logos=true', '/v1/connectors-extra/directory/list?external_logos=true'],
+      ['/v1/codex/analytics-events/events', '/v1/codex-extra/analytics-events/events'],
+      ['/v1/models?client_version=0.136.0', '/v1/models/extra?client_version=0.136.0'],
+    ];
+    for (const [url, nearMiss] of startupCases) {
+      it(`startup noise and near miss: ${url}`, () => {
+        const headers = { 'user-agent': 'codex_cli_rs/0.163.0' };
+        assert.equal(openai.isNoiseRequest(url, headers, {}), true);
+        assert.equal(openai.isNoiseRequest(nearMiss, headers, {}), false);
+      });
+    }
+
+    for (const root of ['/v1/plugins', '/v1/ps/plugins', '/v1/connectors', '/v1/api/codex', '/v1/codex']) {
+      it(`noise namespace boundary: ${root}`, () => {
+        for (const suffix of ['', '?probe=true', '/', '/child?probe=true']) {
+          assert.equal(openai.isNoiseRequest(root + suffix, {}, {}), true, root + suffix);
+        }
+        for (const suffix of ['-extra', '_extra/child?probe=true']) {
+          assert.equal(openai.isNoiseRequest(root + suffix, {}, {}), false, root + suffix);
+        }
+      });
+    }
+
+    it('models noise is exact, not a namespace', () => {
+      assert.equal(openai.isNoiseRequest('/v1/models', {}, {}), true);
+      assert.equal(openai.isNoiseRequest('/v1/models/', {}, {}), false);
+      assert.equal(openai.isNoiseRequest('/v1/models-extra', {}, {}), false);
+    });
+
+    it('client control-plane noise requires a matched client and /v1/ boundary', () => {
+      const headers = { 'user-agent': 'grok-shell/1.0' };
+      assert.equal(openai.isNoiseRequest('/v1/billing?probe=true', headers, {}), true);
+      assert.equal(openai.isNoiseRequest('/v1/billing/usage', headers, {}), true);
+      assert.equal(openai.isNoiseRequest('/v1/billing', {}, {}), false);
+      assert.equal(openai.isNoiseRequest('/v1/billing', { 'user-agent': 'codex_cli_rs/0.163.0' }, {}), false);
+      assert.equal(openai.isNoiseRequest('/v1-extra/billing', headers, {}), false);
+      for (const root of ['/v1/responses', '/v1/chat/completions', '/v1/realtime', '/v1/messages']) {
+        for (const suffix of ['', '?stream=true', '/child?stream=true']) {
+          assert.equal(openai.isNoiseRequest(root + suffix, headers, {}), false, root + suffix);
+        }
+        // Pin current isOpenAIConversationPath matching (and the analogous
+        // /v1/messages exemption): exact roots, query or child paths. '-extra' is not
+        // exempt from this client's control-plane noise; this is not the
+        // namespace near-miss=false rule tested above.
+        assert.equal(openai.isNoiseRequest(root + '-extra', headers, {}), true);
+      }
+      assert.equal(openai.isNoiseRequest('', headers, {}), false);
+      assert.equal(openai.isNoiseRequest(null, headers, {}), false);
+      assert.equal(openai.isNoiseRequest(undefined, headers, {}), false);
+    });
+
     it('does not filter real API paths', () => {
       const noisePaths = loadFixture('noise_paths.json');
       for (const p of noisePaths.not_noise) {
