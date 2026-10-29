@@ -27,6 +27,7 @@
 
 | Date | Agent | Version | Change |
 |------|-------|---------|--------|
+| 2026-10-29 | ccxray | Unreleased | #576: sample `anthropic-ratelimit-unified-*` response headers verbatim alongside legacy limits; accept unified-only responses and dedupe on unified transitions. Synthetic coverage; no new live capture. |
 | 2026-10-23 | Codex | ccxray Unreleased | Routing fix: Anthropic-shaped and OpenAI-shaped values together or distinct nonempty `x-api-key` values return local 421 over HTTP and WS; an Anthropic key with a gateway bearer follows Anthropic; xAI omits `openai-*` and `x-openai-*` (follow-up to #747). |
 | 2026-10-23 | Codex | ccxray Unreleased | Header allowlist (follow-up to #745): distinct OpenAI/ChatGPT defaults, xAI names, MCP transport names (spec-derived, pending capture), structural declared-name checks, and Herdr launcher declarations. |
 | 2026-10-23 | Codex | ccxray Unreleased | Header allowlist (follow-up to #745): Claude launcher user-name declarations, operator family opt-ins, resolved WS families, and xAI `x-openai-*` names. |
@@ -112,6 +113,9 @@
 | 1M context window signal | `anthropic-beta` list contains `context-1m-2025-08-07` (present on every request when 1M enabled — a client-level flag, also on haiku turns; does **not** lag a mid-session model switch, unlike the system-prompt `[1m]` marker). Persisted verbatim as `ctxBeta` since #533, so a future tier such as `context-400k-*` is legible without a code change; the tier is parsed out of the id rather than tabulated | N/A | `obs-stable` Claude Code ≥2.1.x |
 | Per-model `[1m]` selection | `/model <id>[1m]` (fable-5 era): request `model` field stays **bare** in both modes; the system-prompt marker carries the suffix (`...is claude-fable-5[1m].`); `context-1m-2025-08-07` appears **only in `[1m]` mode** — the bare model sends neither signal even on an account with 1M available. Session window follows the selection (200K bare / 1M with `[1m]`), NOT the model's API capability: LiteLLM `max_input_tokens` records the API max (fable-5 → 1M, the API default) and must never be used as the session-window denominator (#211) | N/A | `obs-stable` Claude Code ≥2.1.206 |
 | ~~Rate-limit ≠ context window~~ | `anthropic-ratelimit-tokens-limit` (e.g. `80000`) is a per-window quota, **not** the context window — never use it to size the denominator | N/A | `obs-stable` |
+| Subscription rate-limit samples | `anthropic-ratelimit-unified-*` carries status, utilization, reset and representative-claim values; preserve the raw family under `sample.unified`, without interpreting it as token capacity or plan identity. Firsthand upstream reports: [#12829](https://github.com/anthropics/claude-code/issues/12829), [#29604](https://github.com/anthropics/claude-code/issues/29604). Covered with synthetic headers; no live capture in #576. | Provider-dependent; CLI version not asserted | `obs-fragile` |
+
+The most likely root cause of #576 is that subscription (OAuth) traffic only carries `anthropic-ratelimit-unified-*` headers, so the old collector returned `null`; there was no live capture to confirm which cause occurred on a real hub.
 
 ---
 
