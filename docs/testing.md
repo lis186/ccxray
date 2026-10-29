@@ -12,6 +12,10 @@ node --require ./test/helpers/home-guard.js --test test/usage.test.js # one file
 ```
 
 No build step, no test framework beyond Node's built-in `node:test`.
+`test/usage-session-group.test.js` uses synthetic Codex turns with two models in
+one session, plus an uncapped-model/confidence case. It calls the usage command's
+`run()` with a temporary HOME and CCXRAY_HOME, restores the environment and output
+capture afterwards, and verifies the synthetic index is unchanged; no hub starts.
 Mutation testing is an opt-in pilot outside `npm test`: see `docs/mutation-testing.md`.
 
 `scripts/run-tests.js` partitions every top-level `test/*.test.js` exactly once.

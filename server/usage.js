@@ -391,8 +391,21 @@ function analyze(entries, opts = {}) {
       // session index); per-turn `branch` stays exact on the index line.
       const branch = turns.reduce((b, e) => e.branch && (!b || (e.receivedAt || 0) >= b.at)
         ? { name: e.branch, at: e.receivedAt || 0 } : b, null)?.name || null;
+      const perModel = new Map();
+      for (const e of turns) {
+        const model = e.model || 'unknown';
+        if (!perModel.has(model)) perModel.set(model, { model, turns: 0, cost: 0, costAgg: emptyCostFold() });
+        const row = perModel.get(model);
+        row.turns++;
+        row.cost += isUnpriced(e) ? 0 : Number(e.cost.cost);
+        addToCostFold(row.costAgg, e);
+      }
+      const modelBreakdown = [...perModel.values()]
+        .sort((a, b) => b.turns - a.turns)
+        .map(m => ({ ...m, cost: +m.cost.toFixed(2) }));
       return {
         sessionId: sid, turns: turns.length, cost: +cost.toFixed(2), costAgg,
+        modelBreakdown,
         durationMin: +((dur) / 60).toFixed(1), title, branch,
         model: turns.reduce((m, e) => { m[e.model || 'unknown'] = (m[e.model || 'unknown'] || 0) + 1; return m; }, {}),
         provider: turns[0]?.provider || 'unknown',
