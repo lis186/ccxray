@@ -51,6 +51,101 @@ and OpenAI-shaped values together and distinct nonempty `x-api-key` values
 Anthropic keys with gateway bearers (Anthropic), and xAI header forwarding
 (follow-up to #747).
 
+## Weather replay memory check
+
+`test/weather-replay-bounded.test.js` belongs to the heavy lane and generates a
+throwaway interleaved index. It compares stdout against the original whole-corpus
+algorithm, including global cross-session response-ID merges, provider filters,
+`--list-bad`, UTF-8/CRLF, an unterminated final row, an empty index, and appends
+immediately after the size snapshot or after pass 1. Its children use temporary
+HOME and CCXRAY_HOME directories with LOGS_DIR and agent/upstream overrides removed.
+The existing `weather-replay-golden.test.js` remains unchanged.
+
+Equivalence-test limitation: `legacySource()` reconstructs the whole-corpus
+ingest/dedup path from the new script and shares its `measure`/`aggregate`
+functions. It is not an independent check of the measurement refactor; regressions
+in that refactor are guarded only by the hand-counted golden expectations, and
+`--golden` itself also uses the new `measure`.
+
+For an independent comparison, extract the actual pre-refactor script into the
+same directory (so its relative imports resolve), run both against the **same
+synthetic fixture path**, and diff stdout. Use a temporary HOME/CCXRAY_HOME and
+remove agent/upstream overrides; never use the default real index:
+
+```bash
+(
+  set -e
+  task_home=$(mktemp -d)
+  export HOME="$task_home" CCXRAY_HOME="$task_home"
+  unset LOGS_DIR CCXRAY_AGENT_ID ANTHROPIC_BASE_URL OPENAI_BASE_URL
+  legacy=$(mktemp scripts/weather-replay-cf4fac7-XXXXXX.js)
+  trap 'rm -f "$legacy"; rm -rf "$task_home"' EXIT
+  git show cf4fac7:scripts/weather-replay.js > "$legacy"
+  fixture=/tmp/synthetic-weather/index.ndjson # generate synthetic data here first
+  node "$legacy" --index "$fixture" --list-bad > "$task_home/old.stdout"
+  node scripts/weather-replay.js --index "$fixture" --list-bad > "$task_home/new.stdout"
+  diff -u "$task_home/old.stdout" "$task_home/new.stdout"
+)
+```
+
+Repeat with no flags and `--provider anthropic` / `--provider openai`; a successful
+comparison has an empty diff. The review follow-up compared cf4fac7, 3daaa92 and
+the shared-group version across four flag combinations and three fixture endings
+(unterminated valid row, newline, malformed half-row): all 12 stdout comparisons
+were byte-identical.
+
+At a snapshot boundary inside a JSON row, replay counts the partial row as
+`malformed`, matching the old readline replay; ADR 0016's restore reader instead
+skips a boundary half-row. Replay keeps the same byte ceiling but deliberately
+preserves its existing malformed-count semantics.
+
+For the opt-in memory/timing check, run:
+
+```bash
+node scripts/weather-replay-bench.js scripts/weather-replay.js 48
+# Compare a disposable baseline checkout with the same deterministic fixture:
+node scripts/weather-replay-bench.js /tmp/baseline/scripts/weather-replay.js 48
+# 288,000 rows, keeping 6,000 sessions; use 256 MiB for both revisions:
+node scripts/weather-replay-bench.js scripts/weather-replay.js 256 48
+```
+
+The script generates 81,968,040 bytes (72,000 rows, 6,000 interleaved sessions),
+runs with the requested heap cap, reports wall time, sampled heap and peak RSS,
+and deletes its fixture in `finally`. Heap is sampled every 100 ms and at exit;
+this is a sampled high-water value, not an exact heap peak. OOM runs cannot emit
+exit-time RSS. Use a larger identical cap (e.g. 256) for three successful timing
+runs per revision and compare medians; an OOM duration is not a completion time.
+The optional fourth argument sets turns per session (default 12); 48 produces
+328,400,160 bytes / 288,000 rows. No real index or recorded session data is needed.
+No dependencies are installed.
+
+Parsed residency is one session plus all copies of its response-ID groups (even
+copies claiming a different session, to preserve production's global merge).
+Byte ranges and response-ID keys remain proportional to row count; scalar session
+summaries and numeric rate arrays remain for percentiles, stable report ordering,
+`--list-bad` and deltas. No full parsed corpus or field projection is retained.
+Total heap is still O(rows), not independent of corpus size. The review's sampled
+heap for 3daaa92 was approximately 23 / 32 / 54 / 89 MB at 36k / 72k / 144k / 288k
+rows: roughly 0.3 KB per row, including resident range objects, response-ID group
+arrays/Map keys and the first-main index, on top of a runtime/session working set.
+The original whole-corpus script used about 115–131 MB at 72k rows in that review.
+
+The follow-up removes `range.rid`: each range references its shared response
+group directly, leaving response-ID keys in the indexes rather than retaining
+duplicate strings on every row. A Linux / Node v22.23.4 rerun used the bench above,
+256 MiB heap caps and three alternating runs per revision (decimal MB; medians):
+
+| Rows / sessions | 3daaa92 sampled heap | Shared-group sampled heap | Wall seconds before → after |
+| --- | ---: | ---: | ---: |
+| 72,000 / 6,000 | 32.4 MB | 34.2 MB | 1.122 → 1.111 |
+| 288,000 / 6,000 | 88.7 MB | 88.1 MB | 3.822 → 3.857 |
+
+Individual heap samples ranged 30.0–32.6 → 32.7–34.9 MB (72k) and
+88.1–94.3 → 86.4–88.4 MB (288k). This removes redundant retained strings, but the
+sampled heap results do not establish a meaningful overall memory or speed gain;
+allocation/GC timing affects the high-water samples. The O(rows) index and roughly
+0.3 KB/row scale remain, and larger corpora can still exhaust a fixed heap cap.
+
 ## Test hygiene
 
 A test must produce the same result on the author's machine and on a clean CI

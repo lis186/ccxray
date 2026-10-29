@@ -33,3 +33,5 @@ REPORT-*.md
 # Mutation testing (docs/mutation-testing.md): reports + incremental cache stay local
 reports/
 .stryker-tmp/
+
+.agentflow/
