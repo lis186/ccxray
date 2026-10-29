@@ -53,6 +53,8 @@ Anthropic keys with gateway bearers (Anthropic), and xAI header forwarding
 
 ## Test hygiene
 
+`test/pasted-content.test.js` uses a temporary `CCXRAY_HOME` and synthetic user text blocks to check closed and unclosed pasted-content wrappers in `firstPrompt`.
+
 A test must produce the same result on the author's machine and on a clean CI
 runner. The failure mode this section exists to prevent: a test silently reads
 the developer's real data, passes locally, and fails (or worse, passes for the

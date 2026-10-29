@@ -420,7 +420,8 @@ const _INJECTED_OPEN_RE = new RegExp('<(?:' + _INJ_TAGS + ')[^>]*>[\\s\\S]*$', '
 const _INJECTED_BARE_RE = new RegExp('</?(?:' + _INJ_TAGS + ')[^>]*>', 'g');
 function stripInjectedTags(text) {
   if (text == null || typeof text !== 'string') return null;
-  const cleaned = text.replace(_INJECTED_PAIR_RE, '').replace(_INJECTED_OPEN_RE, '').replace(_INJECTED_BARE_RE, '').replace(/\s+/g, ' ').trim();
+  // Pasted text is user content: remove only its wrapper, even when unclosed.
+  const cleaned = text.replace(/<\/?pasted_content\b[^>]*>/g, '').replace(_INJECTED_PAIR_RE, '').replace(_INJECTED_OPEN_RE, '').replace(_INJECTED_BARE_RE, '').replace(/\s+/g, ' ').trim();
   return cleaned || null;
 }
 
