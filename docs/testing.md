@@ -14,6 +14,8 @@ node --require ./test/helpers/home-guard.js --test test/usage.test.js # one file
 No build step, no test framework beyond Node's built-in `node:test`.
 Mutation testing is an opt-in pilot outside `npm test`: see `docs/mutation-testing.md`.
 
+`test/importer-live-dedup.test.js` uses a synthetic live index and Claude transcript with matching response IDs but different timestamps, plus a genuinely new response. It pins temporary storage, both transcript roots and a synthetic pricing cache before loading importer modules; no recorded sessions or running hub are needed.
+
 `scripts/run-tests.js` partitions every top-level `test/*.test.js` exactly once.
 Files requiring Puppeteer go in `browser`; other files with `e2e` in their name
 or `child_process` in their source go in `heavy`; the rest go in `unit`.

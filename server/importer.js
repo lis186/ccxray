@@ -697,7 +697,7 @@ async function parseCodexSessionFile(filePath) {
 const _pendingIndexWrites = [];
 
 // S-2/A-2.1/A-2.2: the dedup context keeps two things apart that look similar
-// but answer different questions. `idsBySession`/`importedResponseIds` are the
+// but answer different questions. `idsBySession`/`responseIds` are the
 // PRIOR state (what a previous scan already wrote) — frozen once the scan
 // starts pushing entries, via `seedDedupCtx`. `existingIds` is the id
 // namespace as it grows THROUGH this scan, used only to detect a millisecond
@@ -708,7 +708,7 @@ const _pendingIndexWrites = [];
 function createDedupCtx() {
   return {
     existingIds: new Set(),
-    importedResponseIds: new Set(),
+    responseIds: new Set(),
     idsBySession: new Map(),
     responseIdById: new Map(),
   };
@@ -725,14 +725,13 @@ function seedDedupCtx(ctx, rec) {
     if (!ids) { ids = new Set(); ctx.idsBySession.set(rec.sessionId, ids); }
     ids.add(rec.id);
   }
-  // A-2.1: a proxy (non-imported) line sharing a responseId must never
-  // suppress the imported copy — ADR 0012's read-time merge already
-  // reconciles those at read time.
-  if (rec.responseId && rec.imported === true) ctx.importedResponseIds.add(rec.responseId);
+  // #712: responseId identifies the same turn for both live and imported
+  // rows, matching usage's read-time dedup. Do not append another copy.
+  if (rec.responseId) ctx.responseIds.add(rec.responseId);
   if (rec.responseId) ctx.responseIdById.set(rec.id, rec.responseId);
 }
 
-// A-2.1: an imported entry is already present when a PRIOR import already
+// An imported entry is already present when a prior live recording or import
 // logged this exact logical turn. Claude turns carry `responseId`
 // (Anthropic's own message id — stable across the id-format change and any
 // A-2.2 suffix below). Otherwise the same session holding the entry's new
@@ -741,7 +740,7 @@ function seedDedupCtx(ctx, rec) {
 // Claude, #508 for Codex) have none, and Codex turns without a
 // token_usage_record still don't.
 function isAlreadyImported(entry, ctx) {
-  if (entry.responseId && ctx.importedResponseIds.has(entry.responseId)) return true;
+  if (entry.responseId && ctx.responseIds.has(entry.responseId)) return true;
   const sessionIds = ctx.idsBySession.get(entry.sessionId);
   if (!sessionIds) return false;
   const sameTurn = id => {
@@ -780,7 +779,7 @@ function pushImportedEntry(entry, ctx, opts = {}) {
   }
   entry.id = id;
   ctx.existingIds.add(id);
-  // Deliberately NOT folded into idsBySession/importedResponseIds — see
+  // Deliberately NOT folded into idsBySession/responseIds — see
   // createDedupCtx: those stay frozen to what existed before this scan.
 
   // Write to index.ndjson + session index only — skip store.entries and SSE
@@ -1005,7 +1004,7 @@ async function scanAndImportTranscript(target = {}) {
   const appendedEntries = [];
   for (const entry of entries) {
     // A-2.1/A-2.2: an id collision that IS this same logical turn (same
-    // responseId already imported, or — for Codex's no-responseId turns —
+    // responseId already recorded, or — for Codex's no-responseId turns —
     // the same session already holding this id or its legacy id) counts as
     // skipped. A collision with a genuinely different turn gets a
     // deterministic suffix instead of the old `transcript entry id identity
