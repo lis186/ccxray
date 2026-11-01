@@ -132,14 +132,18 @@ async function readMergedTurns(opts = {}) {
 
 // Roots match the cwd exactly: a checkout's linked worktrees live beneath it
 // (`.worktrees/x`, `.claude/worktrees/agent-*`) and are different checkouts.
-function selectTurns(turns, { roots = null, from = -Infinity, to = Infinity, sessions = null } = {}) {
+function selectTurns(turns, { roots = null, from = -Infinity, to = Infinity, sessions = null, agentIds = null, branches = null } = {}) {
   const rootSet = roots && new Set(roots.map(stripSlash));
   const sessionSet = sessions && new Set(sessions);
+  const agentSet = agentIds && new Set(agentIds);
+  const branchSet = branches && new Set(branches);
   return turns.filter(e => {
     const t = receivedAt(e);
     if (t == null || t < from || t >= to) return false;
     if (rootSet && !(e.cwd && rootSet.has(stripSlash(e.cwd)))) return false;
     if (sessionSet && !sessionSet.has(e.sessionId)) return false;
+    if (agentSet && !agentSet.has(e.agentId ?? null)) return false;
+    if (branchSet && !branchSet.has(e.branch ?? null)) return false;
     return true;
   });
 }
@@ -209,9 +213,34 @@ function aggregate(turns) {
   return out;
 }
 
-async function query({ roots, from, to, sessions } = {}, { logsDir } = {}) {
+// Pure rollup of the selected read model; marker rows never form groups.
+function groupTurns(turns, by) {
+  const fields = { agent: 'agentId', branch: 'branch', cwd: 'cwd', session: 'sessionId' };
+  const field = Object.hasOwn(fields, by) && fields[by];
+  if (!field) throw new Error('Invalid --by: use agent, branch, cwd, or session.');
+  const buckets = new Map();
+  for (const e of turns) {
+    if (!e.model && !e.usage) continue;
+    const key = e[field] ?? null;
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(e);
+  }
+  return [...buckets].map(([key, rows]) => {
+    const a = aggregate(rows);
+    const reasoning = rows.reduce((sum, e) => sum + (e.thinkingTokens
+      ?? e.usage?.output_tokens_details?.reasoning_tokens
+      ?? e.usage?.output_tokens_details?.thinking_tokens
+      ?? e.usage?.reasoning_output_tokens ?? 0), 0);
+    return { key, turns: a.calls, tokens: { ...a.tokens, reasoning },
+      cost: a.cost, costFold: a.costFold, models: a.models,
+      firstTs: a.firstAt == null ? null : new Date(a.firstAt).toISOString(),
+      lastTs: a.lastAt == null ? null : new Date(a.lastAt).toISOString() };
+  }).sort((a, b) => a.key === b.key ? 0 : a.key == null ? 1 : b.key == null ? -1 : a.key < b.key ? -1 : 1);
+}
+
+async function query({ roots, from, to, sessions, agentIds, branches } = {}, { logsDir } = {}) {
   const { turns, codexSources } = await readMergedTurns({ from, to, logsDir });
-  const selected = selectTurns(turns, { roots, from, to, sessions });
+  const selected = selectTurns(turns, { roots, from, to, sessions, agentIds, branches });
   return { ...aggregate(selected), codexSources };
 }
 
@@ -225,5 +254,6 @@ module.exports = {
   readMergedTurns,
   selectTurns,
   aggregate,
+  groupTurns,
   query,
 };

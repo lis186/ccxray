@@ -7,6 +7,7 @@ const readline = require('readline');
 const { resolveCcxrayHome } = require('./paths');
 const { mergeByResponseId } = require('./store');
 const { repricedView } = require('./reprice');
+const { readMergedTurns, selectTurns, groupTurns } = require('./usage-query');
 const { retentionDays, retentionCutoffDate, taipeiDate } = require('./retention');
 // INVARIANT(ADR 0017): the human aggregate below must render through the shared
 // fold-aware helper, not a bare `$` + number. format.js is isomorphic (no
@@ -20,6 +21,11 @@ Options:
   --json              JSON output (for agents)
   --tools             Show all tools (default: top 7)
   --session <id>      Filter to session(s), comma-separated or repeated
+  --agent-id <id>     Filter agent IDs, comma-separated or repeated
+  --branch <name>     Filter recorded branches, comma-separated or repeated
+  --from <ISO>        Inclusive absolute start (alias: --since)
+  --to <ISO>          Exclusive absolute end (alias: --until)
+  --by <dimension>    Group by agent, branch, cwd, or session
   --last <duration>   Time filter: 7d, 24h, 30m (default: all)
   --cwd <path>        Filter by working dir: /abs or ~/path = prefix match,
                       a bare name = case-insensitive substring
@@ -34,22 +40,55 @@ function parseDuration(s) {
   return n * unit;
 }
 
+function parseIso(value, flag) {
+  // Require an absolute timestamp with a timezone and a real calendar date.
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/.exec(value);
+  const n = Date.parse(value);
+  const date = m && new Date(`${m[1]}-${m[2]}-${m[3]}T00:00:00Z`);
+  if (!m || !Number.isFinite(n) || date.getUTCMonth() !== +m[2] - 1
+      || date.getUTCDate() !== +m[3] || +m[4] > 23 || +m[5] > 59 || +m[6] > 59) {
+    throw new Error(`Invalid ${flag} ISO timestamp: "${value}". Use YYYY-MM-DDTHH:mm:ssZ or a timezone offset.`);
+  }
+  return n;
+}
+
 function parseArgs(argv) {
-  const args = { json: false, tools: false, open: false, sessionIds: [], since: null, cwds: [] };
+  const args = { json: false, tools: false, open: false, sessionIds: [], since: null, to: null, cwds: [], agentIds: [], branches: [], by: null };
+  let hasLast = false, hasAbsolute = false;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--help' || argv[i] === '-h') { console.log(HELP); process.exit(0); }
     else if (argv[i] === '--json') args.json = true;
     else if (argv[i] === '--tools') args.tools = true;
     else if (argv[i] === '--open') args.open = true;
+    else if (['--from', '--since', '--to', '--until', '--by', '--agent-id', '--branch', '--last'].includes(argv[i])
+        && (!argv[i + 1] || argv[i + 1].startsWith('--'))) {
+      throw new Error(`Missing value for ${argv[i]}.`);
+    }
+    else if (['--from', '--since', '--to', '--until'].includes(argv[i])) {
+      const flag = argv[i];
+      const value = parseIso(argv[++i], flag);
+      args[flag === '--from' || flag === '--since' ? 'since' : 'to'] = value;
+      hasAbsolute = true;
+    }
+    else if (argv[i] === '--by') {
+      args.by = argv[++i];
+      if (!['agent', 'branch', 'cwd', 'session'].includes(args.by)) throw new Error('Invalid --by: use agent, branch, cwd, or session.');
+    }
+    else if (argv[i] === '--agent-id' || argv[i] === '--branch') {
+      const field = argv[i] === '--agent-id' ? 'agentIds' : 'branches';
+      const values = argv[++i].split(',').filter(Boolean);
+      if (!values.length) throw new Error(`Empty value for ${argv[i - 1]}.`);
+      args[field].push(...values);
+    }
     else if (argv[i] === '--session' && argv[i + 1]) {
       for (const id of argv[++i].split(',')) if (id) args.sessionIds.push(id);
     }
     else if (argv[i] === '--last' && argv[i + 1]) {
+      hasLast = true;
       const dur = argv[++i];
       const ms = parseDuration(dur);
-      if (ms == null) {
-        console.error(`Invalid --last duration: "${dur}". Use forms like 7d, 24h, 30m.`);
-        process.exit(1);
+      if (ms == null || !Number.isFinite(ms)) {
+        throw new Error(`Invalid --last duration: "${dur}". Use forms like 7d, 24h, 30m.`);
       }
       args.since = Date.now() - ms;
     }
@@ -57,6 +96,8 @@ function parseArgs(argv) {
       for (const p of argv[++i].split(',')) if (p) args.cwds.push(p);
     }
   }
+  if (hasLast && hasAbsolute) throw new Error('Cannot combine --last with --from/--to (or --since/--until).');
+  if (args.since != null && args.to != null && args.since > args.to) throw new Error('--from must be before or equal to --to.');
   return args;
 }
 
@@ -93,7 +134,9 @@ function retentionStatus({ since = null, now = new Date(), env = process.env } =
 }
 
 async function run(argv) {
-  const args = parseArgs(argv);
+  let args;
+  try { args = parseArgs(argv); }
+  catch (err) { console.error(err.message); process.exitCode = 1; return; }
   const home = resolveCcxrayHome();
   const indexPath = path.join(home, 'logs', 'index.ndjson');
 
@@ -104,21 +147,32 @@ async function run(argv) {
     process.exit(1);
   }
 
-  // #345: stream the index line-by-line. readFileSync(indexPath, 'utf8') throws
-  // "Invalid string length" once index.ndjson passes Node's ~512MB single-string
-  // limit (real indexes already do). readline never materializes the whole file
-  // as one string; entries[] is still built (one-shot CLI), but no giant string.
-  let entries = [];
-  const rl = readline.createInterface({
-    input: fs.createReadStream(indexPath, { encoding: 'utf8' }),
-    crlfDelay: Infinity,
-  });
-  for await (const line of rl) {
-    if (!line) continue;
-    try { entries.push(JSON.parse(line)); } catch {}
+  let entries;
+  if (args.by) {
+    // Grouped reports merge and choose one source before any filters, then
+    // reprice in memory. Even an out-of-window proxy determines session source.
+    ({ turns: entries } = await readMergedTurns({ logsDir: path.dirname(indexPath) }));
+    entries = selectTurns(repricedView(entries), {
+      from: args.since ?? -Infinity, to: args.to ?? Infinity,
+      agentIds: args.agentIds.length ? args.agentIds : null,
+      branches: args.branches.length ? args.branches : null,
+    }).filter(e => e.model || e.usage);
+  } else {
+    // Preserve the legacy report's rows and selection order, including cost-only
+    // rows and rows without timestamps. Stream to avoid the single-string limit.
+    entries = [];
+    const rl = readline.createInterface({
+      input: fs.createReadStream(indexPath, { encoding: 'utf8' }), crlfDelay: Infinity,
+    });
+    for await (const line of rl) {
+      if (!line) continue;
+      try { entries.push(JSON.parse(line)); } catch {}
+    }
+    if (args.since != null) entries = entries.filter(e => (e.receivedAt || 0) >= args.since);
+    if (args.to != null) entries = entries.filter(e => (e.receivedAt || 0) < args.to);
+    if (args.agentIds.length) entries = entries.filter(e => args.agentIds.includes(e.agentId));
+    if (args.branches.length) entries = entries.filter(e => args.branches.includes(e.branch));
   }
-
-  if (args.since) entries = entries.filter(e => (e.receivedAt || 0) >= args.since);
   // ponytail: #4 smart --cwd — an absolute/`~` path is a prefix match; anything
   // else (a bare name or relative fragment) is a case-insensitive substring.
   // `~` is expanded first since stored cwds are absolute (a literal `~/…`
@@ -139,12 +193,9 @@ async function run(argv) {
       });
     });
   }
-  // A live proxy observation and a later transcript import can describe the
-  // same provider response. Resolve those copies before smart session aliases,
-  // grouping, and totals so `costliest` and every aggregate see one turn.
-  // #723: reprice stored unknown/fallback costs in memory (never on disk) before
-  // anything reads cost — `costliest` selection, folds, and totals below.
-  entries = dedupeEntries(repricedView(entries));
+  // Legacy reports reprice and deduplicate after cwd/time selection and before
+  // resolving aliases, so costliest sees one repriced turn per response.
+  if (!args.by) entries = dedupeEntries(repricedView(entries));
   // ponytail: #1 smart --session — resolved AFTER --last/--cwd so `latest` and
   // `costliest` pick the newest/priciest session *within* the filtered scope,
   // not globally (alias → UUID prefix → title substring).
@@ -174,7 +225,9 @@ async function run(argv) {
     const filters = [];
     if (args.sessionIds.length) filters.push(`--session "${args.sessionIds.join(', ')}"`);
     if (args.cwds.length) filters.push(`--cwd "${args.cwds.join(', ')}"`);
-    if (args.since) filters.push('--last window');
+    if (args.since != null || args.to != null) filters.push('time window');
+    if (args.agentIds.length) filters.push('--agent-id');
+    if (args.branches.length) filters.push('--branch');
     const hint = filters.length === 0
       ? 'index is empty'
       : filters.length === 1
@@ -184,6 +237,29 @@ async function run(argv) {
     if (args.json) console.log(JSON.stringify(err));
     else console.error(`${err.error} — ${hint}`);
     process.exit(1);
+  }
+
+  if (args.by) {
+    const groups = groupTurns(entries, args.by);
+    const retention = retentionStatus(args);
+    const result = { by: args.by, groups,
+      nullAgentIdTurns: entries.filter(e => e.agentId == null).length,
+      ...(args.by === 'branch' ? { nullBranchTurns: entries.filter(e => e.branch == null).length } : {}),
+      meta: { retentionDays: retention.days, retentionCutoff: retention.cutoff,
+        ...(retention.warning ? { retentionWarning: retention.warning } : {}) } };
+    if (args.json) console.log(JSON.stringify(result));
+    else {
+      console.log(`Usage by ${args.by}`);
+      for (const g of groups) {
+        const t = g.tokens;
+        console.log(`${g.key === null ? '(null)' : g.key}: ${g.turns} turns · ${formatAggCostText(g.cost, g.costFold)} · input ${t.input} / cacheRead ${t.cacheRead} / cacheWrite ${t.cacheWrite} / output ${t.output} / reasoning ${t.reasoning}`);
+        console.log(`  models ${JSON.stringify(g.models)} · ${g.firstTs} → ${g.lastTs}`);
+      }
+      console.log(`Null agentId: ${result.nullAgentIdTurns} turns`);
+      if (args.by === 'branch') console.log(`Null branch: ${result.nullBranchTurns} turns`);
+      if (retention.warning) console.log(retention.warning);
+    }
+    return;
   }
 
   // ponytail: #2 multi-cwd comparison — 2+ cwds → per-project summary via analyze()
@@ -658,4 +734,4 @@ function printHuman(r) {
 
 function pct(n) { return `${(n * 100).toFixed(1)}%`; }
 
-module.exports = { run, analyze };
+module.exports = { run, analyze, parseArgs };

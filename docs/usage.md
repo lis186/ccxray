@@ -13,14 +13,14 @@ and the runtime environment.
 
 The single source of truth for the shapes below is
 [`server/usage.js`](https://github.com/lis186/ccxray/blob/v2.5.0-rc.1/server/usage.js): `analyze()` builds the single-scope
-object, while `run()` assembles the multi-cwd comparison object and the error
-object. This
+object, while `run()` assembles grouped, multi-cwd comparison and error
+objects. `groupTurns()` in `server/usage-query.js` builds each grouped rollup. This
 doc mirrors them; if they ever disagree, the code wins — and that disagreement
 is a bug to fix here.
 
 > **Contract note.** Because agents consume `--json`, the field set, types, and
-> the three top-level shapes (single-scope object, multi-cwd object, error
-> object) are treated as a contract. Shape changes must be deliberate and noted
+> the top-level shapes (single-scope object, multi-cwd object, grouped object,
+> error object) are treated as a contract. Shape changes must be deliberate and noted
 > in the changelog below. The `usage --json shape contract` block in
 > [`test/usage.test.js`](https://github.com/lis186/ccxray/blob/v2.5.0-rc.1/test/usage.test.js) locks every section's exact key
 > set and field types (plus the multi-cwd and error shapes), so an accidental
@@ -33,12 +33,13 @@ is a bug to fix here.
 ## Output modes at a glance
 
 `--json` emits a **single line** of compact `JSON.stringify` output to stdout.
-Which of three shapes you get depends on the arguments:
+The output shape depends on the arguments:
 
 | Condition | Shape | Exit |
 |-----------|-------|------|
-| Default (0 or 1 `--cwd`) | [Single-scope object](#1-single-scope-object-default) | 0 |
-| `--cwd a,b` (**2+** values) | [Multi-cwd object](#2-multi-cwd-comparison-object) | 0 |
+| `--by <dimension>` | [Grouped object](#grouped-object) | 0 |
+| Default (0 or 1 `--cwd`, without `--by`) | [Single-scope object](#1-single-scope-object-default) | 0 |
+| `--cwd a,b` (**2+** values, without `--by`) | [Multi-cwd object](#2-multi-cwd-comparison-object) | 0 |
 | No index / no matching entries | [Error object](#3-error-object) | 1 |
 
 Rounded numeric fields are rounded to **at most** the number of decimals noted
@@ -83,7 +84,7 @@ the rounding cap is the contract.
 | `unpricedModels` | string[] | Every model with at least one unpriced turn (no rate, `cost.confidence: "unknown"`), sorted, not capped. Empty when the total is fully priced. Human output appends `(N model(s) unpriced)` to the `$X+` total. |
 | `retentionDays` | number \| null | Active `LOG_RETENTION_DAYS` value. `0` or below disables retention. `null` means the setting is not a complete decimal integer (for example, `1e9`, `0x10`, or `14 days`) **or** is beyond the supported window (magnitude over 36500 days ≈ 100 years, i.e. a "never prune" setting); retention is inactive, so no cutoff or warning is produced. |
 | `retentionCutoff` | string \| null | Taipei-local `YYYY-MM-DD` cutoff used by log pruning; `null` when retention is disabled. |
-| `retentionWarning` | string (conditional) | Present only when the requested range starts before `retentionCutoff`: older history may have been removed, so all totals are a lower bound. The no-`--last` all-time query always qualifies when retention is enabled. |
+| `retentionWarning` | string (conditional) | Present only when the requested range starts before `retentionCutoff`: older history may have been removed, so all totals are a lower bound. An all-time query without a start bound always qualifies when retention is enabled. |
 | `timeRange.from` | string \| null | Earliest `receivedAt` as ISO 8601, or `null` if no timestamps. |
 | `timeRange.to` | string \| null | Latest `receivedAt` as ISO 8601, or `null`. |
 
@@ -252,12 +253,97 @@ JSON is produced.
 
 ## Filter semantics
 
-These apply to both human and `--json` output.
+These apply to both human and `--json` output. Grouped reports use the shared
+`server/usage-query.js` read model: responseId copies are merged (ADR 0012),
+non-Anthropic sessions use one source (proxy if observed, otherwise import),
+and stored stale costs are repriced in memory through the existing pricing
+helper. These steps precede attribution and time filters. Grouped reports read the
+whole index before selection so even an out-of-window proxy observation fixes
+the Codex session's source. Rows with neither a model nor usage are markers and
+do not count as turns in grouped reports. Non-grouped reports preserve legacy
+rows, including cost-only rows, and apply time/cwd filters before repricing and
+responseId deduplication. No index files are modified.
+
+### `--agent-id <id>` and `--branch <name>`
+
+Both accept comma-separated values and repeated flags. Values match recorded
+fields exactly and case-sensitively; values within a flag are ORed, while
+agent, branch, cwd, session and time constraints are ANDed.
+
+`agentId` is the reliable key for per-run attribution. `cwd` is only a fallback
+when one agent owns the worktree: multiple agents sharing a cwd contribute to
+its combined total. Missing identities remain visible in `nullAgentIdTurns`
+and the null agent group. Attribution reflects recorded identity; incorrectly
+inherited identity or cwd cannot be corrected by a query.
+
+Branch is the latest recorded per-turn `branch` field, describing what was
+recorded at the time. Querying never consults git or the current checkout.
+A run that switches branches splits across branch groups. Rows without a
+recorded branch count under `key: null` and `nullBranchTurns`; no session-wide
+branch is substituted.
+
+### `--from <ISO>` / `--to <ISO>`
+
+Absolute timestamps require a date, time with seconds, and timezone, for example
+`2026-06-01T10:00:00Z` or `2026-06-01T18:00:00+08:00`. Fractional seconds are
+accepted. `--since` aliases `--from`; `--until` aliases `--to`. Either bound
+can be omitted. Selection uses `from <= receivedAt < to` (start inclusive,
+end exclusive); equal bounds describe an empty range. Invalid timestamps,
+nonexistent calendar dates, reversed bounds, missing values, and combining
+any absolute bound with `--last` exit 1 with a clear stderr error.
+
+```bash
+ccxray usage --json --by agent --agent-id herdr:w1:p1,herdr:w1:p2 \
+  --from 2026-06-01T00:00:00Z --to 2026-06-02T00:00:00Z
+ccxray usage --by branch --branch main --branch feature \
+  --since 2026-06-01T00:00:00Z --until 2026-06-02T00:00:00Z
+```
+
+### Grouped object
+
+`--by agent|branch|cwd|session` selects a grouped output in both text and JSON,
+including when multiple cwd values are supplied. JSON emits one compact line:
+
+```json
+{
+  "by": "agent",
+  "groups": [{
+    "key": "herdr:w1:p1",
+    "turns": 1,
+    "tokens": { "input": 10, "cacheRead": 20, "cacheWrite": 30, "output": 40, "reasoning": 5 },
+    "cost": 0.01,
+    "costFold": { "count": 1, "fallbackCount": 0, "fallbackCost": 0, "unknownCount": 0 },
+    "models": { "dummy-model": 1 },
+    "firstTs": "2026-06-01T10:00:00.000Z",
+    "lastTs": "2026-06-01T10:00:00.000Z"
+  }],
+  "nullAgentIdTurns": 0,
+  "meta": { "retentionDays": 14, "retentionCutoff": "2026-05-19" }
+}
+```
+
+`key` is the recorded agentId, branch, cwd or sessionId string, or JSON null.
+Groups sort by key ascending with null last. Counts and tokens are sums;
+`models` maps model IDs to turn counts. `firstTs`/`lastTs` are the earliest/latest
+selected timestamps as ISO strings, or null when unavailable. Reasoning uses
+recorded `thinkingTokens`, then output token details (reasoning/thinking), then
+`reasoning_output_tokens`; absent evidence contributes zero. Reasoning can be
+part of output tokens, so do not add it to output to calculate total tokens.
+Grouped costs retain numeric precision and use the existing aggregate ADR 0017
+`costFold`; consumers must render cost with this fold. Unpriced calls contribute
+zero cost and increase `unknownCount`; human output uses `formatAggCostText`.
+`nullAgentIdTurns` counts selected model calls without agentId for every grouping;
+`nullBranchTurns` is also present when `by` is `branch`. The `meta` retention
+fields follow the existing output rules, including conditional
+`retentionWarning`. Null counts reflect the selected scope after all filters.
+The number of groups is not capped; the compact default-output size target does
+not apply to grouped output.
 
 ### `--last <d/h/m>`
 
 Keep entries with `receivedAt >= now - duration`. Forms: `7d`, `24h`, `30m`
-(days / hours / minutes). Anything else exits 1 with an error. Applied first.
+(days / hours / minutes). Anything else exits 1 with an error. Applied before
+session aliases; grouped reports merge and select sources before filtering.
 
 ### `--cwd <path>` (matching)
 
@@ -269,12 +355,12 @@ Comma-separated or repeated. Each value matches one of two ways:
 - **Anything else → case-insensitive substring** against the full cwd. A leading
   `./` is stripped, so `./foo` behaves like `foo`.
 
-Giving **2+** cwd values switches the output to the
+Without `--by`, giving **2+** cwd values switches the output to the
 [multi-cwd comparison object](#2-multi-cwd-comparison-object).
 
 ### `--session <id>` (matching)
 
-Comma-separated or repeated. Resolved **after** `--last`/`--cwd`, so the aliases
+Comma-separated or repeated. Resolved **after** time, agentId, branch and cwd filters, so the aliases
 operate on the already-filtered scope. Each value is one of:
 
 - **Alias** — `latest` (newest by `receivedAt` in scope) or `costliest`
@@ -310,6 +396,11 @@ it never changes the JSON. In [multi-cwd comparison mode](#2-multi-cwd-compariso
 ---
 
 ## Changelog
+
+- **2026-11-01** — Added agentId/branch filters, absolute windows and aliases,
+  and opt-in grouped text/JSON output. Default JSON shapes remain unchanged.
+  Grouped reports share merge-before-filter and one-source selection with usage
+  queries and exclude marker rows. Non-grouped reports retain legacy behavior.
 
 - **2026-10-17** — Added `topSessions[].branch` (string \| null): the git branch
   of the session's latest-received turn that recorded one. Additive; the
