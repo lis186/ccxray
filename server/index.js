@@ -398,6 +398,7 @@ const { handleInterceptRoutes } = require('./routes/intercept');
 const { handleCostRoutes, startCodexRefresh, stopCodexRefresh } = require('./routes/costs');
 const { handleAuthRoutes } = require('./routes/auth');
 const hub = require('./hub');
+const { resolveHttpSessionCwd } = require('./http-session-cwd');
 const { collectExportDiagnostics, fetchHubReport, renderExportDiagnostics } = require('./export-diagnostics');
 hub.setLaunchSignals({
   hubMode,
@@ -674,12 +675,12 @@ const server = http.createServer((clientReq, clientRes) => {
     if (reqSessionId) store.linkParentSession(reqSessionId, parsedBody, isSubagentHint);
 
     // Extract and store cwd (after linkParentSession — see #223)
-    // openai getCwd has a runtime fallback (hub client cwd / process.cwd) that
-    // depends on index.js state — applied after the adapter's wire-level extraction.
+    // Anthropic may use a registered cwd only for a PID-routed request.
+    // OpenAI also allows the launcher process cwd via its provider module.
+    // Apply these runtime fallbacks after the adapter's wire-level extraction.
     // Grok vs Codex share openai wire; set session agent from header/model when available.
     if (parsedBody && reqSessionId) {
-      const cwd = parser.getCwd(parsedBody, clientReq.headers)
-        || (provider === 'openai' ? getAgentCwdFallback(clientReq) : null);
+      const cwd = resolveHttpSessionCwd({ parser, parsedBody, provider, clientReq, getAgentCwdFallback });
       if (!store.sessionMeta[reqSessionId]) store.sessionMeta[reqSessionId] = {};
       if (provider === 'anthropic') store.cacheConfigDir(reqSessionId, parsedBody);
       store.sessionMeta[reqSessionId].provider = provider;

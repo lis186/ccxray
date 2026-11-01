@@ -128,6 +128,24 @@ describe('install', () => {
     assert.equal(text.split(shims.BLOCK_START).length - 1, 1);
   });
 
+  it('refreshes owned older shim assets when setup is re-run', async () => {
+    assert.equal(await setup.runSetup(['--wrap-binaries', '--yes'], overrides()), 0);
+    const manifestPath = path.join(home, 'shims.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    for (const file of manifest.files) {
+      const older = file.path.endsWith('.js') ? '// previous probe\n' : '#!/bin/sh\n# ccxray-launcher-shim-v1\n';
+      fs.writeFileSync(file.path, older);
+      file.sha256 = require('crypto').createHash('sha256').update(older).digest('hex');
+    }
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+    assert.equal(await setup.runSetup(['--wrap-binaries', '--yes'], overrides()), 0);
+    assert.equal(fs.readFileSync(path.join(home, 'shim-probe.js'), 'utf8'),
+      fs.readFileSync(path.join(__dirname, '../server/shim/shim-probe.js'), 'utf8'));
+    for (const tool of ['claude', 'codex']) {
+      assert.match(fs.readFileSync(path.join(home, 'shims', tool), 'utf8'), /X-Ccxray-Agent-Id/);
+    }
+  });
+
   it('uses .zshenv for zsh and skips environment.d with --no-session-env', async () => {
     const o = overrides({ env: { SHELL: '/bin/zsh' } });
     assert.equal(await setup.runSetup(['--wrap-binaries', '--yes', '--no-session-env'], o), 0);
@@ -770,5 +788,24 @@ describe('zsh interactive PATH ordering', () => {
     });
     assert.equal(await install([], o), 1);
     assert.deepEqual(snapshot(root), before);
+  });
+});
+
+
+describe('shim launch identity', () => {
+  const { shimAgentIdentity } = require('../server/shim/shim-probe');
+  it('pairs a bounded header-safe identity with the wrapped tool', () => {
+    for (const tool of ['claude', 'codex']) {
+      for (const id of ['herdr:test:pane', 'plain-agent_1', 'x'.repeat(512)]) {
+        assert.deepEqual(shimAgentIdentity(tool, { CCXRAY_AGENT_ID: id, CCXRAY_AGENT_TYPE: 'outer' }),
+          { agentId: id, agentType: tool });
+      }
+    }
+  });
+  it('omits unset and unsafe identities entirely', () => {
+    for (const id of [undefined, '', 'x'.repeat(513), 'pane\r\nX-Injected: yes', 'pane\n', 'pane\r',
+      'pane,other', 'pane other', 'pane\tother', 'pane\x7f', 'paneé']) {
+      assert.deepEqual(shimAgentIdentity('claude', { CCXRAY_AGENT_ID: id }), {});
+    }
   });
 });

@@ -10,7 +10,7 @@
 // process only DECIDES.
 //   direct                    run the real binary unchanged (a bypass line was logged)
 //   passthrough               already routed through ccxray; run unchanged, no log
-//   claude <baseUrl> <0|1>    set ANTHROPIC_BASE_URL (1 = print mode)
+//   claude <baseUrl> <0|1> [agentId]    set ANTHROPIC_BASE_URL (1 = print mode)
 //   codex <baseUrl>           prepend -c openai_base_url="<baseUrl>/v1"
 //   (<baseUrl> carries /_ccxray/client/<pid> when the hub accepted a client
 //   registration for the launching pid: the shim `exec`s, so that pid IS the tool)
@@ -30,6 +30,14 @@ const LOG_ROTATE_BYTES = 1024 * 1024;
 // Subcommands that never make a model request: no point routing or logging them.
 const CODEX_NO_MODEL = new Set(['login', 'logout', 'mcp', 'completion', 'help', 'features']);
 const CLAUDE_NO_MODEL = new Set(['--version', '-v', '--help', '-h', 'mcp', 'doctor', 'agents', 'plugin', 'auth', 'attach', 'respawn', 'update', 'install']);
+
+// A single header-safe token, also safe in the probe's space-delimited reply.
+// Reject the whole value rather than turning malformed identities into aliases.
+function shimAgentIdentity(tool, env) {
+  const id = env.CCXRAY_AGENT_ID;
+  return typeof id === 'string' && id.length > 0 && id.length <= 512 && !/[^A-Za-z0-9._:@/-]/.test(id)
+    ? { agentId: id, agentType: tool } : {};
+}
 
 function timeoutMs(env) {
   const n = Number(env.CCXRAY_SHIM_TIMEOUT_MS);
@@ -196,7 +204,7 @@ function failureLine(tool, env, reason, cwd, now = new Date()) {
 // unregisters it when the tool exits. Best effort, bounded; any failure leaves
 // the plain URL ONLY for a standalone proxy (no client registry, no idle timer);
 // a hub that cannot register this launch is bypassed (see decide()).
-function registerWithHub(home, port, env, cwd, ms) {
+function registerWithHub(home, port, env, cwd, ms, identity = {}) {
   return new Promise(resolve => {
     const pid = Number(env.CCXRAY_SHIM_PID);
     if (!Number.isInteger(pid) || pid <= 0 || pid > 4194304 || !cwd || cwd.length > 4096) return resolve(false);
@@ -213,7 +221,7 @@ function registerWithHub(home, port, env, cwd, ms) {
     try {
       sock = net.connect(sockPath);
       let buf = '';
-      sock.on('connect', () => sock.write(JSON.stringify({ cmd: 'register', pid, cwd, token: crypto.randomBytes(8).toString('hex') }) + '\n'));
+      sock.on('connect', () => sock.write(JSON.stringify({ cmd: 'register', pid, cwd, token: crypto.randomBytes(8).toString('hex'), ...identity }) + '\n'));
       sock.on('data', chunk => {
         buf += chunk;
         if (buf.length > 1048576) return done(false);
@@ -253,13 +261,14 @@ async function decide(tool, args, env, now = new Date(), cwd = safeCwd()) {
   const health = await probeHealth(port, ms);
   if (!health.ok) return fail(health.reason);
   let base = `http://127.0.0.1:${port}`;
-  if (await registerWithHub(home, port, env, cwd, ms)) base += `/_ccxray/client/${Number(env.CCXRAY_SHIM_PID)}`;
+  const identity = shimAgentIdentity(tool, env);
+  if (await registerWithHub(home, port, env, cwd, ms, identity)) base += `/_ccxray/client/${Number(env.CCXRAY_SHIM_PID)}`;
   // A bare URL against a hub would be attributed to whichever client's cwd the hub
   // guesses (a bystander's) and has no client keeping the hub alive: bypass instead.
   else if (health.hub) return fail('hub-registration-failed');
   if (tool === 'claude') {
     const printMode = args.some((arg, i) => (arg === '-p' || arg === '--print') && !args.slice(0, i).includes('--'));
-    return `claude ${base} ${printMode ? 1 : 0}`;
+    return `claude ${base} ${printMode ? 1 : 0}${identity.agentId ? ` ${identity.agentId}` : ''}`;
   }
   return `codex ${base}`;
 }
@@ -283,4 +292,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { decide, runProbe, safeCwd, probeHealth, discoverPort, timeoutMs, ccxrayHome, appendBypass, parseCodexArgs, codexAlreadyRouted, registerWithHub, failureLine };
+module.exports = { shimAgentIdentity, decide, runProbe, safeCwd, probeHealth, discoverPort, timeoutMs, ccxrayHome, appendBypass, parseCodexArgs, codexAlreadyRouted, registerWithHub, failureLine };
