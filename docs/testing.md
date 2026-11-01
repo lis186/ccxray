@@ -594,3 +594,19 @@ Header allowlist (follow-up to #745): `test/fixtures/routing/header-names.json`
 contains observed Claude/Codex header names and documented Grok header names,
 with synthetic values supplied by tests. `test/unknown-path.e2e.test.js` uses
 a temporary home and four local recording upstreams for HTTP and WebSocket.
+
+`usage-group.test.js` uses only synthetic indexed summaries, temporary storage,
+and in-process CLI output capture. It covers attribution, grouping, absolute
+windows, merge-before-filter, source selection, repricing, and argument errors.
+It also checks that cost-only and undated rows remain in non-grouped reports
+while grouped reports exclude them. The existing `usage.test.js` CLI regressions
+belong to the heavy lane; run both lanes serially when changing usage reports.
+To check the unit lane with an empty home, without setting CCXRAY_HOME:
+
+```bash
+T=$(mktemp -d); HOME=$T node scripts/run-tests.js unit
+T=$(mktemp -d); HOME=$T node scripts/run-tests.js heavy
+```
+
+The test preload creates its own temporary CCXRAY_HOME when none is supplied;
+individual storage fixtures remain isolated as described above.
