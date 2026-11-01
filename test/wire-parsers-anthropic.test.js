@@ -30,6 +30,14 @@ describe('wire-parsers/anthropic', () => {
       assert.equal(anthropic.isNoiseRequest('/v1/messages/count_tokens?beta=true', {}, {}), true);
     });
 
+    it('rejects count_tokens near misses', () => {
+      for (const url of [
+        '/v1/messages/count_tokens_extra', '/v1/messages/count_tokens/',
+        '/v1/messages/count_token?beta=true', '/v1/messages?next=/count_tokens',
+        '', null, undefined,
+      ]) assert.equal(anthropic.isNoiseRequest(url, {}, {}), false, String(url));
+    });
+
     it('keeps real conversation and other paths as entries', () => {
       assert.equal(anthropic.isNoiseRequest('/v1/messages', {}, {}), false);
       assert.equal(anthropic.isNoiseRequest('/v1/messages?beta=true', {}, {}), false);
