@@ -659,7 +659,9 @@ const server = http.createServer((clientReq, clientRes) => {
       : null;
     const { sessionId: reqSessionId, isNewSession, inferred: sessionInferred } = parsedBody
       ? detectedSession
-      : { sessionId: parser.rawSessionId(clientReq.headers, null) || store.getCurrentSessionId(), isNewSession: false };
+      // A body-less probe has no session evidence beyond its explicit header.
+      // The process-wide current session may belong to another hub client (#767).
+      : { sessionId: parser.rawSessionId(clientReq.headers, null) || null, isNewSession: false };
 
     // Cross-session parent linkage — MUST run before cwd assignment AND
     // activeRequests increment (#223: cwd was set first, causing

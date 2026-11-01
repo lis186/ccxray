@@ -16,6 +16,7 @@
 
 ### Fixed
 
+- Body-less requests on a shared hub retain an explicit session header or remain without a session, avoiding another client's session and cwd attribution (#767).
 - Launcher shims carry `CCXRAY_AGENT_ID` and the wrapped tool type through hub client registration. Claude also merges the internal agent-id header with existing custom headers. Unsafe or oversized IDs are ignored; re-running setup updates installed shims (#756).
 
 - Launcher shims: zsh setup now writes both `.zshenv` and a final `.zshrc` PATH block (honoring `ZDOTDIR`), keeping shims ahead of macOS login initialization and existing interactive PATH edits without duplicate shim entries. Reinstall moves the block back to the end, removal tracks both files, and `--check` warns about interactive login startup ordering.
