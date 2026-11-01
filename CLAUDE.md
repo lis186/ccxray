@@ -113,6 +113,7 @@ Before pushing, confirm the suite passes against an empty home: `CCXRAY_HOME=$(m
 | `server/request-routing.js` | HTTP provider header hygiene and local 421 responses (#740) |
 | `server/request-signals.js` | Shared provider signals from headers, wire clients, and hub identity (#740) |
 | `server/index.js` | Entry point: HTTP server, request routing, startup |
+| `server/http-session-cwd.js` | HTTP cwd resolution: wire cwd first, PID-routed hub fallback for Anthropic, existing provider fallback for OpenAI |
 | `server/setup.js` | `ccxray setup`: bounded preflight, export enrollment, owned shell wrapper, removal, checks, and browser preference |
 | `server/launcher-shims.js` | `ccxray setup --wrap-binaries` (#732): fail-open `claude`/`codex` launcher shims, PATH blocks, `--dry-run`/`--check`/`--remove` with a manifest that restores the previous state exactly. Guide: `docs/launcher-shims.md` |
 | `server/shim-bypass.js` | Reads `<home>/shim-bypass.log` and its rotated `.1` generation (written by the shim and its probe) into counts for `ccxray status`, `ccxray setup --wrap-binaries --check` and `GET /_api/shim-bypass`; never exposes cwd |

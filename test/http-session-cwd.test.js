@@ -1,49 +1,68 @@
 'use strict';
 
-const { describe, it } = require('node:test');
+const { describe, it, before, after, mock } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const vm = require('node:vm');
+const hub = require('../server/hub');
+const { resolveHttpSessionCwd } = require('../server/http-session-cwd');
 const { getParser } = require('../server/wire-parsers');
 const { buildIndexLine } = require('../server/entry');
 
-// Execute the HTTP handler's actual session-cwd assignment without opening a
-// listener or starting the CLI. Keep wire extraction and index encoding real.
-const source = fs.readFileSync(path.join(__dirname, '../server/index.js'), 'utf8');
-const start = source.indexOf('    // Extract and store cwd (after linkParentSession');
-const end = source.indexOf('    // Detect new cc_version', start);
-assert.ok(start >= 0 && end > start);
-const assignCwd = new vm.Script(source.slice(start, end));
+const CLIENT_PID = 123;
+const CLIENT_CWD = '/synthetic/project';
 
-function indexedCwd(provider, { identity = false, wireCwd = null, hubCwd = '/synthetic/project' } = {}) {
-  const clientReq = { ccxrayClientPid: 123, headers: {} };
-  if (identity) clientReq.headers['x-ccxray-agent-id'] = 'herdr:test:claude';
+function indexedCwd(provider, { url = `/_ccxray/client/${CLIENT_PID}/v1/messages`, wireCwd = null } = {}) {
+  const clientReq = { url, headers: {} };
+  hub.applyClientRoute(clientReq);
   const parsedBody = provider === 'anthropic'
     ? { system: wireCwd ? `Primary working directory: ${wireCwd}` : '', messages: [] }
     : { input: [], ...(wireCwd ? { metadata: { cwd: wireCwd } } : {}) };
-  const store = { sessionMeta: {}, cacheConfigDir() {} };
-  assignCwd.runInNewContext({
-    parsedBody, reqSessionId: 'synthetic-session', provider,
-    parser: getParser(provider), clientReq, store,
-    hub: { lookupClientCwdForRequest: req => req.ccxrayClientPid === 123 ? hubCwd : null },
-    getAgentCwdFallback: () => hubCwd,
+  const cwd = resolveHttpSessionCwd({
+    parser: getParser(provider), parsedBody, provider, clientReq,
+    getAgentCwdFallback: req => hub.lookupClientCwdForRequest(req) || '/synthetic/launcher',
   });
-  return JSON.parse(buildIndexLine({ cwd: store.sessionMeta['synthetic-session'].cwd || null })).cwd;
+  return JSON.parse(buildIndexLine({ cwd })).cwd;
 }
 
-describe('HTTP session cwd attribution', () => {
-  for (const [tool, provider] of [['claude', 'anthropic'], ['codex', 'openai']]) {
-    for (const identity of [false, true]) {
-      it(`${tool}, identity=${identity}: persists the registered cwd when the wire has none`, () => {
-        assert.equal(indexedCwd(provider, { identity }), '/synthetic/project');
-      });
-    }
-    it(`${tool}: prefers the wire cwd over the registered cwd`, () => {
-      assert.equal(indexedCwd(provider, { identity: true, wireCwd: '/synthetic/wire' }), '/synthetic/wire');
+describe('HTTP session cwd attribution with a registered hub client', () => {
+  before(() => hub.addClient(CLIENT_PID, CLIENT_CWD));
+  after(() => {
+    // Removing the last in-memory client schedules hub shutdown; discard that
+    // timer without starting a hub or touching its lock/socket files.
+    mock.timers.enable({ apis: ['setTimeout'] });
+    hub.removeClient(CLIENT_PID);
+    mock.timers.reset();
+  });
+
+  for (const [route, url] of [
+    ['unrouted', '/v1/messages'],
+    ['pane URL without PID', '/_ccxray/agent/herdr%3Atest%3Aclaude/v1/messages'],
+    ['unknown PID', '/_ccxray/client/456/v1/messages'],
+    ['unsafe PID', '/_ccxray/client/9007199254740992/v1/messages'],
+  ]) {
+    it(`Anthropic ${route}: leaves cwd unknown without a wire cwd`, () => {
+      assert.equal(indexedCwd('anthropic', { url }), null);
     });
-    it(`${tool}: leaves cwd unknown when neither source supplies one`, () => {
-      assert.equal(indexedCwd(provider, { identity: true, hubCwd: null }), null);
+    it(`Anthropic ${route}: retains an explicit wire cwd`, () => {
+      assert.equal(indexedCwd('anthropic', { url, wireCwd: '/synthetic/wire' }), '/synthetic/wire');
     });
   }
+
+  for (const provider of ['anthropic', 'openai']) {
+    it(`${provider}: uses the PID-routed client's cwd when the wire has none`, () => {
+      assert.equal(indexedCwd(provider), CLIENT_CWD);
+    });
+    it(`${provider}: prefers the wire cwd over the registered cwd`, () => {
+      assert.equal(indexedCwd(provider, { wireCwd: '/synthetic/wire' }), '/synthetic/wire');
+    });
+  }
+
+  it('OpenAI: preserves the sole-client fallback for unrouted requests', () => {
+    assert.equal(indexedCwd('openai', { url: '/v1/responses' }), CLIENT_CWD);
+  });
+  it('OpenAI: preserves the sole-client fallback for pane URL requests', () => {
+    assert.equal(indexedCwd('openai', { url: '/_ccxray/agent/herdr%3Atest%3Acodex/v1/responses' }), CLIENT_CWD);
+  });
+  it('OpenAI: preserves the launcher fallback when no client matches', () => {
+    assert.equal(indexedCwd('openai', { url: '/_ccxray/client/456/v1/responses' }), '/synthetic/launcher');
+  });
 });
