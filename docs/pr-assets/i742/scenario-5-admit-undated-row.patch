@@ -1,0 +1,12 @@
+# Code commit: 84fbee97cde9e385752e3340e6a60569b8647af0
+--- a/server/usage-query.js
++++ b/server/usage-query.js
+@@ -20,7 +20,7 @@
+ 
+ function receivedAt(e) {
+   const n = Number(e.receivedAt);
+-  return Number.isFinite(n) && e.receivedAt != null ? n : null;
++  return Number.isFinite(n) ? n : null;
+ }
+ 
+ // `stats.newestImportedAt` (when given) receives the newest imported row of the

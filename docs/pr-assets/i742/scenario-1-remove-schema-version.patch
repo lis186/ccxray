@@ -1,0 +1,12 @@
+# Code commit: 84fbee97cde9e385752e3340e6a60569b8647af0
+--- a/server/usage-query.js
++++ b/server/usage-query.js
+@@ -262,7 +262,7 @@
+   }
+   const iso = n => n == null ? null : new Date(n).toISOString();
+   return {
+-    schemaVersion: 1,
++
+     window: { from: iso(from), to: iso(to) },
+     // hub.json is ephemeral, not a historical recording ledger. Session markers
+     // prove a point observation, not continuous recording across a query window.

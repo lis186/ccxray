@@ -1,0 +1,117 @@
+{
+  "codeCommit": "84fbee97cde9e385752e3340e6a60569b8647af0",
+  "results": [
+    {
+      "scenario": 1,
+      "mutation": "remove-schema-version",
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "scenario": 2,
+      "mutation": "invent-source-observation",
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "scenario": 3,
+      "mutation": "document-wrong-version",
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "scenario": 4,
+      "mutation": "write-during-query",
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "scenario": 5,
+      "mutation": "discard-merged-response",
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "scenario": 5,
+      "mutation": "admit-undated-row",
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "scenario": 5,
+      "mutation": "invent-zero-reasoning",
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "scenario": 5,
+      "mutation": "reject-empty-group",
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    }
+  ]
+}

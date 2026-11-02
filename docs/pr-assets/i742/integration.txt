@@ -1,0 +1,14 @@
+Code commit: 84fbee97cde9e385752e3340e6a60569b8647af0
+Branch: feat/742-usage-contract
+Remote main verified through the connected GitHub commit API: 9b76d46ccb12c87356f3279a6af638e2fdb6f207
+Local origin/main matches that SHA. No fetch was attempted.
+
+Merge commit (commit, parents, subject):
+f929f9cf49e8eb805839bc6c048ed7922b6200ac
+50cf65308ddc7b3e511f181e96a63d08e77d8e16 9b76d46ccb12c87356f3279a6af638e2fdb6f207
+merge: integrate main and retain usage contract work
+
+git merge-base --is-ancestor 9b76d46 HEAD: exit 0
+git merge-base --is-ancestor f668bf8 HEAD: exit 0
+
+The saved work was committed first as 50cf6530. Merge conflict resolution retained the main null-prototype maps in usage.js and oneSourcePerSession. Other main files came through the merge. The #741 feature exists once in the final tree; both original and squash histories remain reachable because this is a merge. No rebase or force operation was used.

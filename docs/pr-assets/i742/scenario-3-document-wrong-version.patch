@@ -1,0 +1,12 @@
+# Code commit: 84fbee97cde9e385752e3340e6a60569b8647af0
+--- a/docs/usage-query-contract.md
++++ b/docs/usage-query-contract.md
+@@ -151,7 +151,7 @@
+   "type": "object",
+   "required": ["schemaVersion", "window", "coverage", "sourceCoverage", "totals", "providerTotals", "by", "groups", "excludedMarkerRows", "nullAgentIdTurns", "nullBranchTurns"],
+   "properties": {
+-    "schemaVersion": {"const": 1},
++    "schemaVersion": {"const": 99},
+     "window": {
+       "type": "object", "required": ["from", "to"],
+       "properties": {"from": {"$ref": "#/$defs/timestamp"}, "to": {"$ref": "#/$defs/timestamp"}}

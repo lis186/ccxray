@@ -1,0 +1,11 @@
+# Code commit: 84fbee97cde9e385752e3340e6a60569b8647af0
+--- a/server/usage.js
++++ b/server/usage.js
+@@ -227,6 +227,7 @@
+     ));
+   }
+ 
++  if (!entries.length && args.by) { process.exitCode = 1; return; }
+   const contract = (args.json || args.by) ? usageContract(entries, {
+     from: args.since, to: args.to, by: args.by, turns: args.turns,
+   }) : null;

@@ -1,0 +1,312 @@
+{
+  "codeCommit": "84fbee97cde9e385752e3340e6a60569b8647af0",
+  "command": "HOME=<fresh> CCXRAY_HOME=<fresh> LOGS_DIR=<fresh> GIT_CONFIG_GLOBAL=<fresh> CCXRAY_EXPORT_DISABLE=1 node server/index.js usage --json --turns --agent-id run-demo --branch main --from 2026-06-01T00:00:00Z --to 2026-06-02T00:00:00Z",
+  "exit": 0,
+  "stderr": "",
+  "stdout": {
+    "meta": {
+      "totalEntries": 1,
+      "totalSessions": 1,
+      "totalCost": 0.01,
+      "costAgg": {
+        "count": 1,
+        "fallbackCount": 0,
+        "fallbackCost": 0,
+        "unknownCount": 0
+      },
+      "unpricedModels": [],
+      "retentionDays": 14,
+      "retentionCutoff": "2026-10-19",
+      "retentionWarning": "Requested range reaches past the reliable retention window; older history may have been removed by retention, so totals are a LOWER BOUND.",
+      "timeRange": {
+        "from": "2026-06-01T10:00:00.000Z",
+        "to": "2026-06-01T10:00:00.000Z"
+      }
+    },
+    "sessions": {
+      "count": 1,
+      "byProvider": {
+        "unknown": 1
+      },
+      "subagentRatio": 0,
+      "turnDistribution": {
+        "min": 1,
+        "median": 1,
+        "p75": 1,
+        "max": 1
+      },
+      "topSessions": [
+        {
+          "sessionId": "dummy-session",
+          "turns": 1,
+          "cost": 0.01,
+          "costAgg": {
+            "count": 1,
+            "fallbackCount": 0,
+            "fallbackCost": 0,
+            "unknownCount": 0
+          },
+          "durationMin": 0,
+          "title": null,
+          "branch": "main",
+          "model": "dummy-model",
+          "provider": "unknown"
+        }
+      ]
+    },
+    "models": [
+      {
+        "model": "dummy-model",
+        "turns": 1,
+        "cost": 0.01,
+        "costShare": 1,
+        "costAgg": {
+          "count": 1,
+          "fallbackCount": 0,
+          "fallbackCost": 0,
+          "unknownCount": 0
+        },
+        "costStatus": "priced"
+      }
+    ],
+    "tools": {
+      "totalCalls": 0,
+      "top": [],
+      "failRate": 0
+    },
+    "skills": [],
+    "prompts": {
+      "hashStability": {
+        "sysHash": {
+          "changeRate": 0,
+          "pairs": 0,
+          "label": "never"
+        },
+        "toolsHash": {
+          "changeRate": 0,
+          "pairs": 0,
+          "label": "never"
+        },
+        "coreHash": {
+          "changeRate": 0,
+          "pairs": 0,
+          "label": "never"
+        }
+      }
+    },
+    "cache": {
+      "hitRate": 0,
+      "totalInputTokens": 10,
+      "totalOutputTokens": 5,
+      "totalCacheReadTokens": 0
+    },
+    "gapCache": [],
+    "schemaVersion": 1,
+    "window": {
+      "from": "2026-06-01T00:00:00.000Z",
+      "to": "2026-06-02T00:00:00.000Z"
+    },
+    "coverage": "unknown",
+    "sourceCoverage": {
+      "proxy": "observed",
+      "import": "observed"
+    },
+    "excludedMarkerRows": 1,
+    "nullAgentIdTurns": 0,
+    "nullBranchTurns": 0,
+    "totals": {
+      "turns": 1,
+      "tokens": {
+        "input": 10,
+        "output": 5,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": null
+      },
+      "reasoningKnownTurns": 0,
+      "cost": 0.01,
+      "costFold": {
+        "fallbackCost": 0,
+        "fallbackCount": 0,
+        "unknownCount": 0,
+        "count": 1
+      },
+      "models": {
+        "dummy-model": 1
+      },
+      "firstTs": "2026-06-01T10:00:00.000Z",
+      "lastTs": "2026-06-01T10:00:00.000Z"
+    },
+    "providerTotals": {
+      "anthropic": {
+        "turns": 1,
+        "tokens": {
+          "input": 10,
+          "output": 5,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "reasoning": null
+        },
+        "reasoningKnownTurns": 0,
+        "cost": 0.01,
+        "costFold": {
+          "fallbackCost": 0,
+          "fallbackCount": 0,
+          "unknownCount": 0,
+          "count": 1
+        },
+        "models": {
+          "dummy-model": 1
+        },
+        "firstTs": "2026-06-01T10:00:00.000Z",
+        "lastTs": "2026-06-01T10:00:00.000Z"
+      }
+    },
+    "by": null,
+    "groups": [],
+    "turns": [
+      {
+        "id": "dummy-proxy",
+        "sessionId": "dummy-session",
+        "agentId": "run-demo",
+        "branch": "main",
+        "cwd": "/tmp/demo",
+        "provider": "anthropic",
+        "model": "dummy-model",
+        "receivedAt": 1780308000000,
+        "tokens": {
+          "input": 10,
+          "output": 5,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "reasoning": null
+        },
+        "cost": 0.01,
+        "costConfidence": "exact",
+        "costFold": {
+          "fallbackCost": 0,
+          "fallbackCount": 0,
+          "unknownCount": 0,
+          "count": 1
+        },
+        "sources": [
+          "import",
+          "proxy"
+        ]
+      }
+    ]
+  },
+  "emptyCommand": "node server/index.js usage --json --agent-id missing",
+  "emptyStdout": {
+    "meta": {
+      "totalEntries": 0,
+      "totalSessions": 0,
+      "totalCost": 0,
+      "costAgg": {
+        "count": 0,
+        "fallbackCount": 0,
+        "fallbackCost": 0,
+        "unknownCount": 0
+      },
+      "unpricedModels": [],
+      "retentionDays": 14,
+      "retentionCutoff": "2026-10-19",
+      "retentionWarning": "Requested range reaches past the reliable retention window; older history may have been removed by retention, so totals are a LOWER BOUND.",
+      "timeRange": {
+        "from": null,
+        "to": null
+      }
+    },
+    "sessions": {
+      "count": 0,
+      "byProvider": {},
+      "subagentRatio": 0,
+      "turnDistribution": {
+        "min": 0,
+        "median": 0,
+        "p75": 0,
+        "max": 0
+      },
+      "topSessions": []
+    },
+    "models": [],
+    "tools": {
+      "totalCalls": 0,
+      "top": [],
+      "failRate": 0
+    },
+    "skills": [],
+    "prompts": {
+      "hashStability": {
+        "sysHash": {
+          "changeRate": 0,
+          "pairs": 0,
+          "label": "never"
+        },
+        "toolsHash": {
+          "changeRate": 0,
+          "pairs": 0,
+          "label": "never"
+        },
+        "coreHash": {
+          "changeRate": 0,
+          "pairs": 0,
+          "label": "never"
+        }
+      }
+    },
+    "cache": {
+      "hitRate": 0,
+      "totalInputTokens": 0,
+      "totalOutputTokens": 0,
+      "totalCacheReadTokens": 0
+    },
+    "gapCache": [],
+    "schemaVersion": 1,
+    "window": {
+      "from": null,
+      "to": null
+    },
+    "coverage": "unknown",
+    "sourceCoverage": {
+      "proxy": "not-observed",
+      "import": "not-observed"
+    },
+    "excludedMarkerRows": 0,
+    "nullAgentIdTurns": 0,
+    "nullBranchTurns": 0,
+    "totals": {
+      "turns": 0,
+      "tokens": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": null
+      },
+      "reasoningKnownTurns": 0,
+      "cost": 0,
+      "costFold": {
+        "fallbackCost": 0,
+        "fallbackCount": 0,
+        "unknownCount": 0,
+        "count": 0
+      },
+      "models": {},
+      "firstTs": null,
+      "lastTs": null
+    },
+    "providerTotals": {},
+    "by": null,
+    "groups": []
+  },
+  "homeBefore": {
+    ".ccxray/logs/index.ndjson": "eae1096be8194608deedb494d709b60fd718af030f29bcf112bdca25de50ca53",
+    "sentinel": "1d67a818d244f270755ce172e7b65e306f88002485f27203ca90d41784baa0fe"
+  },
+  "homeAfter": {
+    ".ccxray/logs/index.ndjson": "eae1096be8194608deedb494d709b60fd718af030f29bcf112bdca25de50ca53",
+    "sentinel": "1d67a818d244f270755ce172e7b65e306f88002485f27203ca90d41784baa0fe"
+  },
+  "byteIdentical": true
+}

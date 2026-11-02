@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import tarfile
 import tempfile
@@ -29,7 +30,7 @@ def execute(tree, scratch, name, pattern, filename):
            '--test-name-pattern=' + pattern, filename]
     result = subprocess.run(cmd, cwd=tree, env=env, text=True, capture_output=True, timeout=40)
     log = result.stdout + result.stderr
-    (OUT / (name + '.txt')).write_text('Code commit: ' + SHA + '\nCommand: HOME=<fresh> CCXRAY_HOME=<fresh> LOGS_DIR=<fresh> GIT_CONFIG_GLOBAL=<fresh> CCXRAY_EXPORT_DISABLE=1 CCXRAY_NETWORK_GUARD_ENFORCE=1 ' + ' '.join(cmd) + '\nExit: ' + str(result.returncode) + '\n' + clean(log, scratch))
+    (OUT / (name + '.txt')).write_text('Code commit: ' + SHA + '\nCommand: HOME=<fresh> CCXRAY_HOME=<fresh> LOGS_DIR=<fresh> GIT_CONFIG_GLOBAL=<fresh> CCXRAY_EXPORT_DISABLE=1 CCXRAY_NETWORK_GUARD_ENFORCE=1 ' + shlex.join(cmd) + '\nExit: ' + str(result.returncode) + '\n' + clean(log, scratch))
     fail = re.search(r'^# fail (\d+)$', log, re.M)
     passed = re.search(r'^# pass (\d+)$', log, re.M)
     assert fail and passed, log

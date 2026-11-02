@@ -1,0 +1,1160 @@
+Code commit: cb90e641d5855b5af08d2ec2ca4a5eff03f3f945
+Command: T=$(mktemp -d); HOME=$T node --require ./test/helpers/home-guard.js --require ./test/helpers/no-network.js --experimental-test-isolation=none --test --test-concurrency=1 test/usage.test.js
+
+TAP version 13
+# Subtest: usage analyze
+    # Subtest: computes meta from entries
+    ok 1 - computes meta from entries
+      ---
+      duration_ms: 15.78386
+      type: 'test'
+      ...
+    # Subtest: counts live and imported copies with the same responseId once
+    ok 2 - counts live and imported copies with the same responseId once
+      ---
+      duration_ms: 1.409583
+      type: 'test'
+      ...
+    # Subtest: computes model breakdown
+    ok 3 - computes model breakdown
+      ---
+      duration_ms: 0.621325
+      type: 'test'
+      ...
+    # Subtest: aggregates tool calls — legacy per-session max, not cumulative sum (\#427)
+    ok 4 - aggregates tool calls — legacy per-session max, not cumulative sum (\#427)
+      ---
+      duration_ms: 0.718597
+      type: 'test'
+      ...
+    # Subtest: caps tools.top at 7 by default; --tools lifts the cap
+    ok 5 - caps tools.top at 7 by default; --tools lifts the cap
+      ---
+      duration_ms: 0.878407
+      type: 'test'
+      ...
+    # Subtest: computes hash stability within session
+    ok 6 - computes hash stability within session
+      ---
+      duration_ms: 0.615492
+      type: 'test'
+      ...
+    # Subtest: computes cache hit rate
+    ok 7 - computes cache hit rate
+      ---
+      duration_ms: 0.582217
+      type: 'test'
+      ...
+    # Subtest: counts subagent ratio
+    ok 8 - counts subagent ratio
+      ---
+      duration_ms: 1.485001
+      type: 'test'
+      ...
+    # Subtest: handles entries with missing fields
+    ok 9 - handles entries with missing fields
+      ---
+      duration_ms: 0.711002
+      type: 'test'
+      ...
+    # Subtest: computes tool fail rate
+    ok 10 - computes tool fail rate
+      ---
+      duration_ms: 0.791573
+      type: 'test'
+      ...
+    # Subtest: tracks skill invocations and loads from the skillCalls field
+    ok 11 - tracks skill invocations and loads from the skillCalls field
+      ---
+      duration_ms: 0.712557
+      type: 'test'
+      ...
+    # Subtest: resolves skill scope from an injected scopeMap (analyze stays pure)
+    ok 12 - resolves skill scope from an injected scopeMap (analyze stays pure)
+      ---
+      duration_ms: 0.412206
+      type: 'test'
+      ...
+    # Subtest: shows legacy Skill as pre-tracking
+    ok 13 - shows legacy Skill as pre-tracking
+      ---
+      duration_ms: 0.35885
+      type: 'test'
+      ...
+    # Subtest: excludes sentinel sessions from topSessions
+    ok 14 - excludes sentinel sessions from topSessions
+      ---
+      duration_ms: 0.494639
+      type: 'test'
+      ...
+    # Subtest: computes gap-vs-cache buckets
+    ok 15 - computes gap-vs-cache buckets
+      ---
+      duration_ms: 0.437862
+      type: 'test'
+      ...
+    # Subtest: analyze([]) returns a zeroed result with no NaN
+    ok 16 - analyze([]) returns a zeroed result with no NaN
+      ---
+      duration_ms: 1.149525
+      type: 'test'
+      ...
+    # Subtest: gapVsCache skips non-finite gaps instead of crashing
+    ok 17 - gapVsCache skips non-finite gaps instead of crashing
+      ---
+      duration_ms: 0.542439
+      type: 'test'
+      ...
+    # Subtest: includes title in topSessions
+    ok 18 - includes title in topSessions
+      ---
+      duration_ms: 0.539495
+      type: 'test'
+      ...
+    1..18
+ok 1 - usage analyze
+  ---
+  duration_ms: 30.076967
+  type: 'suite'
+  ...
+# Subtest: usage retention disclosure
+    # Subtest: warns all-time despite only surviving post-cutoff data (fail-on-old differential)
+    ok 1 - warns all-time despite only surviving post-cutoff data (fail-on-old differential)
+      ---
+      duration_ms: 1.360173
+      type: 'test'
+      ...
+    # Subtest: warns only when a requested --last start has a Taipei date before the cutoff
+    ok 2 - warns only when a requested --last start has a Taipei date before the cutoff
+      ---
+      duration_ms: 0.970964
+      type: 'test'
+      ...
+    # Subtest: keeps retentionDays but disables the cutoff warning when retention is disabled
+    ok 3 - keeps retentionDays but disables the cutoff warning when retention is disabled
+      ---
+      duration_ms: 0.440971
+      type: 'test'
+      ...
+    # Subtest: never clamps timeRange.from to the cutoff when protected data survives past it
+    ok 4 - never clamps timeRange.from to the cutoff when protected data survives past it
+      ---
+      duration_ms: 0.660843
+      type: 'test'
+      ...
+    # Subtest: publishes a malformed retention setting as null without a cutoff or warning
+    not ok 5 - publishes a malformed retention setting as null without a cutoff or warning
+      ---
+      duration_ms: 69.535938
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:333:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        retentionCli (<checkout>/test/usage.test.js:75:10)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:343:31)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: renders the same retention warning in JSON and the human time-range line
+    not ok 6 - renders the same retention warning in JSON and the human time-range line
+      ---
+      duration_ms: 79.039287
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:353:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        retentionCli (<checkout>/test/usage.test.js:75:10)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:359:31)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    1..6
+not ok 2 - usage retention disclosure
+  ---
+  duration_ms: 152.431487
+  type: 'suite'
+  location: '<checkout>/test/usage.test.js:255:1'
+  failureType: 'subtestsFailed'
+  error: '2 subtests failed'
+  code: 'ERR_TEST_FAILURE'
+  ...
+# Subtest: usage parseArgs
+    # Subtest: --last with an invalid duration exits 1 instead of silently ignoring it
+    not ok 1 - --last with an invalid duration exits 1 instead of silently ignoring it
+      ---
+      duration_ms: 57.524555
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:393:3'
+      failureType: 'testCodeFailure'
+      error: |-
+        The input did not match the regular expression /Invalid --last duration/. Input:
+        
+        ''
+        
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected:
+      actual: ''
+      operator: 'match'
+      stack: |-
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:396:12)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Test.start (node:internal/test_runner/test:944:17)
+        node:internal/test_runner/test:1440:71
+        node:internal/per_context/primordials:466:82
+        new Promise (<anonymous>)
+        new SafePromise (node:internal/per_context/primordials:435:3)
+        node:internal/per_context/primordials:466:9
+        Array.map (<anonymous>)
+      ...
+    # Subtest: --last 0d matches nothing and returns empty JSON
+    not ok 2 - --last 0d matches nothing and returns empty JSON
+      ---
+      duration_ms: 91.689532
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:399:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        cli (<checkout>/test/usage.test.js:34:26)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:400:26)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: --last 9999d includes all entries
+    not ok 3 - --last 9999d includes all entries
+      ---
+      duration_ms: 80.895586
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:406:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        cli (<checkout>/test/usage.test.js:34:26)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:407:17)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: --cwd with no match returns empty JSON
+    not ok 4 - --cwd with no match returns empty JSON
+      ---
+      duration_ms: 85.241213
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:412:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        cli (<checkout>/test/usage.test.js:34:26)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:413:26)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: --cwd with broad prefix returns subset
+    not ok 5 - --cwd with broad prefix returns subset
+      ---
+      duration_ms: 83.171814
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:419:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        cli (<checkout>/test/usage.test.js:34:26)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:420:28)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: --cwd bare name is a case-insensitive substring match
+    not ok 6 - --cwd bare name is a case-insensitive substring match
+      ---
+      duration_ms: 79.35665
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:428:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        cli (<checkout>/test/usage.test.js:34:26)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:429:26)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: --cwd strips a leading ./ before substring matching
+    not ok 7 - --cwd strips a leading ./ before substring matching
+      ---
+      duration_ms: 76.025766
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:433:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        cli (<checkout>/test/usage.test.js:34:26)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:434:26)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: --cwd absolute prefix is path-bound (no sibling-dir bleed)
+    not ok 8 - --cwd absolute prefix is path-bound (no sibling-dir bleed)
+      ---
+      duration_ms: 76.323181
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:438:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:447:28)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+        async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
+      ...
+    # Subtest: --cwd expands ~ to home for prefix matching
+    not ok 9 - --cwd expands ~ to home for prefix matching
+      ---
+      duration_ms: 84.308796
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:458:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:468:28)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+        async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
+      ...
+    # Subtest: --cwd comma-separated matches union of paths
+    not ok 10 - --cwd comma-separated matches union of paths
+      ---
+      duration_ms: 75.638454
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:479:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        cli (<checkout>/test/usage.test.js:34:26)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:480:26)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: --cwd repeated flag accumulates
+    not ok 11 - --cwd repeated flag accumulates
+      ---
+      duration_ms: 73.292616
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:486:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        cli (<checkout>/test/usage.test.js:34:26)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:487:26)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: --last and --cwd combine — no match returns empty JSON
+    not ok 12 - --last and --cwd combine — no match returns empty JSON
+      ---
+      duration_ms: 74.788129
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:493:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        cli (<checkout>/test/usage.test.js:34:26)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:494:26)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: empty result from --session + --cwd returns empty JSON
+    not ok 13 - empty result from --session + --cwd returns empty JSON
+      ---
+      duration_ms: 77.175162
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:500:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        cli (<checkout>/test/usage.test.js:34:26)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:501:26)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: --last and --session combine
+    not ok 14 - --last and --session combine
+      ---
+      duration_ms: 91.597793
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:507:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        cli (<checkout>/test/usage.test.js:34:26)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:508:28)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: --session accepts prefix match
+    not ok 15 - --session accepts prefix match
+      ---
+      duration_ms: 80.83844
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:516:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        cli (<checkout>/test/usage.test.js:34:26)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:517:28)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: --session latest resolves by receivedAt, not file order
+    not ok 16 - --session latest resolves by receivedAt, not file order
+      ---
+      duration_ms: 87.586108
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:526:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:537:28)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+        async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
+      ...
+    # Subtest: --session latest is scoped by --cwd (alias resolved after filtering)
+    not ok 17 - --session latest is scoped by --cwd (alias resolved after filtering)
+      ---
+      duration_ms: 76.897458
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:548:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        cli (<checkout>/test/usage.test.js:34:26)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:550:26)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: --session costliest is scoped by --cwd (alias resolved after filtering)
+    not ok 18 - --session costliest is scoped by --cwd (alias resolved after filtering)
+      ---
+      duration_ms: 78.022702
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:555:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        cli (<checkout>/test/usage.test.js:34:26)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:557:26)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: --session costliest resolves after responseId deduplication
+    not ok 19 - --session costliest resolves after responseId deduplication
+      ---
+      duration_ms: 76.455132
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:562:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:572:28)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+        async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
+      ...
+    1..19
+not ok 3 - usage parseArgs
+  ---
+  duration_ms: 1508.483933
+  type: 'suite'
+  location: '<checkout>/test/usage.test.js:392:1'
+  failureType: 'subtestsFailed'
+  error: '19 subtests failed'
+  code: 'ERR_TEST_FAILURE'
+  ...
+# Subtest: usage CLI
+    # Subtest: --help prints usage and exits 0
+    not ok 1 - --help prints usage and exits 0
+      ---
+      duration_ms: 62.396575
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:585:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        cli (<checkout>/test/usage.test.js:34:26)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:586:17)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Test.start (node:internal/test_runner/test:944:17)
+        node:internal/test_runner/test:1440:71
+        node:internal/per_context/primordials:466:82
+      ...
+    # Subtest: --json outputs valid JSON
+    not ok 2 - --json outputs valid JSON
+      ---
+      duration_ms: 78.504932
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:592:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        cli (<checkout>/test/usage.test.js:34:26)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:593:17)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: --json output is under 10KB
+    not ok 3 - --json output is under 10KB
+      ---
+      duration_ms: 79.766619
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:602:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        cli (<checkout>/test/usage.test.js:34:26)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:603:17)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: --session with nonexistent id returns empty JSON
+    not ok 4 - --session with nonexistent id returns empty JSON
+      ---
+      duration_ms: 70.379088
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:607:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        cli (<checkout>/test/usage.test.js:34:26)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:608:26)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: --json --session combined works
+    not ok 5 - --json --session combined works
+      ---
+      duration_ms: 83.587857
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:614:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        cli (<checkout>/test/usage.test.js:34:26)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:615:17)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: no args outputs human-readable text
+    not ok 6 - no args outputs human-readable text
+      ---
+      duration_ms: 81.796505
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:624:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        cli (<checkout>/test/usage.test.js:34:26)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:625:17)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: missing logs return an empty versioned JSON result
+    not ok 7 - missing logs return an empty versioned JSON result
+      ---
+      duration_ms: 82.095076
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:632:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:634:17)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+        async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
+      ...
+    1..7
+not ok 4 - usage CLI
+  ---
+  duration_ms: 539.186582
+  type: 'suite'
+  location: '<checkout>/test/usage.test.js:584:1'
+  failureType: 'subtestsFailed'
+  error: '7 subtests failed'
+  code: 'ERR_TEST_FAILURE'
+  ...
+# Subtest: usage --json shape contract
+    # Subtest: single-scope object has exactly the documented top-level keys
+    not ok 1 - single-scope object has exactly the documented top-level keys
+      ---
+      duration_ms: 79.143199
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:649:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        cli (<checkout>/test/usage.test.js:34:26)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:650:25)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Test.start (node:internal/test_runner/test:944:17)
+        node:internal/test_runner/test:1440:71
+        node:internal/per_context/primordials:466:82
+      ...
+    # Subtest: meta has the documented shape
+    not ok 2 - meta has the documented shape
+      ---
+      duration_ms: 85.024352
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:653:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        cli (<checkout>/test/usage.test.js:34:26)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:654:33)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: sessions + topSessions[] have the documented shape
+    not ok 3 - sessions + topSessions[] have the documented shape
+      ---
+      duration_ms: 90.5333
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:669:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        cli (<checkout>/test/usage.test.js:34:26)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:670:37)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: models[] have the documented shape (≤10)
+    not ok 4 - models[] have the documented shape (≤10)
+      ---
+      duration_ms: 76.757591
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:697:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        cli (<checkout>/test/usage.test.js:34:26)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:698:35)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: tools + tools.top[] have the documented shape (default cap 7)
+    not ok 5 - tools + tools.top[] have the documented shape (default cap 7)
+      ---
+      duration_ms: 78.709168
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:712:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        cli (<checkout>/test/usage.test.js:34:26)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:713:34)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: skills[] have the documented shape (loads/scope nullable)
+    not ok 6 - skills[] have the documented shape (loads/scope nullable)
+      ---
+      duration_ms: 74.533923
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:725:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        cli (<checkout>/test/usage.test.js:34:26)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:726:35)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: prompts.hashStability has the three documented hashes
+    not ok 7 - prompts.hashStability has the three documented hashes
+      ---
+      duration_ms: 76.622489
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:737:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        cli (<checkout>/test/usage.test.js:34:26)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:738:36)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: cache has the documented shape (all numeric)
+    not ok 8 - cache has the documented shape (all numeric)
+      ---
+      duration_ms: 74.751529
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:749:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        cli (<checkout>/test/usage.test.js:34:26)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:750:34)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: gapCache[] have the documented shape (≤5 buckets)
+    not ok 9 - gapCache[] have the documented shape (≤5 buckets)
+      ---
+      duration_ms: 82.095818
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:755:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        cli (<checkout>/test/usage.test.js:34:26)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:756:37)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: multi-cwd mode returns { projects, meta } with the documented row shape, cost-desc
+    not ok 10 - multi-cwd mode returns { projects, meta } with the documented row shape, cost-desc
+      ---
+      duration_ms: 100.286359
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:767:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        cli (<checkout>/test/usage.test.js:34:26)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:768:28)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: discloses retention on the multi-cwd comparison in BOTH renderers
+    not ok 11 - discloses retention on the multi-cwd comparison in BOTH renderers
+      ---
+      duration_ms: 102.962225
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:788:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        retentionCli (<checkout>/test/usage.test.js:75:10)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:800:30)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: multi-cwd retention metadata equals the single-scope metadata, value for value
+    not ok 12 - multi-cwd retention metadata equals the single-scope metadata, value for value
+      ---
+      duration_ms: 89.529933
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:822:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        retentionCli (<checkout>/test/usage.test.js:75:10)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:846:35)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: empty JSON is a versioned successful result
+    not ok 13 - empty JSON is a versioned successful result
+      ---
+      duration_ms: 79.817012
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:863:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        cli (<checkout>/test/usage.test.js:34:26)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:864:26)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    1..13
+not ok 5 - usage --json shape contract
+  ---
+  duration_ms: 1091.862717
+  type: 'suite'
+  location: '<checkout>/test/usage.test.js:646:1'
+  failureType: 'subtestsFailed'
+  error: '13 subtests failed'
+  code: 'ERR_TEST_FAILURE'
+  ...
+# Subtest: usage human output marks aggregate cost confidence
+    # Subtest: renders the fallback header and exposes its complete JSON fold
+    not ok 1 - renders the fallback header and exposes its complete JSON fold
+      ---
+      duration_ms: 77.032858
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:896:5'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        humanCli (<checkout>/test/usage.test.js:886:39)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:899:24)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Test.start (node:internal/test_runner/test:944:17)
+        node:internal/test_runner/test:1440:71
+        node:internal/per_context/primordials:466:82
+      ...
+    # Subtest: renders the unknown header and exposes its complete JSON fold
+    not ok 2 - renders the unknown header and exposes its complete JSON fold
+      ---
+      duration_ms: 79.772139
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:896:5'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        humanCli (<checkout>/test/usage.test.js:886:39)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:899:24)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: renders the clean header and exposes its complete JSON fold
+    not ok 3 - renders the clean header and exposes its complete JSON fold
+      ---
+      duration_ms: 86.779462
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:896:5'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        humanCli (<checkout>/test/usage.test.js:886:39)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:899:24)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    # Subtest: marks an all-fallback session with ~ and an unpriced one with +
+    not ok 4 - marks an all-fallback session with ~ and an unpriced one with +
+      ---
+      duration_ms: 82.744911
+      type: 'test'
+      location: '<checkout>/test/usage.test.js:908:3'
+      failureType: 'testCodeFailure'
+      error: 'spawnSync <node> EPERM'
+      code: 'EPERM'
+      stack: |-
+        Object.spawnSync (node:internal/child_process:1120:20)
+        spawnSync (node:child_process:902:24)
+        execFileSync (node:child_process:945:15)
+        humanCli (<checkout>/test/usage.test.js:886:39)
+        TestContext.<anonymous> (<checkout>/test/usage.test.js:913:18)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+      ...
+    1..4
+not ok 6 - usage human output marks aggregate cost confidence
+  ---
+  duration_ms: 326.667057
+  type: 'suite'
+  location: '<checkout>/test/usage.test.js:875:1'
+  failureType: 'subtestsFailed'
+  error: '4 subtests failed'
+  code: 'ERR_TEST_FAILURE'
+  ...
+1..6
+# tests 67
+# suites 6
+# pass 22
+# fail 45
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 3711.543721
