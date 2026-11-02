@@ -1,0 +1,70 @@
+{
+  "codeCommit": "eb7c546f6ac3075650360d02969dab530e0e840e",
+  "testedCommit": "a13a38850cd5f8f51c754025f233af4cc9f31879",
+  "command": "T=$(mktemp -d); HOME=$T node --require ./test/helpers/home-guard.js --test --test-concurrency=1 test/usage.test.js test/usage-query.test.js test/usage-unpriced-imported.test.js",
+  "exit": 1,
+  "timedOut": false,
+  "timeoutSeconds": 120,
+  "tests": 90,
+  "pass": 82,
+  "fail": 8,
+  "skipped": 0
+}
+Failure names:
+  ✖ sums tokens and cost with an ADR 0017 fold, models and effort by call count (1.351125ms)
+✖ aggregate (1.629209ms)
+  ✖ --cwd absolute prefix is path-bound (no sibling-dir bleed) (64.540625ms)
+  ✖ --cwd expands ~ to home for prefix matching (68.495792ms)
+  ✖ --session latest resolves by receivedAt, not file order (61.133459ms)
+  ✖ --session costliest resolves after responseId deduplication (68.059792ms)
+✖ usage parseArgs (1429.416291ms)
+  ✖ --session with nonexistent id returns empty JSON (57.336584ms)
+✖ usage CLI (500.205417ms)
+  ✖ single-scope object has exactly the documented top-level keys (61.647084ms)
+  ✖ multi-cwd mode returns { projects, meta } with the documented row shape, cost-desc (65.380458ms)
+✖ usage --json shape contract (1874.225458ms)
+✖ failing tests:
+✖ sums tokens and cost with an ADR 0017 fold, models and effort by call count (1.351125ms)
+✖ --cwd absolute prefix is path-bound (no sibling-dir bleed) (64.540625ms)
+✖ --cwd expands ~ to home for prefix matching (68.495792ms)
+✖ --session latest resolves by receivedAt, not file order (61.133459ms)
+✖ --session costliest resolves after responseId deduplication (68.059792ms)
+✖ --session with nonexistent id returns empty JSON (57.336584ms)
+✖ single-scope object has exactly the documented top-level keys (61.647084ms)
+✖ multi-cwd mode returns { projects, meta } with the documented row shape, cost-desc (65.380458ms)
+Last lines:
+  }
+
+test at test/usage.test.js:767:3
+✖ multi-cwd mode returns { projects, meta } with the documented row shape, cost-desc (65.380458ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  ... Skipped lines
+  
+    [
+      'by',
+      'coverage',
+      'excludedMarkerRows',
+      'groups',
+  ...
+      'schemaVersion',
+  +   'sourceCoverage',
+      'totals',
+      'window'
+    ]
+  
+      at sameKeys (/private<checkout>/test/usage.test.js:647:44)
+      at TestContext.<anonymous> (/private<checkout>/test/usage.test.js:769:5)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Suite.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Suite.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ 'by', 'coverage', 'excludedMarkerRows', 'groups', 'meta', 'nullAgentIdTurns', 'nullBranchTurns', 'projects', 'providerTotals', 'schemaVersion', 'sourceCoverage', 'totals', 'window' ],
+    expected: [ 'by', 'coverage', 'excludedMarkerRows', 'groups', 'meta', 'nullAgentIdTurns', 'nullBranchTurns', 'projects', 'providerTotals', 'schemaVersion', 'totals', 'window' ],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }

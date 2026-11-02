@@ -1,0 +1,50 @@
+{
+  "codeCommit": "eb7c546f6ac3075650360d02969dab530e0e840e",
+  "testedCommit": "eb7c546f6ac3075650360d02969dab530e0e840e",
+  "command": "T=$(mktemp -d); HOME=$T node --require ./test/helpers/home-guard.js --test --test-concurrency=1 test/usage-query.test.js",
+  "exit": 0,
+  "timedOut": false,
+  "timeoutSeconds": 120,
+  "tests": 19,
+  "pass": 19,
+  "fail": 0,
+  "skipped": 0
+}
+Failure names:
+(none)
+Last lines:
+  ✔ passes legacy rows without a responseId through as-is (0.821958ms)
+✔ readMergedTurns: merge before filter (7.282625ms)
+▶ fillSessionCwd
+  ✔ takes the session's host cwd past a shell cd and unflagged agent-worktree rows, in any input order (1.55175ms)
+  ✔ keeps a linked-worktree host in its own checkout when one turn ran at the repository root (0.069167ms)
+  ✔ ignores flagged subagent rows and breaks ties by the earliest-seen cwd (0.074ms)
+  ✔ leaves a session with no observed cwd unfilled (0.059417ms)
+✔ fillSessionCwd (1.883792ms)
+▶ readMergedTurns: Codex one source per session
+  ✔ reads a session from the proxy when the proxy recorded it, else from the import (1.709792ms)
+  ✔ keeps every row of a legacy session with no provider: it is Anthropic, not Codex (0.863333ms)
+✔ readMergedTurns: Codex one source per session (2.665166ms)
+▶ selectTurns
+  ✔ matches roots exactly, not linked worktrees beneath them (0.053625ms)
+  ✔ uses a half-open time range and an optional session filter (0.04075ms)
+✔ selectTurns (0.132042ms)
+▶ aggregate
+  ✔ returns plain counting objects with prototype-like names as own data (0.083417ms)
+  ✔ sums tokens and cost with an ADR 0017 fold, models and effort by call count (0.304416ms)
+  ✔ does not count a row with neither a model nor usage as a call (0.084333ms)
+  ✔ counts calls with absent or null prices as unknown lower-bound cost (0.122333ms)
+  ✔ estimates executor time first-to-last when no turn carries turnDurationMs (0.034667ms)
+✔ aggregate (0.71175ms)
+▶ require purity
+  ✔ loading usage-query and the agentflow modules starts no handles and writes nothing (110.326834ms)
+  ✔ the probe does catch a module that starts a timer on require (100.100958ms)
+✔ require purity (210.511583ms)
+ℹ tests 19
+ℹ suites 6
+ℹ pass 19
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 292.790417

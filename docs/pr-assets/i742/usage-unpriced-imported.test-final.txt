@@ -1,0 +1,32 @@
+{
+  "codeCommit": "eb7c546f6ac3075650360d02969dab530e0e840e",
+  "testedCommit": "eb7c546f6ac3075650360d02969dab530e0e840e",
+  "command": "T=$(mktemp -d); HOME=$T node --require ./test/helpers/home-guard.js --test --test-concurrency=1 test/usage-unpriced-imported.test.js",
+  "exit": 0,
+  "timedOut": false,
+  "timeoutSeconds": 120,
+  "tests": 5,
+  "pass": 5,
+  "fail": 0,
+  "skipped": 0
+}
+Failure names:
+(none)
+Last lines:
+▶ #688 usage: unpriced models
+  ✔ --json reports the unpriced model as unknown and keeps it out of shares (70.206542ms)
+  ✔ text output prints unknown for the row and marks the total as a lower bound (67.354375ms)
+✔ #688 usage: unpriced models (140.599875ms)
+▶ #688 usage: imported session tool counts
+  ✔ --json derives tool counts from turnToolCallIds (67.717083ms)
+  ✔ text output shows non-zero tool counts (66.52525ms)
+  ✔ ADR 0018: null ids are unknown, {} ids are zero, recorded counts win (9.451875ms)
+✔ #688 usage: imported session tool counts (143.855083ms)
+ℹ tests 5
+ℹ suites 2
+ℹ pass 5
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 360.688625

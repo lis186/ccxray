@@ -1,103 +1,42 @@
-Code commit: cb90e641d5855b5af08d2ec2ca4a5eff03f3f945
-Command: T=$(mktemp -d); HOME=$T node --require ./test/helpers/home-guard.js --require ./test/helpers/no-network.js --experimental-test-isolation=none --test --test-concurrency=1 test/usage-group.test.js
-
-TAP version 13
-# Subtest: usage grouping and attribution
-    # Subtest: filters legacy attribution after merging the canonical row
-    ok 1 - filters legacy attribution after merging the canonical row
-      ---
-      duration_ms: 31.909141
-      type: 'test'
-      ...
-    # Subtest: excludes undated and nonfinite rows with only an upper time bound
-    ok 2 - excludes undated and nonfinite rows with only an upper time bound
-      ---
-      duration_ms: 6.788038
-      type: 'test'
-      ...
-    # Subtest: keeps zero reasoning evidence distinct from missing evidence
-    ok 3 - keeps zero reasoning evidence distinct from missing evidence
-      ---
-      duration_ms: 0.453068
-      type: 'test'
-      ...
-    # Subtest: rejects missing session, cwd and last values
-    ok 4 - rejects missing session, cwd and last values
-      ---
-      duration_ms: 0.602871
-      type: 'test'
-      ...
-    # Subtest: preserves cost-only rows in text while JSON counts model calls
-    ok 5 - preserves cost-only rows in text while JSON counts model calls
-      ---
-      duration_ms: 8.173159
-      type: 'test'
-      ...
-    # Subtest: separates two agents in one cwd and preserves additive totals, tokens and confidence
-    ok 6 - separates two agents in one cwd and preserves additive totals, tokens and confidence
-      ---
-      duration_ms: 1.381114
-      type: 'test'
-      ...
-    # Subtest: splits a run switching recorded branches, counts nulls, and excludes markers
-    ok 7 - splits a run switching recorded branches, counts nulls, and excludes markers
-      ---
-      duration_ms: 0.412279
-      type: 'test'
-      ...
-    # Subtest: uses inclusive start and exclusive end with exact agent and branch intersections
-    ok 8 - uses inclusive start and exclusive end with exact agent and branch intersections
-      ---
-      duration_ms: 5.989908
-      type: 'test'
-      ...
-    # Subtest: merges Claude proxy and import before agent, branch, cwd and time filtering
-    ok 9 - merges Claude proxy and import before agent, branch, cwd and time filtering
-      ---
-      duration_ms: 7.293494
-      type: 'test'
-      ...
-    # Subtest: chooses the Codex source before grouping and filtering, including an out-of-window proxy
-    ok 10 - chooses the Codex source before grouping and filtering, including an out-of-window proxy
-      ---
-      duration_ms: 3.503471
-      type: 'test'
-      ...
-    # Subtest: parses grouped JSON and renders text with explicit null counts and confidence
-    ok 11 - parses grouped JSON and renders text with explicit null counts and confidence
-      ---
-      duration_ms: 3.863266
-      type: 'test'
-      ...
-    # Subtest: reprices stale costs through the existing read-time pricing helper
-    ok 12 - reprices stale costs through the existing read-time pricing helper
-      ---
-      duration_ms: 2.932048
-      type: 'test'
+{
+  "codeCommit": "eb7c546f6ac3075650360d02969dab530e0e840e",
+  "testedCommit": "eb7c546f6ac3075650360d02969dab530e0e840e",
+  "command": "T=$(mktemp -d); HOME=$T node --require ./test/helpers/home-guard.js --require ./test/helpers/no-network.js --experimental-test-isolation=none --test --test-reporter=tap --test-concurrency=1 test/usage-group.test.js",
+  "exit": 0,
+  "timedOut": false,
+  "timeoutSeconds": 120,
+  "tests": 14,
+  "pass": 14,
+  "fail": 0,
+  "skipped": 0
+}
+Failure names:
+(none)
+Last lines:
       ...
     1..12
 ok 1 - usage grouping and attribution
   ---
-  duration_ms: 75.092387
+  duration_ms: 31.973334
   type: 'suite'
   ...
 # Subtest: usage absolute window flags
     # Subtest: accepts aliases, timezone offsets, repeatable and comma-separated filters
     ok 1 - accepts aliases, timezone offsets, repeatable and comma-separated filters
       ---
-      duration_ms: 0.35413
+      duration_ms: 0.096417
       type: 'test'
       ...
     # Subtest: rejects invalid timestamps, reversed windows, missing values, and conflicting flags with nonzero status
     ok 2 - rejects invalid timestamps, reversed windows, missing values, and conflicting flags with nonzero status
       ---
-      duration_ms: 1.159429
+      duration_ms: 0.292916
       type: 'test'
       ...
     1..2
 ok 2 - usage absolute window flags
   ---
-  duration_ms: 1.67282
+  duration_ms: 0.439583
   type: 'suite'
   ...
 1..2
@@ -108,4 +47,4 @@ ok 2 - usage absolute window flags
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 115.23631
+# duration_ms 48.377959

@@ -1,0 +1,12 @@
+# Code commit: eb7c546f6ac3075650360d02969dab530e0e840e
+--- a/server/usage-query.js
++++ b/server/usage-query.js
+@@ -156,7 +156,7 @@
+     cost: 0,
+     // ADR 0017 fold; rendered through formatAggCostText, never as a bare number.
+     costFold: { fallbackCost: 0, fallbackCount: 0, unknownCount: 0, count: 0 },
+-    models: Object.create(null),
++    models: {},
+     effort: Object.create(null),
+     durationMs: 0,
+     durationEstimated: false,

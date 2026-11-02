@@ -1,11 +1,11 @@
-Code commit: 84fbee97cde9e385752e3340e6a60569b8647af0
-Command: HOME=<fresh> CCXRAY_HOME=<fresh> LOGS_DIR=<fresh> GIT_CONFIG_GLOBAL=<fresh> CCXRAY_EXPORT_DISABLE=1 CCXRAY_NETWORK_GUARD_ENFORCE=1 node --require ./test/helpers/home-guard.js --require ./test/helpers/no-network.js --experimental-test-isolation=none --test --test-concurrency=1 '--test-name-pattern=^Scenario 4:' test/usage-contract-purity.test.js
+Code commit: eb7c546f6ac3075650360d02969dab530e0e840e
+Command: HOME=<fresh> CCXRAY_HOME=<fresh> LOGS_DIR=<fresh> GIT_CONFIG_GLOBAL=<fresh> CCXRAY_EXPORT_DISABLE=1 CCXRAY_NETWORK_GUARD_ENFORCE=1 node --require ./test/helpers/home-guard.js --require ./test/helpers/no-network.js --experimental-test-isolation=none --test --test-reporter=tap --test-concurrency=1 '--test-name-pattern=^Scenario 4:' test/usage-contract-purity.test.js
 Exit: 1
 TAP version 13
 # Subtest: Scenario 4: requires and runs offline without timers, writes, sockets or price fetches; HOME stays byte-identical
 not ok 1 - Scenario 4: requires and runs offline without timers, writes, sockets or price fetches; HOME stays byte-identical
   ---
-  duration_ms: 17.604803
+  duration_ms: 8.032834
   type: 'test'
   location: '<fixture>/tree/test/usage-contract-purity.test.js:16:1'
   failureType: 'testCodeFailure'
@@ -14,11 +14,11 @@ not ok 1 - Scenario 4: requires and runs offline without timers, writes, sockets
   stack: |-
     target.<computed> (<fixture>/tree/test/usage-contract-purity.test.js:27:55)
     Object.run (<fixture>/tree/server/usage.js:141:6)
-    TestContext.<anonymous> (<fixture>/tree/test/usage-contract-purity.test.js:72:19)
-    Test.runInAsyncScope (node:async_hooks:214:14)
-    Test.run (node:internal/test_runner/test:1047:25)
-    Test.start (node:internal/test_runner/test:944:17)
-    startSubtestAfterBootstrap (node:internal/test_runner/harness:296:17)
+    TestContext.<anonymous> (<fixture>/tree/test/usage-contract-purity.test.js:77:19)
+    Test.runInAsyncScope (node:async_hooks:226:14)
+    Test.run (node:internal/test_runner/test:1402:25)
+    Test.start (node:internal/test_runner/test:1262:17)
+    startSubtestAfterBootstrap (node:internal/test_runner/harness:387:17)
   ...
 1..1
 # tests 1
@@ -28,4 +28,4 @@ not ok 1 - Scenario 4: requires and runs offline without timers, writes, sockets
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 32.785296
+# duration_ms 15.766791

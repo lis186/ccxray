@@ -1,11 +1,23 @@
-Code commit: cb90e641d5855b5af08d2ec2ca4a5eff03f3f945
-Command: T=$(mktemp -d); HOME=$T node --require ./test/helpers/home-guard.js --require ./test/helpers/no-network.js --experimental-test-isolation=none --test --test-concurrency=1 test/usage-contract-purity.test.js
-
+{
+  "codeCommit": "eb7c546f6ac3075650360d02969dab530e0e840e",
+  "testedCommit": "eb7c546f6ac3075650360d02969dab530e0e840e",
+  "command": "T=$(mktemp -d); HOME=$T node --require ./test/helpers/home-guard.js --require ./test/helpers/no-network.js --experimental-test-isolation=none --test --test-reporter=tap --test-concurrency=1 test/usage-contract-purity.test.js",
+  "exit": 0,
+  "timedOut": false,
+  "timeoutSeconds": 120,
+  "tests": 1,
+  "pass": 1,
+  "fail": 0,
+  "skipped": 0
+}
+Failure names:
+(none)
+Last lines:
 TAP version 13
 # Subtest: Scenario 4: requires and runs offline without timers, writes, sockets or price fetches; HOME stays byte-identical
 ok 1 - Scenario 4: requires and runs offline without timers, writes, sockets or price fetches; HOME stays byte-identical
   ---
-  duration_ms: 41.652025
+  duration_ms: 22.200583
   type: 'test'
   ...
 1..1
@@ -16,4 +28,4 @@ ok 1 - Scenario 4: requires and runs offline without timers, writes, sockets or 
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 57.515333
+# duration_ms 30.834542

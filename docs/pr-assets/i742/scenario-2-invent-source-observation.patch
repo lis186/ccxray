@@ -1,7 +1,7 @@
-# Code commit: 84fbee97cde9e385752e3340e6a60569b8647af0
+# Code commit: eb7c546f6ac3075650360d02969dab530e0e840e
 --- a/server/usage-query.js
 +++ b/server/usage-query.js
-@@ -269,7 +269,7 @@
+@@ -273,7 +273,7 @@
      coverage: 'unknown',
      sourceCoverage: Object.fromEntries(['proxy', 'import'].map(source => [source,
        calls.some(e => (e.sources || [e.imported ? 'import' : 'proxy']).includes(source))

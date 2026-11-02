@@ -1,5 +1,7 @@
 # Prepared PR notes
 
+Evidence production commit: `eb7c546f6ac3075650360d02969dab530e0e840e`.
+
 The v1 usage query contract delivers acceptance scenarios 1–5. Proposal item 3
 in [issue #742](https://github.com/lis186/ccxray/issues/742), a hub start/stop or
 gap coverage hint, remains open: `coverage` is still `unknown` because there is

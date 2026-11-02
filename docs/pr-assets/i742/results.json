@@ -1,0 +1,114 @@
+{
+  "codeCommit": "eb7c546f6ac3075650360d02969dab530e0e840e",
+  "node": "v26.12.1",
+  "results": {
+    "heavy-final": {
+      "codeCommit": "eb7c546f6ac3075650360d02969dab530e0e840e",
+      "testedCommit": "eb7c546f6ac3075650360d02969dab530e0e840e",
+      "command": "T=$(mktemp -d); HOME=$T node --require ./test/helpers/home-guard.js --test --test-concurrency=1 test/usage.test.js test/usage-query.test.js test/usage-unpriced-imported.test.js",
+      "exit": 0,
+      "timedOut": false,
+      "timeoutSeconds": 120,
+      "tests": 91,
+      "pass": 91,
+      "fail": 0,
+      "skipped": 0
+    },
+    "usage.test-final": {
+      "codeCommit": "eb7c546f6ac3075650360d02969dab530e0e840e",
+      "testedCommit": "eb7c546f6ac3075650360d02969dab530e0e840e",
+      "command": "T=$(mktemp -d); HOME=$T node --require ./test/helpers/home-guard.js --test --test-concurrency=1 test/usage.test.js",
+      "exit": 0,
+      "timedOut": false,
+      "timeoutSeconds": 120,
+      "tests": 67,
+      "pass": 67,
+      "fail": 0,
+      "skipped": 0
+    },
+    "usage-query.test-final": {
+      "codeCommit": "eb7c546f6ac3075650360d02969dab530e0e840e",
+      "testedCommit": "eb7c546f6ac3075650360d02969dab530e0e840e",
+      "command": "T=$(mktemp -d); HOME=$T node --require ./test/helpers/home-guard.js --test --test-concurrency=1 test/usage-query.test.js",
+      "exit": 0,
+      "timedOut": false,
+      "timeoutSeconds": 120,
+      "tests": 19,
+      "pass": 19,
+      "fail": 0,
+      "skipped": 0
+    },
+    "usage-unpriced-imported.test-final": {
+      "codeCommit": "eb7c546f6ac3075650360d02969dab530e0e840e",
+      "testedCommit": "eb7c546f6ac3075650360d02969dab530e0e840e",
+      "command": "T=$(mktemp -d); HOME=$T node --require ./test/helpers/home-guard.js --test --test-concurrency=1 test/usage-unpriced-imported.test.js",
+      "exit": 0,
+      "timedOut": false,
+      "timeoutSeconds": 120,
+      "tests": 5,
+      "pass": 5,
+      "fail": 0,
+      "skipped": 0
+    },
+    "unit-final": {
+      "codeCommit": "eb7c546f6ac3075650360d02969dab530e0e840e",
+      "testedCommit": "eb7c546f6ac3075650360d02969dab530e0e840e",
+      "command": "T=$(mktemp -d); HOME=$T node scripts/run-tests.js unit",
+      "exit": -9,
+      "timedOut": true,
+      "timeoutSeconds": 120,
+      "tests": null,
+      "pass": null,
+      "fail": null,
+      "skipped": null
+    },
+    "contract-final": {
+      "codeCommit": "eb7c546f6ac3075650360d02969dab530e0e840e",
+      "testedCommit": "eb7c546f6ac3075650360d02969dab530e0e840e",
+      "command": "T=$(mktemp -d); HOME=$T node --require ./test/helpers/home-guard.js --require ./test/helpers/no-network.js --experimental-test-isolation=none --test --test-reporter=tap --test-concurrency=1 test/usage-contract.test.js",
+      "exit": 0,
+      "timedOut": false,
+      "timeoutSeconds": 120,
+      "tests": 10,
+      "pass": 10,
+      "fail": 0,
+      "skipped": 0
+    },
+    "purity-final": {
+      "codeCommit": "eb7c546f6ac3075650360d02969dab530e0e840e",
+      "testedCommit": "eb7c546f6ac3075650360d02969dab530e0e840e",
+      "command": "T=$(mktemp -d); HOME=$T node --require ./test/helpers/home-guard.js --require ./test/helpers/no-network.js --experimental-test-isolation=none --test --test-reporter=tap --test-concurrency=1 test/usage-contract-purity.test.js",
+      "exit": 0,
+      "timedOut": false,
+      "timeoutSeconds": 120,
+      "tests": 1,
+      "pass": 1,
+      "fail": 0,
+      "skipped": 0
+    },
+    "group-final": {
+      "codeCommit": "eb7c546f6ac3075650360d02969dab530e0e840e",
+      "testedCommit": "eb7c546f6ac3075650360d02969dab530e0e840e",
+      "command": "T=$(mktemp -d); HOME=$T node --require ./test/helpers/home-guard.js --require ./test/helpers/no-network.js --experimental-test-isolation=none --test --test-reporter=tap --test-concurrency=1 test/usage-group.test.js",
+      "exit": 0,
+      "timedOut": false,
+      "timeoutSeconds": 120,
+      "tests": 14,
+      "pass": 14,
+      "fail": 0,
+      "skipped": 0
+    },
+    "heavy-before": {
+      "codeCommit": "eb7c546f6ac3075650360d02969dab530e0e840e",
+      "testedCommit": "a13a38850cd5f8f51c754025f233af4cc9f31879",
+      "command": "T=$(mktemp -d); HOME=$T node --require ./test/helpers/home-guard.js --test --test-concurrency=1 test/usage.test.js test/usage-query.test.js test/usage-unpriced-imported.test.js",
+      "exit": 1,
+      "timedOut": false,
+      "timeoutSeconds": 120,
+      "tests": 90,
+      "pass": 82,
+      "fail": 8,
+      "skipped": 0
+    }
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "codeCommit": "eb7c546f6ac3075650360d02969dab530e0e840e",
+  "testedCommit": "eb7c546f6ac3075650360d02969dab530e0e840e",
+  "command": "T=$(mktemp -d); HOME=$T node --require ./test/helpers/home-guard.js --test --test-concurrency=1 test/usage.test.js test/usage-query.test.js test/usage-unpriced-imported.test.js",
+  "exit": 0,
+  "timedOut": false,
+  "timeoutSeconds": 120,
+  "tests": 91,
+  "pass": 91,
+  "fail": 0,
+  "skipped": 0
+}
+Failure names:
+(none)
+Last lines:
+  ✔ --json output is under 10KB (59.359958ms)
+  ✔ --session with nonexistent id returns empty JSON (59.421083ms)
+  ✔ --json --session combined works (120.630542ms)
+  ✔ no args outputs human-readable text (62.405209ms)
+  ✔ missing logs return an empty versioned JSON result (58.997958ms)
+✔ usage CLI (472.22325ms)
+▶ usage --json shape contract
+  ✔ single-scope object has exactly the documented top-level keys (59.01575ms)
+  ✔ meta has the documented shape (62.733625ms)
+  ✔ sessions + topSessions[] have the documented shape (62.715167ms)
+  ✔ models[] have the documented shape (≤10) (59.859625ms)
+  ✔ tools + tools.top[] have the documented shape (default cap 7) (59.462417ms)
+  ✔ skills[] have the documented shape (loads/scope nullable) (58.68075ms)
+  ✔ prompts.hashStability has the three documented hashes (58.72875ms)
+  ✔ cache has the documented shape (all numeric) (59.232792ms)
+  ✔ gapCache[] have the documented shape (≤5 buckets) (60.788542ms)
+  ✔ multi-cwd mode returns { projects, meta } with the documented row shape, cost-desc (65.555875ms)
+  ✔ discloses retention on the multi-cwd comparison in BOTH renderers (244.319167ms)
+  ✔ multi-cwd retention metadata equals the single-scope metadata, value for value (798.346916ms)
+  ✔ empty JSON is a versioned successful result (60.988042ms)
+✔ usage --json shape contract (1710.782666ms)
+▶ usage human output marks aggregate cost confidence
+  ✔ renders the fallback header and exposes its complete JSON fold (136.146875ms)
+  ✔ renders the unknown header and exposes its complete JSON fold (132.141625ms)
+  ✔ renders the clean header and exposes its complete JSON fold (134.619292ms)
+  ✔ marks an all-fallback session with ~ and an unpriced one with + (133.410584ms)
+✔ usage human output marks aggregate cost confidence (536.459417ms)
+ℹ tests 91
+ℹ suites 14
+ℹ pass 91
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 5165.618667

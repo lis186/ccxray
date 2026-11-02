@@ -1,11 +1,11 @@
-Code commit: 84fbee97cde9e385752e3340e6a60569b8647af0
-Command: HOME=<fresh> CCXRAY_HOME=<fresh> LOGS_DIR=<fresh> GIT_CONFIG_GLOBAL=<fresh> CCXRAY_EXPORT_DISABLE=1 CCXRAY_NETWORK_GUARD_ENFORCE=1 node --require ./test/helpers/home-guard.js --require ./test/helpers/no-network.js --experimental-test-isolation=none --test --test-concurrency=1 '--test-name-pattern=^Scenario 2:' test/usage-contract.test.js
+Code commit: eb7c546f6ac3075650360d02969dab530e0e840e
+Command: HOME=<fresh> CCXRAY_HOME=<fresh> LOGS_DIR=<fresh> GIT_CONFIG_GLOBAL=<fresh> CCXRAY_EXPORT_DISABLE=1 CCXRAY_NETWORK_GUARD_ENFORCE=1 node --require ./test/helpers/home-guard.js --require ./test/helpers/no-network.js --experimental-test-isolation=none --test --test-reporter=tap --test-concurrency=1 '--test-name-pattern=^Scenario 2:' test/usage-contract.test.js
 Exit: 1
 TAP version 13
 # Subtest: Scenario 2: source coverage distinguishes missing observations from zero usage
 not ok 1 - Scenario 2: source coverage distinguishes missing observations from zero usage
   ---
-  duration_ms: 25.138336
+  duration_ms: 12.799334
   type: 'test'
   location: '<fixture>/tree/test/usage-contract.test.js:193:1'
   failureType: 'testCodeFailure'
@@ -30,11 +30,11 @@ not ok 1 - Scenario 2: source coverage distinguishes missing observations from z
   operator: 'deepStrictEqual'
   stack: |-
     <fixture>/tree/test/usage-contract.test.js:197:12
-    process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
     async fixture (<fixture>/tree/test/usage-contract.test.js:24:16)
     async TestContext.<anonymous> (<fixture>/tree/test/usage-contract.test.js:194:3)
-    async Test.run (node:internal/test_runner/test:1054:7)
-    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+    async Test.run (node:internal/test_runner/test:1409:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)
   ...
 1..1
 # tests 1
@@ -44,4 +44,4 @@ not ok 1 - Scenario 2: source coverage distinguishes missing observations from z
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 54.634478
+# duration_ms 26.667125

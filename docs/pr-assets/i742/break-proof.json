@@ -1,5 +1,5 @@
 {
-  "codeCommit": "84fbee97cde9e385752e3340e6a60569b8647af0",
+  "codeCommit": "eb7c546f6ac3075650360d02969dab530e0e840e",
   "results": [
     {
       "scenario": 1,
@@ -102,6 +102,62 @@
     {
       "scenario": 5,
       "mutation": "reject-empty-group",
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "scenario": 3,
+      "mutation": "omit-reference-source-coverage",
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "scenario": null,
+      "mutation": "unsafe-model-counter",
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "scenario": null,
+      "mutation": "leak-counter-prototype",
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "scenario": null,
+      "mutation": "print-null-reasoning",
       "red": {
         "exit": 1,
         "pass": 0,

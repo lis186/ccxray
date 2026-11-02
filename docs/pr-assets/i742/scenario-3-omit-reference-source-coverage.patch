@@ -1,0 +1,12 @@
+# Code commit: eb7c546f6ac3075650360d02969dab530e0e840e
+--- a/docs/usage.md
++++ b/docs/usage.md
+@@ -5,7 +5,7 @@
+ for flags, JSON Schema, examples, token/cache semantics, coverage limitations
+ and versioning. `index.ndjson` is internal storage and must not be parsed by consumers.
+ 
+-Version 1 adds `schemaVersion`, `window`, `coverage`, `sourceCoverage`, `totals`, `providerTotals`,
++Version 1 adds `schemaVersion`, `window`, `coverage`, `totals`, `providerTotals`,
+ `by`, `groups`, `excludedMarkerRows`, `nullAgentIdTurns`, `nullBranchTurns`, and
+ optional `turns` to every successful JSON shape. The fields documented below
+ remain supplementary analytics; versioned summaries are the supported query
