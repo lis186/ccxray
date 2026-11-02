@@ -33,6 +33,8 @@ function handleAuthRoutes(req, res) {
       res.end(JSON.stringify({ error: 'loopback_only' }));
       return true;
     }
+    // Same write-origin policy as the other dashboard writes.
+    if (!auth.verifyDashboardWrite(req, res)) return true; // 403 written by the gate
     // Minting a bootstrap token is privileged (mint + redeem ⇒ dashboard
     // session). Gated by verifyDashboard: loopback peers pass via
     // isLoopbackBypass. Non-loopback callers still need a credential.

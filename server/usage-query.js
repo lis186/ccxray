@@ -53,14 +53,14 @@ const isAnthropic = e => e.provider == null || e.provider === 'anthropic';
 function oneSourcePerSession(rows) {
   const proxied = new Set();
   for (const e of rows) if (!isAnthropic(e) && !e.imported && e.sessionId) proxied.add(e.sessionId);
-  const sources = {};
+  const sources = Object.create(null);
   const kept = rows.filter(e => {
     if (isAnthropic(e) || !e.sessionId) return true;
     const fromProxy = proxied.has(e.sessionId);
     sources[e.sessionId] = fromProxy ? 'proxy' : 'import';
     return fromProxy ? !e.imported : true;
   });
-  return { rows: kept, sources };
+  return { rows: kept, sources: Object.fromEntries(Object.entries(sources)) };
 }
 
 // Claude Code's worktree-isolated Task agents run here. A host is never launched
