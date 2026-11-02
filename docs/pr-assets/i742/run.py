@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import signal
 import subprocess
 import tarfile
 import tempfile
@@ -23,14 +24,28 @@ def run(name, args, cwd=ROOT, target=SHA):
         # The standard preload supplies CCXRAY_HOME. Never inherit service roots.
         for key in ['CCXRAY_HOME', 'LOGS_DIR', 'GIT_CONFIG_GLOBAL', 'NODE_OPTIONS', 'NODE_TEST_REAL_HOME']:
             env.pop(key, None)
-        proc = subprocess.run(args, cwd=cwd, env=env, text=True, capture_output=True, timeout=1200)
-        log = proc.stdout + proc.stderr
-        counts = {key: int(re.findall(r'^[#ℹ] ' + key + r' (\d+)$', log, re.M)[-1])
-                  for key in ['tests', 'pass', 'fail', 'skipped']}
+        timeout = int(os.environ.get('EVIDENCE_UNIT_TIMEOUT', '1200')) if name == 'unit-final' else 120
+        timed_out = False
+        with tempfile.TemporaryFile(mode='w+') as output:
+            proc = subprocess.Popen(args, cwd=cwd, env=env, text=True, stdout=output,
+                                    stderr=subprocess.STDOUT, start_new_session=True)
+            try:
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                # Only this invocation's new session/group; never an existing service.
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait()
+            output.seek(0)
+            log = output.read()
+        counts = {}
+        for key in ['tests', 'pass', 'fail', 'skipped']:
+            matches = re.findall(r'^[#ℹ] ' + key + r' (\d+)$', log, re.M)
+            counts[key] = int(matches[-1]) if matches and not timed_out else None
         result = dict(codeCommit=SHA, testedCommit=target, command='T=$(mktemp -d); HOME=$T ' + shlex.join(args),
-                      exit=proc.returncode, **counts)
+                      exit=proc.returncode, timedOut=timed_out, timeoutSeconds=timeout, **counts)
         results[name] = result
-        tail = '\n'.join(log.splitlines()[-18:])
+        tail = '\n'.join(log.splitlines()[-35:])
         failures = '\n'.join(line for line in log.splitlines() if '✖' in line or line.startswith('not ok'))
         text = json.dumps(result, indent=2) + '\nFailure names:\n' + (failures or '(none)') + '\nLast lines:\n' + tail + '\n'
         text = text.replace(str(ROOT), '<checkout>').replace(str(cwd), '<checkout>').replace(directory, '<fresh-home>')
@@ -43,7 +58,8 @@ files = ['test/usage.test.js', 'test/usage-query.test.js', 'test/usage-unpriced-
 assert run('heavy-final', heavy + files) == 0
 for filename in files:
     assert run(Path(filename).stem + '-final', heavy + [filename]) == 0
-assert run('unit-final', ['node', 'scripts/run-tests.js', 'unit']) == 0
+# A blocked lane must not prevent collection of independent focused evidence.
+run('unit-final', ['node', 'scripts/run-tests.js', 'unit'])
 focused = ['node', '--require', './test/helpers/home-guard.js', '--require', './test/helpers/no-network.js',
            '--experimental-test-isolation=none', '--test', '--test-reporter=tap', '--test-concurrency=1']
 for name, filename in [('contract-final', 'usage-contract.test.js'), ('purity-final', 'usage-contract-purity.test.js'), ('group-final', 'usage-group.test.js')]:
