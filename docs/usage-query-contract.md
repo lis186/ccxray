@@ -142,8 +142,8 @@ bodies, titles, headers, credentials, raw usage objects, or internal merge field
 ## JSON Schema
 
 This schema describes the stable query fields. Additional top-level properties
-allow the supplementary analytics and future additive fields. Consumers must
-ignore unknown properties.
+allow the supplementary analytics fields. Consumers must ignore unknown
+properties, while producers must bump the version for stable field changes.
 
 ```json
 {
