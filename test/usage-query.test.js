@@ -156,6 +156,17 @@ describe('selectTurns', () => {
 });
 
 describe('aggregate', () => {
+  it('returns plain counting objects with prototype-like names as own data', () => {
+    const r = aggregate(['__proto__', 'constructor', 'toString', '__proto__'].map(name => ({
+      model: name, effort: name, receivedAt: T0,
+    })));
+    for (const counts of [r.models, r.effort]) {
+      assert.equal(Object.getPrototypeOf(counts), Object.prototype);
+      assert.deepEqual(counts, JSON.parse('{"__proto__":2,"constructor":1,"toString":1}'));
+      assert.deepEqual(JSON.parse(JSON.stringify(counts)), counts);
+    }
+  });
+
   it('sums tokens and cost with an ADR 0017 fold, models and effort by call count', () => {
     const r = aggregate([
       { model: 'm1', effort: 'high', receivedAt: T0, usage: usage(10, 20, 60, 30), cost: { cost: 1, confidence: 'exact' }, turnDurationMs: 4000 },

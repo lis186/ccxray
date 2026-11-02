@@ -4,6 +4,8 @@
 
 ### Breaking (3.0.0)
 
+- `usage --json` now succeeds (exit 0) with a versioned result object when logs are missing or no rows match, replacing exit 1 with `{error, hint}`. Non-grouped JSON analytics (`meta`, `sessions`, `models`) exclude cost-only markers and undated rows, so their counts and costs may decrease. `sessions.topSessions[].title` and `skills[].scope` are now `null`. `--json --open` is rejected. Grouped JSON always includes `nullBranchTurns`, regardless of grouping dimension. See `docs/usage-query-contract.md` (#742).
+
 - `usage --last` without a value now errors instead of silently selecting all history; missing `--session` and `--cwd` values also error consistently.
 
 - **ccxray now listens on loopback by default; set `PROXY_HOST=0.0.0.0` to listen on all interfaces.** Behaviour change: the proxy + dashboard port binds `127.0.0.1`, plus `::1` on the same port when the host has IPv6 loopback, so `http://localhost:<port>` works whichever family `localhost` resolves to. `PROXY_HOST` selects a single other address (`0.0.0.0`, `::`, or one interface) and startup prints the bound address. If `::1` is unavailable it is skipped; if it is taken while `127.0.0.1` is free, the whole port counts as in use, so the agent-mode port scan and hub bind retry behave as before. The Docker image sets `PROXY_HOST=0.0.0.0`. An SSH tunnel that ends at `127.0.0.1` needs no change. ChatGPT login from Codex is accepted from loopback; clients on other hosts need `CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN=1`, which should only be enabled on a trusted network.

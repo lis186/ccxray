@@ -162,7 +162,7 @@ describe('usage grouping and attribution', () => {
   });
 
   it('parses grouped JSON and renders text with explicit null counts and confidence', async () => {
-    await fixture([turn('a'), turn('b', { agentId: null, branch: null, cost: null }), { id: 'marker', receivedAt: T }], async ({ home }) => {
+    await fixture([turn('a'), turn('b', { agentId: null, branch: null, cost: null, usage: { input_tokens: 1 } }), { id: 'marker', receivedAt: T }], async ({ home }) => {
       const json = await output(home, ['--json', '--by', 'branch']);
       assert.equal(json.status, 0);
       const result = JSON.parse(json.stdout);
@@ -174,6 +174,7 @@ describe('usage grouping and attribution', () => {
       assert.match(text, /\(null\): 1 turns · —/);
       assert.match(text, /Null agentId: 1 turns/);
       assert.match(text, /cacheWrite 30/);
+      assert.match(text, /reasoning unknown/);
     });
   });
 

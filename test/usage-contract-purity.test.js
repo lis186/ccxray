@@ -45,7 +45,8 @@ it('Scenario 4: requires and runs offline without timers, writes, sockets or pri
     for (const target of [globalThis, require('node:timers'), require('node:timers/promises')]) {
       for (const name of ['setTimeout', 'setInterval']) block(target, name);
     }
-    for (const name of ['writeFile', 'appendFile', 'mkdir', 'rename', 'unlink', 'rm', 'createWriteStream']) {
+    for (const name of ['writeFile', 'appendFile', 'mkdir', 'rename', 'unlink', 'rm', 'createWriteStream',
+      'copyFile', 'link', 'symlink', 'chmod', 'utimes', 'truncate']) {
       block(fs, name); block(fs, name + 'Sync'); block(fs.promises, name);
     }
     // Also trap opening a descriptor for write, even if a caller bypasses writeFile.
@@ -65,6 +66,10 @@ it('Scenario 4: requires and runs offline without timers, writes, sockets or pri
       block(mod, 'request'); block(mod, 'get');
     }
     block(globalThis, 'fetch');
+    const childProcess = require('node:child_process');
+    for (const name of ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork']) {
+      block(childProcess, name);
+    }
     const resources = () => process.getActiveResourcesInfo().filter(n => !['PipeWrap', 'FSReqCallback'].includes(n));
     const beforeResources = resources();
     const usage = require('../server/usage');

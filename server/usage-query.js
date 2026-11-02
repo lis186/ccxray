@@ -211,6 +211,10 @@ function aggregate(turns) {
   }
   const denom = out.tokens.input + out.tokens.cacheRead + out.tokens.cacheWrite;
   out.readShare = denom ? out.tokens.cacheRead / denom : null;
+  // Count with null prototypes, then expose ordinary JSON-shaped objects.
+  // fromEntries preserves hostile names as own data properties.
+  out.models = Object.fromEntries(Object.entries(out.models));
+  out.effort = Object.fromEntries(Object.entries(out.effort));
   return out;
 }
 

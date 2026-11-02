@@ -261,7 +261,7 @@ async function run(argv) {
       console.log(`Usage by ${args.by}`);
       for (const g of groups) {
         const t = g.tokens;
-        console.log(`${g.key === null ? '(null)' : g.key}: ${g.turns} turns · ${formatAggCostText(g.cost, g.costFold)} · input ${t.input} / cacheRead ${t.cacheRead} / cacheWrite ${t.cacheWrite} / output ${t.output} / reasoning ${t.reasoning}`);
+        console.log(`${g.key === null ? '(null)' : g.key}: ${g.turns} turns · ${formatAggCostText(g.cost, g.costFold)} · input ${t.input} / cacheRead ${t.cacheRead} / cacheWrite ${t.cacheWrite} / output ${t.output} / reasoning ${t.reasoning ?? 'unknown'}`);
         console.log(`  models ${JSON.stringify(g.models)} · ${g.firstTs} → ${g.lastTs}`);
       }
       console.log(`Null agentId: ${result.nullAgentIdTurns} turns`);

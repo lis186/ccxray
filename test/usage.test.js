@@ -439,8 +439,8 @@ describe('usage parseArgs', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-cwdbound-'));
     fs.mkdirSync(path.join(home, 'logs'), { recursive: true });
     const lines = [
-      { id: 'a', sessionId: 's-in', receivedAt: 2, cwd: '/work/proj', cost: { cost: 1 } },
-      { id: 'b', sessionId: 's-sib', receivedAt: 1, cwd: '/work/proj-sibling', cost: { cost: 1 } },
+      { id: 'a', sessionId: 's-in', receivedAt: 2, cwd: '/work/proj', model: 'dummy-model', usage: { input_tokens: 1, output_tokens: 1 }, cost: { cost: 1 } },
+      { id: 'b', sessionId: 's-sib', receivedAt: 1, cwd: '/work/proj-sibling', model: 'dummy-model', usage: { input_tokens: 1, output_tokens: 1 }, cost: { cost: 1 } },
     ];
     fs.writeFileSync(path.join(home, 'logs', 'index.ndjson'), lines.map(l => JSON.stringify(l)).join('\n') + '\n');
     try {
@@ -463,7 +463,7 @@ describe('usage parseArgs', () => {
     fs.mkdirSync(path.join(ccxrayHome, 'logs'), { recursive: true });
     const projCwd = path.join(fakeHome, 'demo-proj');
     fs.writeFileSync(path.join(ccxrayHome, 'logs', 'index.ndjson'),
-      JSON.stringify({ id: 'i', sessionId: 's', receivedAt: 1, cwd: projCwd, cost: { cost: 1 } }) + '\n');
+      JSON.stringify({ id: 'i', sessionId: 's', receivedAt: 1, cwd: projCwd, model: 'dummy-model', usage: { input_tokens: 1, output_tokens: 1 }, cost: { cost: 1 } }) + '\n');
     try {
       const r = JSON.parse(execFileSync(
         process.execPath, ['server/index.js', 'usage', '--json', '--cwd', '~/demo-proj'],
@@ -529,8 +529,8 @@ describe('usage parseArgs', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-latest-'));
     fs.mkdirSync(path.join(home, 'logs'), { recursive: true });
     const lines = [
-      { id: 'x1', sessionId: 'newest-sess', receivedAt: 5000, cost: { cost: 0.1 } },
-      { id: 'x2', sessionId: 'older-sess', receivedAt: 1000, cost: { cost: 0.1 } },
+      { id: 'x1', sessionId: 'newest-sess', receivedAt: 5000, model: 'dummy-model', usage: { input_tokens: 1, output_tokens: 1 }, cost: { cost: 0.1 } },
+      { id: 'x2', sessionId: 'older-sess', receivedAt: 1000, model: 'dummy-model', usage: { input_tokens: 1, output_tokens: 1 }, cost: { cost: 0.1 } },
     ];
     fs.writeFileSync(path.join(home, 'logs', 'index.ndjson'), lines.map(l => JSON.stringify(l)).join('\n') + '\n');
     try {
@@ -563,9 +563,9 @@ describe('usage parseArgs', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-costliest-dedup-'));
     fs.mkdirSync(path.join(home, 'logs'), { recursive: true });
     const lines = [
-      { id: 'imported', responseId: 'msg_duplicate', imported: true, sessionId: 'duplicated-session', receivedAt: 1, cost: { cost: 1 } },
-      { id: 'live', responseId: 'msg_duplicate', agentKey: 'herdr:w1:p1', sessionId: 'duplicated-session', receivedAt: 2, cost: { cost: 1 } },
-      { id: 'actual', responseId: 'msg_actual', sessionId: 'actual-costliest', receivedAt: 3, cost: { cost: 1.5 } },
+      { id: 'imported', responseId: 'msg_duplicate', imported: true, sessionId: 'duplicated-session', receivedAt: 1, model: 'dummy-model', usage: { input_tokens: 1, output_tokens: 1 }, cost: { cost: 1 } },
+      { id: 'live', responseId: 'msg_duplicate', agentKey: 'herdr:w1:p1', sessionId: 'duplicated-session', receivedAt: 2, model: 'dummy-model', usage: { input_tokens: 1, output_tokens: 1 }, cost: { cost: 1 } },
+      { id: 'actual', responseId: 'msg_actual', sessionId: 'actual-costliest', receivedAt: 3, model: 'dummy-model', usage: { input_tokens: 1, output_tokens: 1 }, cost: { cost: 1.5 } },
     ];
     fs.writeFileSync(path.join(home, 'logs', 'index.ndjson'), lines.map(l => JSON.stringify(l)).join('\n') + '\n');
     try {
@@ -605,7 +605,7 @@ describe('usage CLI', () => {
   });
 
   it('--session with nonexistent id returns empty JSON', () => {
-    const r = JSON.parse(cli('--session', 'nonexistent-session-id-xyz'));
+    const r = JSON.parse(cli('--json', '--session', 'nonexistent-session-id-xyz'));
     assert.equal(r.schemaVersion, 1);
     assert.equal(r.totals.turns, 0);
     assert.deepEqual(r.groups, []);
@@ -647,7 +647,7 @@ describe('usage --json shape contract', () => {
   const sameKeys = (o, expected) => assert.deepEqual(Object.keys(o).sort(), [...expected].sort());
 
   it('single-scope object has exactly the documented top-level keys', () => {
-    sameKeys(JSON.parse(cli('--json')), ['meta', 'sessions', 'models', 'tools', 'skills', 'prompts', 'cache', 'gapCache', 'schemaVersion', 'window', 'coverage', 'excludedMarkerRows', 'nullAgentIdTurns', 'nullBranchTurns', 'totals', 'providerTotals', 'by', 'groups']);
+    sameKeys(JSON.parse(cli('--json')), ['meta', 'sessions', 'models', 'tools', 'skills', 'prompts', 'cache', 'gapCache', 'schemaVersion', 'window', 'coverage', 'sourceCoverage', 'excludedMarkerRows', 'nullAgentIdTurns', 'nullBranchTurns', 'totals', 'providerTotals', 'by', 'groups']);
   });
 
   it('meta has the documented shape', () => {
@@ -766,7 +766,7 @@ describe('usage --json shape contract', () => {
 
   it('multi-cwd mode returns { projects, meta } with the documented row shape, cost-desc', () => {
     const out = JSON.parse(cli('--json', '--cwd', '/work,/other'));
-    sameKeys(out, ['projects', 'meta', 'schemaVersion', 'window', 'coverage', 'excludedMarkerRows', 'nullAgentIdTurns', 'nullBranchTurns', 'totals', 'providerTotals', 'by', 'groups']);
+    sameKeys(out, ['projects', 'meta', 'schemaVersion', 'window', 'coverage', 'sourceCoverage', 'excludedMarkerRows', 'nullAgentIdTurns', 'nullBranchTurns', 'totals', 'providerTotals', 'by', 'groups']);
     // Retention is reported ONCE for the query, never duplicated per project.
     sameKeys(out.meta, ['retentionDays', 'retentionCutoff', 'retentionWarning']);
     assert.equal(typeof out.meta.retentionDays, 'number');

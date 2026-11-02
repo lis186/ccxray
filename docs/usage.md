@@ -5,7 +5,7 @@ server required. External consumers should use the [usage query contract](usage-
 for flags, JSON Schema, examples, token/cache semantics, coverage limitations
 and versioning. `index.ndjson` is internal storage and must not be parsed by consumers.
 
-Version 1 adds `schemaVersion`, `window`, `coverage`, `totals`, `providerTotals`,
+Version 1 adds `schemaVersion`, `window`, `coverage`, `sourceCoverage`, `totals`, `providerTotals`,
 `by`, `groups`, `excludedMarkerRows`, `nullAgentIdTurns`, `nullBranchTurns`, and
 optional `turns` to every successful JSON shape. The fields documented below
 remain supplementary analytics; versioned summaries are the supported query

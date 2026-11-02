@@ -220,6 +220,9 @@ it('Scenario 3: documented schema and compatibility rules match version 1', () =
   assert.match(doc, /Any field addition, removal, rename, type or semantic change requires a new schema version/);
   assert.match(doc, /not-observed.*never.*zero/);
   assert.match(doc, /index.ndjson.*internal/);
+  const reference = fs.readFileSync(path.join(__dirname, '../docs/usage.md'), 'utf8');
+  const additions = reference.match(/Version 1 adds ([\s\S]*?) to every successful JSON shape/)[1];
+  for (const field of V1_FIELDS.root) assert.ok(additions.includes('`' + field + '`'), field);
 });
 
 it('Scenario 5: main integration preserves grouping and resolves all four review follow-ups', async () => {

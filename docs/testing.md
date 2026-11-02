@@ -621,7 +621,12 @@ versioned summaries, deduplication, normalized Codex session totals (`test/fixtu
 null identities and empty results. `usage-contract-purity.test.js` runs the
 query module with only a temporary HOME (unsetting CCXRAY_HOME and LOGS_DIR), compares
 all HOME file bytes before/after, and traps timers, writes, sockets and network
-calls across require and run. It runs in the unit lane without spawning processes. These tests never inspect the real home or contact a running hub.
+calls across require and run, including filesystem metadata operations and child-process creation.
+The runner conservatively assigns it to the heavy lane because it imports
+`child_process` to trap spawning; the test itself spawns nothing. These tests
+never inspect the real home or contact a running hub. Selector fixtures in
+`usage.test.js` carry dummy model/usage evidence so they test model calls;
+cost-only marker exclusion is checked separately in `usage-group.test.js`.
 
 For environments that prohibit sockets, the runner accepts
 `--exclude <comma-separated test basenames>`. Each excluded file is printed;
