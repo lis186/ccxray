@@ -363,6 +363,7 @@ async function install(options, deps, lay) {
     deps.fs.mkdirSync(lay.home, { recursive: true, mode: 0o700 });
     deps.fs.mkdirSync(lay.shimDir, { recursive: true, mode: 0o755 });
 
+    // Copy the current probe and shim on every install, including identity support.
     const probeBytes = fs.readFileSync(path.join(__dirname, 'shim', 'shim-probe.js'));
     atomicWrite(lay.probePath, probeBytes, 0o644, deps);
     manifest.files.push({ path: lay.probePath, sha256: sha(probeBytes) });

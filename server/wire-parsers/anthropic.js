@@ -202,7 +202,7 @@ function isSubagent(parsedBody, _headers) {
 
 function rawSessionId(headers, _parsedBody) {
   const sid = headers?.['x-session-id'];
-  return sid ? String(sid) : null;
+  return sid ? store.sanitizeSessionId(String(sid)) : null;
 }
 
 function systemPromptHash(parsedBody) {
@@ -243,7 +243,7 @@ function attributionTurnStep(parsedBody) {
 // Non-SSE: count content[] blocks with type=tool_use.
 function extractTurnToolCalls(resData) {
   if (!resData) return null;
-  const counts = {};
+  const counts = Object.create(null);
   if (Array.isArray(resData)) {
     for (const ev of resData) {
       if (ev.type === 'content_block_start' && ev.content_block?.type === 'tool_use' && ev.content_block.name) {
@@ -258,7 +258,7 @@ function extractTurnToolCalls(resData) {
     }
   }
   // {} = response parsed, zero tool calls; null = no response data (legacy/missing)
-  return counts;
+  return Object.fromEntries(Object.entries(counts));
 }
 
 // #486: per-turn tool_use call ids from the response, keyed by id → name.

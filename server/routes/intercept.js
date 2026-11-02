@@ -1,7 +1,9 @@
 'use strict';
 
 const store = require('../store');
-const { taipeiTime } = require('../helpers');
+const { taipeiTime, safeDecodeURIComponent } = require('../helpers');
+const { badEncoding, unsupportedMediaType } = require('./route-errors');
+const { hasJsonContentType } = require('../auth');
 const { broadcastInterceptToggle, broadcastInterceptRemoved, broadcastSessionStatus } = require('../sse-broadcast');
 const { forwardRequest } = require('../forward');
 
@@ -9,6 +11,7 @@ function handleInterceptRoutes(clientReq, clientRes) {
   const pathname = clientReq.url.split('?')[0];
 
   if (pathname === '/_api/intercept/toggle' && clientReq.method === 'POST') {
+    if (!hasJsonContentType(clientReq)) return unsupportedMediaType(clientRes);
     const chunks = []; clientReq.on('data', c => chunks.push(c));
     clientReq.on('end', () => {
       try {
@@ -27,7 +30,8 @@ function handleInterceptRoutes(clientReq, clientRes) {
 
   const approveMatch = pathname.match(/^\/_api\/intercept\/(.+)\/approve$/);
   if (approveMatch && clientReq.method === 'POST') {
-    const reqId = decodeURIComponent(approveMatch[1]);
+    const reqId = safeDecodeURIComponent(approveMatch[1]);
+    if (reqId === null) return badEncoding(clientRes);
     const pending = store.pendingRequests.get(reqId);
     if (!pending) { clientRes.writeHead(404); clientRes.end('not found'); return true; }
     const chunks = []; clientReq.on('data', c => chunks.push(c));
@@ -52,7 +56,8 @@ function handleInterceptRoutes(clientReq, clientRes) {
 
   const rejectMatch = pathname.match(/^\/_api\/intercept\/(.+)\/reject$/);
   if (rejectMatch && clientReq.method === 'POST') {
-    const reqId = decodeURIComponent(rejectMatch[1]);
+    const reqId = safeDecodeURIComponent(rejectMatch[1]);
+    if (reqId === null) return badEncoding(clientRes);
     const pending = store.pendingRequests.get(reqId);
     if (!pending) { clientRes.writeHead(404); clientRes.end('not found'); return true; }
     clearTimeout(pending.timer);
@@ -73,6 +78,7 @@ function handleInterceptRoutes(clientReq, clientRes) {
   }
 
   if (pathname === '/_api/intercept/timeout' && clientReq.method === 'POST') {
+    if (!hasJsonContentType(clientReq)) return unsupportedMediaType(clientRes);
     const chunks = []; clientReq.on('data', c => chunks.push(c));
     clientReq.on('end', () => {
       try {

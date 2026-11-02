@@ -153,7 +153,7 @@ function makeRes(outputTokens) {
 // ── Main generator ──────────────────────────────────────────────────
 
 async function generate({ entries: numEntries = DEFAULT_ENTRIES, output } = {}) {
-  const outputDir = output || path.join(os.tmpdir(), `ccxray-perf-${Date.now()}`);
+  const outputDir = output || await fsp.mkdtemp(path.join(os.tmpdir(), 'ccxray-perf-'));
   const logsDir = path.join(outputDir, 'logs');
   const sharedDir = path.join(logsDir, 'shared');
 
@@ -239,7 +239,7 @@ async function generate({ entries: numEntries = DEFAULT_ENTRIES, output } = {}) 
     for (const e of batch) indexLines.push(e.indexLine);
   }
 
-  await fsp.writeFile(path.join(logsDir, 'index.ndjson'), indexLines.join('\n') + '\n');
+  await fsp.writeFile(path.join(logsDir, 'index.ndjson'), indexLines.join('\n') + '\n', { flag: 'wx' });
 
   return { outputDir, logsDir, entryCount: allEntries.length, deltaChainIds: deltaIds, provenance: 'module-analysis-2026-07-07' };
 }

@@ -104,8 +104,11 @@ const send = (url, p, headers, body) => new Promise((resolve, reject) => {
   const wait = process.env.FAKE_WAIT_FILE;
   while (wait && !fs.existsSync(wait)) await new Promise(r => setTimeout(r, 20));
   let status = 'none';
+  const customHeaders = Object.fromEntries((process.env.ANTHROPIC_CUSTOM_HEADERS || '').split('\\n').filter(Boolean).map(line => {
+    const colon = line.indexOf(':'); return [line.slice(0, colon).trim().toLowerCase(), line.slice(colon + 1).trim()];
+  }));
   if (tool === 'claude' && process.env.ANTHROPIC_BASE_URL) {
-    status = await send(process.env.ANTHROPIC_BASE_URL, '/v1/messages', { 'x-api-key': 'k', 'anthropic-version': '2023-06-01' },
+    status = await send(process.env.ANTHROPIC_BASE_URL, '/v1/messages', { 'x-api-key': 'k', 'anthropic-version': '2023-06-01', ...customHeaders },
       { model: 'claude-sonnet-4', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }],
         metadata: { user_id: JSON.stringify({ session_id: process.env.FAKE_SESSION || 'sess-claude' }) } });
   } else if (tool === 'codex') {
@@ -199,8 +202,20 @@ describe('plain spawn → shim → real standalone proxy → fake upstream (crit
     assert.ok(anthropic, 'the Claude request was recorded');
     assert.ok(openai, 'the Codex request was recorded');
     assert.equal(anthropic.model, 'claude-sonnet-4');
+    assert.ok(entries.every(e => e.agentId === undefined && e.agentType === undefined), 'unset identity leaves rows unchanged');
     assert.ok(hits.some(h => h.path.startsWith('/v1/messages')) && hits.some(h => h.path.startsWith('/v1/responses')));
     assert.ok(hits.every(h => !h.path.includes('_ccxray')), 'a client route must never reach the upstream');
+  });
+  it('merges the Claude identity header and strips it before the upstream', async () => {
+    const result = await runTool('claude', ['-p', 'hello'], { port, env: {
+      CCXRAY_AGENT_ID: 'herdr:test:header', FAKE_SESSION: 'identity-header', ANTHROPIC_CUSTOM_HEADERS: 'X-Example: preserved',
+    } }).done;
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /STATUS:200/);
+    const entry = await waitFor(() => indexEntries().find(e => e.agentId === 'herdr:test:header'), 'the header identity');
+    assert.ok(entry);
+    assert.equal(hits.at(-1).headers['x-example'], 'preserved');
+    assert.ok(hits.every(h => !h.headers['x-ccxray-agent-id']));
   });
 });
 
@@ -308,6 +323,82 @@ describe('hub mode: attribution and lifetime (should-fix 1)', () => {
       assert.ok(entries.every(e => e.cwd !== '/bystander/project'), 'no entry inherited the bystander cwd');
       assert.ok(hits.every(h => !h.path.includes('_ccxray')));
     } finally { await fx.close(); fs.rmSync(path.join(root, 'release-barrier'), { force: true }); }
+  });
+
+  it('records each wrapped tool identity through the existing hub client registration', async () => {
+    const fx = await hubFixture();
+    const savedShims = shims;
+    shims = fx.hubShims;
+    try {
+      for (const tool of ['claude', 'codex']) {
+        const session = `identity-${tool}`;
+        const id = `herdr:test:${tool}`;
+        const result = await runTool(tool, tool === 'claude' ? ['-p', 'hello'] : ['exec', 'hello'], {
+          port: fx.port, env: { CCXRAY_AGENT_ID: id, CCXRAY_AGENT_TYPE: 'outer-tool', FAKE_SESSION: session,
+            ANTHROPIC_CUSTOM_HEADERS: 'X-Example: preserved' },
+        }).done;
+        assert.equal(result.code, 0, result.stderr);
+        assert.match(result.stdout, /STATUS:200/);
+        const entry = await waitFor(() => indexEntries().find(e => e.agentId === id), 'the agent identity');
+        assert.equal(entry.agentType, tool);
+        assert.equal(entry.cwd, root);
+      }
+      assert.ok(hits.every(h => Object.keys(h.headers).every(k => !k.startsWith('x-ccxray-'))));
+      assert.ok(hits.some(h => h.headers['x-example'] === 'preserved'));
+    } finally { shims = savedShims; await fx.close(); }
+  });
+
+  it('rejects malformed and oversized identities without changing routing or injecting headers', async () => {
+    const fx = await hubFixture();
+    const savedShims = shims;
+    shims = fx.hubShims;
+    try {
+      for (const tool of ['claude', 'codex']) {
+        for (const id of ['pane\r\nX-Injected: yes', 'pane\n', 'x'.repeat(513), 'pane,other']) {
+          const count = indexEntries().length;
+          const result = await runTool(tool, tool === 'claude' ? ['-p', 'hello'] : ['exec', 'hello'], {
+            port: fx.port, env: { CCXRAY_AGENT_ID: id, FAKE_SESSION: `invalid-${tool}-${count}` },
+          }).done;
+          assert.equal(result.code, 0, result.stderr);
+          assert.match(result.stdout, /STATUS:200/);
+          const entries = await waitFor(() => { const e = indexEntries(); return e.length > count && e; }, 'a request with rejected identity');
+          assert.ok(entries.every(e => e.agentId === undefined && e.agentType === undefined));
+        }
+      }
+      assert.ok(hits.every(h => !h.headers['x-injected'] && !h.headers['x-ccxray-agent-id']));
+    } finally { shims = savedShims; await fx.close(); }
+  });
+
+  it('keeps identity launches fail-open when the hub is down', async () => {
+    const port = await freePort();
+    for (const tool of ['claude', 'codex']) {
+      const result = await runTool(tool, ['hello'], { port, env: { CCXRAY_AGENT_ID: 'herdr:test:offline' } }).done;
+      assert.equal(result.code, 0, result.stderr);
+      assert.match(result.stdout, /STATUS:none/);
+      const log = fs.readFileSync(path.join(home, 'shim-bypass.log'), 'utf8').trim().split('\n').map(JSON.parse);
+      assert.equal(log.at(-1).tool, tool);
+      assert.equal(log.at(-1).action, 'bypass');
+    }
+  });
+
+  it('keeps identity launches fail-open on probe timeout', async () => {
+    const stalled = http.createServer(() => {});
+    await new Promise(resolve => stalled.listen(0, '127.0.0.1', resolve));
+    try {
+      for (const tool of ['claude', 'codex']) {
+        const result = await runTool(tool, ['hello'], { port: stalled.address().port,
+          env: { CCXRAY_AGENT_ID: 'herdr:test:timeout', CCXRAY_SHIM_TIMEOUT_MS: '50' } }).done;
+        assert.equal(result.code, 0, result.stderr);
+        assert.match(result.stdout, /STATUS:none/);
+        const log = fs.readFileSync(path.join(home, 'shim-bypass.log'), 'utf8').trim().split('\n').map(JSON.parse);
+        assert.equal(log.at(-1).tool, tool);
+        assert.equal(log.at(-1).reason, 'timeout');
+        assert.equal(log.at(-1).action, 'bypass');
+      }
+    } finally {
+      stalled.closeAllConnections();
+      await new Promise(resolve => stalled.close(resolve));
+    }
   });
 
   it('bypasses (or refuses in strict mode) when registration is unavailable, never using a bare hub URL (round 2, should-fix 1)', async () => {

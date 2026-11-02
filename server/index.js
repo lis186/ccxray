@@ -173,7 +173,8 @@ const { startExportSync, stopExportSync, flushExport, awaitPendingFlush } = expo
 const { forwardRequest, setStatusLineEnabled, getStatusLineEnabled, setSessionAnchorRecorder } = require('./forward');
 const { readSettings, hudStatusText } = require('./settings');
 const { broadcastSessionStatus, broadcastPendingRequest } = require('./sse-broadcast');
-const { dispatch, mintAutoOpenUrl, formatAutoOpenUrl } = require('./auth');
+const { dispatch, mintAutoOpenUrl, formatAutoOpenUrl, verifyDashboardWrite } = require('./auth');
+const { failRequest } = require('./routes/route-errors');
 const { findSharedPrefix } = require('./delta-helpers');
 const { extractPromptAgentType } = require('./system-prompt');
 const providers = require('./providers');
@@ -398,6 +399,7 @@ const { handleInterceptRoutes } = require('./routes/intercept');
 const { handleCostRoutes, startCodexRefresh, stopCodexRefresh } = require('./routes/costs');
 const { handleAuthRoutes } = require('./routes/auth');
 const hub = require('./hub');
+const { resolveHttpSessionCwd } = require('./http-session-cwd');
 const { collectExportDiagnostics, fetchHubReport, renderExportDiagnostics } = require('./export-diagnostics');
 hub.setLaunchSignals({
   hubMode,
@@ -470,7 +472,7 @@ const getCodexCwdFallback = getAgentCwdFallback;
 
 
 // ── Server ──────────────────────────────────────────────────────────
-const server = http.createServer((clientReq, clientRes) => {
+function handleHttpRequest(clientReq, clientRes) {
   hub.applyClientRoute(clientReq);
 
   // ── Hub API (health, register, unregister, status) ──
@@ -494,6 +496,7 @@ const server = http.createServer((clientReq, clientRes) => {
 
   // ── Auth check (Phase 1.2 dispatcher; Phase 2.3 enforce) ──
   if (!dispatch(clientReq).verify(clientReq, clientRes)) return;
+  if (!verifyDashboardWrite(clientReq, clientRes)) return;
 
   // ── SSE ──
   if (handleSSERoute(clientReq, clientRes)) return;
@@ -535,7 +538,8 @@ const server = http.createServer((clientReq, clientRes) => {
     }
     reqChunks.push(chunk);
   });
-  clientReq.on('end', () => {
+  clientReq.on('end', () => { try { onRequestBodyEnd(); } catch (err) { failRequest(clientRes, err); } });
+  function onRequestBodyEnd() {
     if (rejected) return;
     const rawBody = Buffer.concat(reqChunks);
     let parsedBody = null;
@@ -674,12 +678,12 @@ const server = http.createServer((clientReq, clientRes) => {
     if (reqSessionId) store.linkParentSession(reqSessionId, parsedBody, isSubagentHint);
 
     // Extract and store cwd (after linkParentSession — see #223)
-    // openai getCwd has a runtime fallback (hub client cwd / process.cwd) that
-    // depends on index.js state — applied after the adapter's wire-level extraction.
+    // Anthropic may use a registered cwd only for a PID-routed request.
+    // OpenAI also allows the launcher process cwd via its provider module.
+    // Apply these runtime fallbacks after the adapter's wire-level extraction.
     // Grok vs Codex share openai wire; set session agent from header/model when available.
     if (parsedBody && reqSessionId) {
-      const cwd = parser.getCwd(parsedBody, clientReq.headers)
-        || (provider === 'openai' ? getAgentCwdFallback(clientReq) : null);
+      const cwd = resolveHttpSessionCwd({ parser, parsedBody, provider, clientReq, getAgentCwdFallback });
       if (!store.sessionMeta[reqSessionId]) store.sessionMeta[reqSessionId] = {};
       if (provider === 'anthropic') store.cacheConfigDir(reqSessionId, parsedBody);
       store.sessionMeta[reqSessionId].provider = provider;
@@ -764,7 +768,16 @@ const server = http.createServer((clientReq, clientRes) => {
     }
 
     forwardRequest(ctx);
-  });
+  }
+}
+
+// A synchronous throw while routing answers 500 for that request only.
+const server = http.createServer((clientReq, clientRes) => {
+  try {
+    handleHttpRequest(clientReq, clientRes);
+  } catch (err) {
+    failRequest(clientRes, err);
+  }
 });
 
 server.headersTimeout = 60_000;    // 60s — only header phase, safe
