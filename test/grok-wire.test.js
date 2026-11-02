@@ -51,8 +51,8 @@ describe('Grok wire contract', () => {
       assert.equal(up.host, config.OPENAI_HOST);
     });
 
-    it('chat/completions falls through to anthropic (no parser yet)', () => {
-      assert.equal(config.getProviderForRequest('/v1/chat/completions'), 'anthropic');
+    it('unknown-path handling for chat/completions', () => {
+      assert.equal(config.getProviderForRequest('/v1/chat/completions'), null);
     });
   });
 

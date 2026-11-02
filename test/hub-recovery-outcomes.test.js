@@ -183,6 +183,7 @@ async function runScenario(kind) {
   let forkLock = null;
   const previousHome = process.env.CCXRAY_HOME;
   const previousImportDisable = process.env.CCXRAY_IMPORT_DISABLE;
+  let monitor = null;
 
   try {
     process.env.CCXRAY_IMPORT_DISABLE = '1';
@@ -192,7 +193,7 @@ async function runScenario(kind) {
       fs.writeFileSync(forkLockPath, JSON.stringify({ pid: process.pid, at: Date.now() }));
     }
     const hub = loadHub(home);
-    hub.startHubMonitor(
+    monitor = hub.startHubMonitor(
       999999999,
       40001,
       () => rendered.push('recovered'),
@@ -213,6 +214,9 @@ async function runScenario(kind) {
     }
     return { rendered, forkLock };
   } finally {
+    // #730: the monitor keeps retrying after a failure; a leaked one would fork
+    // a real hub into whichever CCXRAY_HOME a later scenario has set.
+    if (monitor) clearInterval(monitor);
     if (previousHome === undefined) delete process.env.CCXRAY_HOME;
     else process.env.CCXRAY_HOME = previousHome;
     if (previousImportDisable === undefined) delete process.env.CCXRAY_IMPORT_DISABLE;

@@ -11,6 +11,7 @@ Unless noted, a variable is read once at process start. In hub mode the hub's ow
 | Variable | Default | Purpose | Defined in |
 |---|---|---|---|
 | `PROXY_PORT` | `5577` | Port for proxy + dashboard. `--port` overrides it and opts out of hub mode; `PROXY_PORT` alone keeps hub mode on that port. | `server/config.js` |
+| `PROXY_HOST` | — (loopback) | Address the proxy + dashboard listens on. Unset: `127.0.0.1`, plus `::1` on the same port when the host has IPv6 loopback. Set: a single listener on that address only — `0.0.0.0` or `::` for all interfaces (IPv6 literals without brackets; `[::]` is accepted too), or one address. `localhost` binds only the one family the OS resolves it to. A single non-loopback interface address is not reachable as `localhost`, so local `ccxray <agent>` launches and hub checks cannot reach it; use `0.0.0.0` (with a firewall if needed) instead — startup warns in that case. When the value is not a loopback address, startup prints the bound address. The Docker image sets `0.0.0.0`. | `server/listen.js` |
 | `PORT` | — | **Not read.** `config.PORT` is derived from `PROXY_PORT`. Listed because it is a common guess. | `server/config.js` |
 | `CCXRAY_HOME` | `~/.ccxray` | Base directory for `hub.json`, `hub.sock`, `hub.log`, secrets, settings, and (by default) logs. Created 0700. A loose existing home is tightened to 0700 at startup only when it is the default `~/.ccxray`; a loose custom directory gets a one-line warning on every startup and keeps its mode, even after ccxray has written its own files (`local-secret`, `hub.sock`) into it. A symlinked `~/.ccxray` is warning-only, and `$HOME` and its ancestors are never chmod'ed, including through a symlink. | `server/paths.js` |
 | `LOGS_DIR` | `<CCXRAY_HOME>/logs` | Log directory (`index.ndjson`, `_req`/`_res` files, `sessions.json`). | `server/paths.js`, `server/cost-worker.js` |
@@ -55,6 +56,7 @@ Unless noted, a variable is read once at process start. In hub mode the hub's ow
 |---|---|---|---|
 | `AUTH_TOKEN` | — | Optional shared access token; when unset ccxray uses `<CCXRAY_HOME>/local-secret`. | `server/auth.js` |
 | `CCXRAY_LOOPBACK_REQUIRE_AUTH` | — | `1` requires auth on loopback too (loopback is trusted by default). | `server/auth.js` |
+| `CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN` | — | `1` accepts ChatGPT login from Codex on clients on other hosts, not only from loopback. Enable it only on a trusted network. | `server/auth.js` |
 | `CCXRAY_LOOPBACK_NO_AUTH` | — | Legacy; ignored apart from a startup notice that it is no longer needed. | `server/index.js` |
 
 ## Launch and hub
@@ -65,12 +67,13 @@ Unless noted, a variable is read once at process start. In hub mode the hub's ow
 | `CCXRAY_FAIL_CLOSED` | — | `1` exits on attach/startup failure instead of launching the plain agent. | `server/index.js`, `server/launch-decision.js` |
 | `CCXRAY_DISPLAY_NAME` | `ccxray` | Process/display name used by the launcher and forked hub. | `server/providers.js`, `server/hub.js` |
 | `CCXRAY_HUB_CLIENT_PID` | _(set by ccxray)_ | Set by a hub client before spawning its agent; routes that agent's traffic to its client registration. Not meant to be set by hand. | `server/index.js`, `server/providers.js` |
-| `CCXRAY_AGENT_ID` | — | Agent identity stamped on traffic (e.g. by the Herdr plugin), also hashed into export summaries. | `server/index.js`, `server/export-sync.js` |
+| `CCXRAY_AGENT_ID` | — | Agent identity stamped on traffic (e.g. by the Herdr plugin), also hashed into export summaries. Launcher shims accept 1–512 ASCII letters, digits, or `._:@/-` and register it with the hub; Claude also adds an internal header. | `server/index.js`, `server/export-sync.js`, `server/shim/shim-probe.js` |
 | `CCXRAY_AGENT_TYPE` | — | Agent type paired with `CCXRAY_AGENT_ID`. | `server/index.js`, `server/forward.js` |
 | `CLAUDE_CONFIG_DIR` | `~` | Where the Claude launcher looks for `.claude.json` to read the launch account. | `server/providers.js` |
 | `OPENAI_API_KEY` | — | When set, `ccxray codex` routes through a `model_providers.ccxray` entry; otherwise through `openai_base_url` only (`chatgpt_base_url` is left at Codex's default so ChatGPT workspace discovery works, #671). | `server/providers.js` |
 | `CODEX_HOME` | `~/.codex` | Read-only: `ccxray codex` (ChatGPT-OAuth mode) warns if `config.toml` there points `chatgpt_base_url` at a loopback proxy (#671). Never written. | `server/providers.js` |
-| `ANTHROPIC_CUSTOM_HEADERS` | — | Not read as configuration: the Claude launcher appends ccxray headers to it in the agent's environment. | `server/providers.js` |
+| `ANTHROPIC_CUSTOM_HEADERS` | — | Newline-separated user headers. Only ccxray launchers (`ccxray claude`, the shell shim, and the Herdr plugin) append `X-Ccxray-Forward-Headers` listing existing lowercase names, excluding `x-ccxray-*`. If set another way (Claude `settings.json` env or plain `ANTHROPIC_BASE_URL` pointing to the proxy), add names with `CCXRAY_FORWARD_HEADERS=anthropic:cf-aig-authorization`. | `server/providers.js`, `server/shim/ccxray-shim.sh`, `plugins/herdr/bin/lib/ccxray.js` |
+| `CCXRAY_FORWARD_HEADERS` | — | Header allowlist additions, read once at server startup: comma-separated names, optionally scoped with `anthropic:`, `openai:`, `chatgpt:`, or `xai:`; unprefixed names apply to all families. Example: `anthropic:cf-aig-authorization,openai:api-key` (Azure-style gateways and Codex `http_headers`). `openai:` does not cover ChatGPT-login traffic; use `chatgpt:`. In hub mode the hub's environment applies. Names accepted only by another family's built-in list are omitted; OpenAI and ChatGPT form one vendor group for this check. `accept-encoding`, client `host`, `x-ccxray-*`, hop-by-hop names, and `sec-websocket-*` remain omitted. Invalid entries print one startup warning per name. | `server/config.js` |
 | `BROWSER` | — | `none` disables dashboard auto-open (as do `CI` and `SSH_TTY`). | `server/index.js` |
 | `CI`, `SSH_TTY` | — | Either set disables dashboard auto-open. | `server/index.js` |
 
@@ -78,6 +81,16 @@ Unless noted, a variable is read once at process start. In hub mode the hub's ow
 
 | Variable | Default | Purpose | Defined in |
 |---|---|---|---|
+| `CCXRAY_SHIM_STRICT` | `0` (or the install-time `--strict`) | `1` makes the launcher shims refuse a launch (exit 111) when the proxy is unreachable instead of running the agent directly. Read by the shim, not by the server. | `server/shim/ccxray-shim.sh`, `server/shim/shim-probe.js` |
+| `CCXRAY_SHIM_DISABLE` | — | Any non-empty value makes the shims run the real binary immediately: no probe, no routing, no bypass line. | `server/shim/ccxray-shim.sh` |
+| `CCXRAY_SHIM_DEADLINE_SECS` | `2` (integer 1–30) | Hard deadline for the whole probe subprocess, enforced by the shell shim with a background watchdog (not by Node). On expiry the helper is killed and the real binary runs (strict mode refuses). | `server/shim/ccxray-shim.sh` |
+| `CCXRAY_SHIM_PORT` | hub lock port, then `PROXY_PORT`, then `5577` | Proxy port the shims probe and route to. | `server/shim/shim-probe.js` |
+| `CCXRAY_SHIM_TIMEOUT_MS` | `300` (clamped 50–5000) | Health-check budget per launch; a slower proxy counts as down. | `server/shim/shim-probe.js` |
+| `CCXRAY_SHIM_HOME` | the `CCXRAY_HOME` baked in at install | Home the shim reads `hub.json` from and writes `shim-bypass.log` to. | `server/shim/ccxray-shim.sh`, `server/shim/shim-probe.js` |
+| `CCXRAY_SHIM_REAL_CLAUDE` | — | `CCXRAY_SHIM_REAL_CLAUDE=/path/to/claude`: use this binary instead of searching PATH, for unusual layouts. A bare name is run as `./name` (never searched on PATH). Ignored when it is not an executable regular file, is a ccxray shim, or lives in the shim directory. | `server/shim/ccxray-shim.sh` |
+| `CCXRAY_SHIM_REAL_CODEX` | — | Same as `CCXRAY_SHIM_REAL_CLAUDE`, for `codex`. | `server/shim/ccxray-shim.sh` |
+| `CCXRAY_SHIM_PID` | set by the shim | The shim's own pid (kept by `exec`, so it is the tool's pid). The probe registers it with the hub as a client for per-project attribution and hub lifetime. Internal: set by the shim for its helper, not meant to be set by hand. | `server/shim/ccxray-shim.sh`, `server/shim/shim-probe.js` |
+| `CCXRAY_SHIM_SYSPATH` | `/usr/bin:/bin` | `PATH` used by the shell shim's best-effort fallback logger for `mkdir`, `chmod`, `rm`, `mv` and `date`, instead of the inherited `PATH` (a command planted there must not be able to stall a launch). A test seam; there is rarely a reason to set it. | `server/shim/ccxray-shim.sh` |
 | `CCXRAY_IMPORT_DISABLE` | — | `0` enables the automatic startup transcript import; `1` also disables `ccxray import --once` and refuses `rebuild-index --reimport`. Unset = no automatic import. | `server/index.js`, `server/importer.js`, `server/rebuild-index.js` |
 | `CCXRAY_IMPORT_HOMES` | `~/.claude*` discovery | Comma-separated Claude `projects/` roots to import from. | `server/importer.js` |
 | `CCXRAY_IMPORT_CODEX_HOMES` | `~/.codex*` discovery | Comma-separated Codex roots to import from. | `server/importer.js` |

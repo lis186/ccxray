@@ -13,6 +13,8 @@ COPY shared/ shared/
 
 # Default port
 ENV PROXY_PORT=5577
+# ccxray listens on loopback by default; listen on all interfaces so -p works
+ENV PROXY_HOST=0.0.0.0
 
 EXPOSE 5577
 

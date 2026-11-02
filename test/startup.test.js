@@ -8,6 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const net = require('net');
+const { occupyLoopbackPort } = require('./helpers/occupy-port');
 
 const SERVER_SCRIPT = path.resolve(__dirname, '..', 'server', 'index.js');
 const TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-startup-test-'));
@@ -479,7 +480,7 @@ describe('R4: port conflict', () => {
   before(async () => {
     port = await findFreePort();
     blocker = net.createServer();
-    await new Promise(r => blocker.listen(port, r));
+    await occupyLoopbackPort(blocker, port);
   });
 
   after(() => {

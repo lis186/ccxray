@@ -4,13 +4,14 @@ const WebSocket = require('ws');
 const crypto = require('crypto');
 const config = require('./config');
 const hub = require('./hub');
+const { isAnthropicSide, hasConflictingAuthValues } = require('./request-signals');
 const store = require('./store');
 const helpers = require('./helpers');
 const { calculateCost } = require('./pricing');
 const { broadcast, broadcastSessionStatus } = require('./sse-broadcast');
 const { isUpstreamAuthenticated } = require('./auth');
 const { stripAuthParams } = require('./url-sanitize');
-const { isInternalHeader } = require('./internal-headers');
+const { buildForwardHeaders } = require('./forward-headers');
 const { agentForProvider, matchOpenAIWireClient, resolveOpenAIWireAgent } = require('./providers');
 const { buildIndexLine, deploymentFields } = require('./entry');
 const sessionIdx = require('./session-index');
@@ -47,25 +48,6 @@ const WS_SKIP_EVENTS = new Set([
 const WS_TS_ANCHORS = new Set(['response.created', 'response.completed', 'response.done']);
 
 const WS_TERMINAL_STATUSES = new Set(['completed', 'incomplete', 'failed', 'cancelled']);
-
-const HOP_BY_HOP_HEADERS = new Set([
-  'connection',
-  'keep-alive',
-  'proxy-authenticate',
-  'proxy-authorization',
-  'te',
-  'trailer',
-  'transfer-encoding',
-  'upgrade',
-]);
-
-const WS_HANDSHAKE_HEADERS = new Set([
-  'sec-websocket-accept',
-  'sec-websocket-extensions',
-  'sec-websocket-key',
-  'sec-websocket-protocol',
-  'sec-websocket-version',
-]);
 
 const wss = new WebSocket.Server({
   noServer: true,
@@ -167,31 +149,13 @@ function writeSocketResponse(socket, statusCode, reason) {
 
 function isAuthorized(req) {
   // Same predicate as the HTTP gate: loopback bypass, valid X-Ccxray-Auth, or
-  // the ChatGPT-OAuth carve-out scoped to ChatGPT-routed requests.
+  // the ChatGPT-OAuth carve-out scoped to ChatGPT-routed requests from a
+  // loopback peer (or CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN=1).
   return isUpstreamAuthenticated(req);
 }
 
-// INVARIANT: same shared prefix rule as index.js — see server/internal-headers.js.
-// Fixing the HTTP path alone leaves the WS handshake forwarding the namespace.
-
 function buildWebSocketHeaders(clientHeaders, upstream) {
-  const headers = {};
-  const connectionTokens = String(clientHeaders.connection || '')
-    .split(',')
-    .map(token => token.trim().toLowerCase())
-    .filter(Boolean);
-
-  for (const [name, value] of Object.entries(clientHeaders)) {
-    const lower = name.toLowerCase();
-    if (HOP_BY_HOP_HEADERS.has(lower)) continue;
-    if (WS_HANDSHAKE_HEADERS.has(lower)) continue;
-    if (isInternalHeader(lower)) continue;
-    if (connectionTokens.includes(lower)) continue;
-    if (lower === 'host') continue;
-    headers[name] = value;
-  }
-  headers.host = upstream.host;
-  return headers;
+  return buildForwardHeaders(clientHeaders, upstream);
 }
 
 function getWebSocketProtocols(clientHeaders) {
@@ -388,6 +352,7 @@ async function recordWebSocketEntry(ctx, result, turn = null) {
     id: entryId,
     ts: entryTs,
     method: ctx.req.method,
+    path: ctx.req.url.split('?')[0],
     url: stripAuthParams(ctx.req.url),
     req: reqLog,
     res: resLog,
@@ -445,8 +410,12 @@ function wsRecordValue(parsed) {
 }
 
 function handleWebSocketUpgrade(req, socket, head, opts = {}) {
-  const upstream = config.getUpstreamForRequestAndHeaders(req.url, req.headers);
-  if (!isOpenAIWebSocket(req, upstream)) {
+  if (hasConflictingAuthValues(req.headers, req)) {
+    writeSocketResponse(socket, 421, 'Misdirected Request');
+    return true;
+  }
+  const upstream = config.getUpstreamForRequestAndHeaders(req.url, req.headers, req);
+  if (!isOpenAIWebSocket(req, upstream) || isAnthropicSide(req.headers, req)) {
     writeSocketResponse(socket, 404, 'Not Found');
     return true;
   }

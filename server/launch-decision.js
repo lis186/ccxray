@@ -122,6 +122,9 @@ function createLaunchDecision({
       version: require('../package.json').version,
       agent: command,
     });
+    // #730: the discovery diagnostic (e.g. a live-but-unresponsive hub owner,
+    // lock kept, no second hub started) is the actionable part; show it first.
+    if (reason === 'hub-discovery-failed' && failClosedMessage) console.error(`[ccxray] ${failClosedMessage}`);
     console.error(`[ccxray] fail-open: ${reason} — this session is NOT traced; run ccxray setup --check`);
     spawnFallback({ bin: command, args: [...args], env: process.env }, code => {
       waitForCleanup().then(() => exit(code));

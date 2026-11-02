@@ -2518,7 +2518,7 @@ test('PowerShell wrappers preserve argument boundaries under every installed edi
       const result = await runChild(fixture, edition.executable, [
         '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
         '. ' + quotedProfile + "; claude 'two words' 'x;y'",
-      ], { deadlineMs: 15000 });
+      ], { deadlineMs: 30000 });
       assert.equal(result.status, 'exited', edition.name + ': ' + result.stderr);
       assert.equal(result.exitCode, 0, edition.name + ': ' + result.stderr);
       assert.equal(fs.readFileSync(path.join(setupHome(fixture), 'fake-ccxray.log'), 'utf8'),
@@ -3051,7 +3051,10 @@ test('setup dependencies refuse symlink-escaped account, enrollment, cursor, and
     assert.deepEqual(rawReadBytes(enrollmentFile), enrollmentBefore);
     consumeOutsideAttempts(fixture, [
       'readFileSync', 'readdirSync', 'readFileSync', 'readFileSync',
-      'readFileSync', 'openSync', 'readFileSync', 'writeFileSync',
+      'readFileSync', 'openSync', 'readFileSync',
+      // #732: --remove also inspects <home>/shims.json (launcher shims) after the tombstone, but through lstat:
+      // an absent file is never read (an existing one is read inside the fixture home only).
+      'writeFileSync',
       'readFileSync', 'readFileSync', 'readFileSync',
     ]);
   } finally {

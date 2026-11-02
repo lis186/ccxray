@@ -47,6 +47,7 @@ const ADDITIVE_INDEX_FIELDS = [
   'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls','compacted',
   'contextUsageKnown','imported1mCostState','imported1mSettings',
   'accountEmail','accountDomain',
+  'method','path',
 ];
 const IDENTITY_KEYS = ['agentId','userEmail','team','agentType'];
 const ACCOUNT_KEYS = ['accountEmail','accountDomain'];
@@ -127,6 +128,9 @@ function assertProjection(entry, where, goldenKey) {
 }
 
 function assertPresence(obj, { hasDupes, identity, account }, where) {
+  assert.equal(obj.method, where === 'ws-proxy' ? 'GET' : 'POST', `${where}: method`);
+  assert.equal(obj.path, obj.provider === 'anthropic' ? '/v1/messages' : '/v1/responses', `${where}: path`);
+  assert.ok(!obj.path.includes('?'), `${where}: path must omit query`);
   for (const k of IDENTITY_KEYS) {
     if (identity[k] !== undefined) assert.equal(obj[k], identity[k], `${where}: ${k}`);
     else assert.ok(!(k in obj), `${where}: unset env ${k} must not appear`);

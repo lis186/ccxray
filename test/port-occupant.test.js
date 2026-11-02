@@ -27,6 +27,7 @@ const NO_TRANSCRIPTS = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-port-occupa
 process.env.CCXRAY_HOME = process.env.CCXRAY_HOME || TEST_HOME; // hub.js reads it at require time
 
 const hub = require('../server/hub');
+const { occupyLoopbackPort } = require('./helpers/occupy-port');
 const SERVER_SCRIPT = path.resolve(__dirname, '..', 'server', 'index.js');
 
 after(() => {
@@ -34,15 +35,12 @@ after(() => {
   fs.rmSync(NO_TRANSCRIPTS, { recursive: true, force: true });
 });
 
-// Wildcard bind, like a real ccxray server: on macOS a listener bound only to
-// 127.0.0.1 does NOT make the hub's own wildcard listen(port) fail with
-// EADDRINUSE, so a loopback-bound occupant would not reproduce the conflict.
-function listen(handler) {
-  return new Promise((resolve, reject) => {
-    const srv = http.createServer(handler);
-    srv.listen(0, () => resolve(srv));
-    srv.on('error', reject);
-  });
+// Same addresses a ccxray server binds (127.0.0.1, plus ::1 when available),
+// so the hub's own bind on this port fails on every OS.
+async function listen(handler) {
+  const srv = http.createServer(handler);
+  await occupyLoopbackPort(srv);
+  return srv;
 }
 
 function isolatedEnv(extra = {}) {

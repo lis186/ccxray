@@ -25,7 +25,8 @@
 //   • hub-safe — refuse to run while a live hub may be appending concurrently.
 //
 // Retention scope: startup `pruneLogs()` is an independent path that removes
-// unprotected proxy lines whose `_req.json` is gone.
+// unprotected proxy lines past retention when neither `_req.json` nor
+// `_res.json` survives the file deletion pass.
 //
 // Recovers offline: model/usage/cost/maxContext/toolCalls (canonical), cwd (from
 // the rehydrated system prompt — shared sys_*.json files are never pruned),

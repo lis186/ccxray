@@ -161,6 +161,7 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const config = require('./config');
+const { checkHttpRoute } = require('./request-routing');
 const store = require('./store');
 const { resolveCcxrayHome, tightenCcxrayHome } = require('./paths');
 const helpers = require('./helpers');
@@ -398,6 +399,7 @@ const { handleInterceptRoutes } = require('./routes/intercept');
 const { handleCostRoutes, startCodexRefresh, stopCodexRefresh } = require('./routes/costs');
 const { handleAuthRoutes } = require('./routes/auth');
 const hub = require('./hub');
+const { resolveHttpSessionCwd } = require('./http-session-cwd');
 const { collectExportDiagnostics, fetchHubReport, renderExportDiagnostics } = require('./export-diagnostics');
 hub.setLaunchSignals({
   hubMode,
@@ -455,41 +457,9 @@ function serveStatic(url, clientRes) {
   }
 }
 
-const HOP_BY_HOP_HEADERS = new Set([
-  'connection',
-  'keep-alive',
-  'proxy-authenticate',
-  'proxy-authorization',
-  'te',
-  'trailer',
-  'transfer-encoding',
-  'upgrade',
-]);
-
-// INVARIANT: the `x-ccxray-*` namespace is default-deny by PREFIX and the rule
-// is shared with ws-proxy.js — see server/internal-headers.js for why an
-// allowlist here leaked the pane-identity header upstream.
-const { isInternalHeader } = require('./internal-headers');
+const { buildForwardHeaders } = require('./forward-headers');
 const { armClientShutdown } = require('./client-shutdown');
 const { createLaunchDecision, raceWithLaunchDecision } = require('./launch-decision');
-
-function buildForwardHeaders(clientHeaders, upstream) {
-  const fwdHeaders = { ...clientHeaders };
-  const connectionTokens = String(clientHeaders.connection || '')
-    .split(',')
-    .map(token => token.trim().toLowerCase())
-    .filter(Boolean);
-
-  for (const header of HOP_BY_HOP_HEADERS) delete fwdHeaders[header];
-  for (const header of connectionTokens) delete fwdHeaders[header];
-  for (const header of Object.keys(fwdHeaders)) {
-    if (isInternalHeader(header)) delete fwdHeaders[header];
-  }
-  delete fwdHeaders.host;
-  delete fwdHeaders['accept-encoding'];
-  fwdHeaders.host = upstream.host;
-  return fwdHeaders;
-}
 
 // Cwd when the wire body has none: hub client cwd, else launcher process cwd
 // for modules that declare cwdFallback (codex, grok, …).
@@ -575,10 +545,13 @@ function handleHttpRequest(clientReq, clientRes) {
     let parsedBody = null;
     try { parsedBody = JSON.parse(rawBody.toString()); } catch {}
 
+    clientReq.bodySize = bodySize;
+    const upstream = config.getUpstreamForRequestAndHeaders(clientReq.url, clientReq.headers, clientReq);
+    if (!checkHttpRoute(clientReq, clientRes, upstream)) return;
+
     // Quota-check probes: forward to Anthropic (rate limit headers still captured)
     // but skip all logging, session tracking, and entry creation
     if (parsedBody && store.isQuotaCheck(parsedBody)) {
-      const upstream = config.getUpstreamForRequestAndHeaders(clientReq.url, clientReq.headers);
       const fwdHeaders = buildForwardHeaders(clientReq.headers, upstream);
       forwardRequest({ id, ts, startTime, parsedBody, rawBody, clientReq, clientRes, fwdHeaders, reqSessionId: null, reqWritePromise: null, skipEntry: true, upstream });
       return;
@@ -588,13 +561,11 @@ function handleHttpRequest(clientReq, clientRes) {
     // Each WIRE_PARSER defines its own noise patterns (e.g. codex startup
     // polls for plugins/connectors/apps/usage).
     if (Object.values(WIRE_PARSERS).some(p => p.isNoiseRequest(clientReq.url, clientReq.headers, parsedBody))) {
-      const upstream = config.getUpstreamForRequestAndHeaders(clientReq.url, clientReq.headers);
       const fwdHeaders = buildForwardHeaders(clientReq.headers, upstream);
       forwardRequest({ id, ts, startTime, parsedBody, rawBody, clientReq, clientRes, fwdHeaders, reqSessionId: null, reqWritePromise: null, skipEntry: true, upstream });
       return;
     }
 
-    const upstream = config.getUpstreamForRequestAndHeaders(clientReq.url, clientReq.headers);
     const provider = upstream.provider || 'anthropic';
     const parser = getParser(provider);
     if (parsedBody && parser?.preprocessBody) {
@@ -692,7 +663,9 @@ function handleHttpRequest(clientReq, clientRes) {
       : null;
     const { sessionId: reqSessionId, isNewSession, inferred: sessionInferred } = parsedBody
       ? detectedSession
-      : { sessionId: parser.rawSessionId(clientReq.headers, null) || store.getCurrentSessionId(), isNewSession: false };
+      // A body-less probe has no session evidence beyond its explicit header.
+      // The process-wide current session may belong to another hub client (#767).
+      : { sessionId: parser.rawSessionId(clientReq.headers, null) || null, isNewSession: false };
 
     // Cross-session parent linkage — MUST run before cwd assignment AND
     // activeRequests increment (#223: cwd was set first, causing
@@ -705,12 +678,12 @@ function handleHttpRequest(clientReq, clientRes) {
     if (reqSessionId) store.linkParentSession(reqSessionId, parsedBody, isSubagentHint);
 
     // Extract and store cwd (after linkParentSession — see #223)
-    // openai getCwd has a runtime fallback (hub client cwd / process.cwd) that
-    // depends on index.js state — applied after the adapter's wire-level extraction.
+    // Anthropic may use a registered cwd only for a PID-routed request.
+    // OpenAI also allows the launcher process cwd via its provider module.
+    // Apply these runtime fallbacks after the adapter's wire-level extraction.
     // Grok vs Codex share openai wire; set session agent from header/model when available.
     if (parsedBody && reqSessionId) {
-      const cwd = parser.getCwd(parsedBody, clientReq.headers)
-        || (provider === 'openai' ? getAgentCwdFallback(clientReq) : null);
+      const cwd = resolveHttpSessionCwd({ parser, parsedBody, provider, clientReq, getAgentCwdFallback });
       if (!store.sessionMeta[reqSessionId]) store.sessionMeta[reqSessionId] = {};
       if (provider === 'anthropic') store.cacheConfigDir(reqSessionId, parsedBody);
       store.sessionMeta[reqSessionId].provider = provider;
@@ -1190,6 +1163,16 @@ if (process.argv[2] === 'setup-statusline') {
 // ── "status" subcommand ──
 if (process.argv[2] === 'status') {
   (async () => {
+    // #732: shown only once shims exist or have logged a bypass, so a plain home prints nothing new.
+    try {
+      const shimHome = require('./paths').resolveCcxrayHome();
+      const { summarizeBypasses, renderBypassLine } = require('./shim-bypass');
+      const shimSummary = summarizeBypasses(shimHome);
+      if (fs.existsSync(path.join(shimHome, 'shims.json')) || shimSummary.total > 0) {
+        console.log(`Launcher shims: ${fs.existsSync(path.join(shimHome, 'shims.json')) ? 'installed (ccxray setup --wrap-binaries --check for details)' : 'not installed'}`);
+        console.log(renderBypassLine(shimSummary));
+      }
+    } catch { /* status must never fail on the shim line */ }
     const result = await fetchHubReport({ statusCommand: true });
     const printDiagnostics = report => {
       const diagnostics = collectExportDiagnostics({
@@ -1221,7 +1204,7 @@ if (process.argv[2] === 'status') {
           : undefined,
       }).line);
       if (occ.kind !== 'free') {
-        hub.describePortOccupant(occ, config.PORT).forEach(l => console.log(`Note: ${l}`));
+        hub.describePortOccupant(occ, config.PORT, { homeSocketReachable: await hub.probeHomeHub(occ) }).forEach(l => console.log(`Note: ${l}`));
       }
       // One machine-readable line so a consumer does not have to scrape the
       // English above. `proxy` answers whether this process can trace traffic.
@@ -1239,7 +1222,8 @@ if (process.argv[2] === 'status') {
 
     if (result.kind === 'dead-lockfile') {
       console.log('Hub lockfile exists but process is dead. Cleaning up.');
-      hub.deleteHubLock();
+      // A replacement hub may have published its lock since we observed this one.
+      hub.deleteHubLockIfPid(result.lock.pid);
       console.log(renderProcessStatus(null, 'no discoverable hub (the lockfile process is dead)'));
       console.log(inspectHomeStatus(null, { env: process.env }).line);
       printDiagnostics(null);
@@ -1450,17 +1434,18 @@ async function startClientMode(lock, decision) {
     // A shutdown that already captured the previous registration will never see
     // a promise created after it, so re-registering now would hand the new hub a
     // pid that is on its way out.
-    if (clientShutdown.isShuttingDown()) return;
+    if (clientShutdown.isShuttingDown()) return true;
     currentLock = newLock;
     try {
       registration = hub.registerClient(newLock, process.pid, process.cwd(), clientIdentity);
       const reg = await registration;
+      if (!reg) return false; // the monitor retries and reports the failure once
       // This is best-effort notification: recovery happens while the agent's TUI
       // owns the terminal, so the banner may not be read.
-      if (reg) reportHubRegistrationStatus(reg, 'recovered');
-      else reportHubRegistrationStatus(null, 'recovery-failed');
+      reportHubRegistrationStatus(reg, 'recovered');
+      return true;
     } catch {
-      reportHubRegistrationStatus(null, 'recovery-failed');
+      return false;
     }
   }, () => reportHubRegistrationStatus(null, 'recovery-failed'));
 
@@ -1619,7 +1604,7 @@ async function startServer({ onListen } = {}) {
             // #555: identify the occupant before advising — the old unconditional
             // `kill $(lsof …)` hint would have killed a deliberate listener.
             const occ = await hub.probePortOccupant(config.PORT);
-            const advice = hub.describePortOccupant(occ, config.PORT);
+            const advice = hub.describePortOccupant(occ, config.PORT, { homeSocketReachable: await hub.probeHomeHub(occ) });
             if (advice.length) advice.forEach(l => console.error(`Error: ${l}`));
             else console.error(`Error: port ${config.PORT} still occupied after ${HUB_BIND_RETRIES}s but nothing answered a probe — it may have been released; retry.`);
           }
@@ -1633,6 +1618,18 @@ async function startServer({ onListen } = {}) {
   }
   if (onListen) onListen(actualPort);
   hub.setIdentityPort(actualPort);
+  {
+    // Loopback is the default bind; say so when PROXY_HOST opted in to more.
+    const listen = require('./listen');
+    const host = listen.resolveListenHosts().primary;
+    if (!listen.isLoopbackHost(host)) {
+      const bound = listen.listenAddresses(server).map(listen.formatAddress).join(', ');
+      console.error(`${DISPLAY_NAME} listening on ${bound} (PROXY_HOST=${host}); non-loopback clients need a ccxray credential`);
+      if (listen.isSingleInterfaceHost(host)) {
+        console.error(`${DISPLAY_NAME}: PROXY_HOST=${host} is not reachable as localhost, so local agent launches and hub checks cannot use it; set PROXY_HOST=0.0.0.0 to keep them working`);
+      }
+    }
+  }
   rebuildIndexHTML(actualPort);
 
   runPostListenStartupTasks();
@@ -1652,6 +1649,7 @@ async function startServer({ onListen } = {}) {
     // does not live forever waiting for a client that will never arrive.
     hub.startIdleTimer();
     hub.startDeadClientCheck();
+    hub.startLockSelfHeal(actualPort, hub.SOCK_PATH);
     hub.setOnShutdown(() => gracefulExit(0));
     const cleanup = () => hub.shutdownHub(); // closes socket + deletes lockfile + gracefulExit via onShutdown
     process.on('SIGTERM', cleanup);

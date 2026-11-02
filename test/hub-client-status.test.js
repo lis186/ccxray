@@ -227,7 +227,7 @@ describe('hub client export/config status render', () => {
     const reportCalls = [...clientMode.matchAll(/reportHubRegistrationStatus\([^)]*\)/g)]
       .map(match => match[0]);
 
-    assert.equal(reportCalls.length, 5, 'attach and every recovery outcome must use the same report helper');
+    assert.equal(reportCalls.length, 3, 'attach, recovery success, and the monitor failure channel must use the same report helper');
     assert.ok(reportCalls.some(call => call.includes("'attached'")), 'attach call missing');
     assert.ok(reportCalls.some(call => call.includes("'recovered'")), 'recovery call missing');
     assert.ok(reportCalls.some(call => call.includes("'recovery-failed'")), 'recovery failure call missing');

@@ -20,12 +20,49 @@ or `child_process` in their source go in `heavy`; the rest go in `unit`.
 This deliberately includes mocked and one-shot child-process tests in the serial
 group. If a new test spawns through a helper rather than importing child_process,
 name it `*.e2e.test.js` so it runs serially. All groups retain the HOME guard. The `unit` group also preloads `test/helpers/no-network.js` (non-loopback connections throw; loopback and unix sockets stay allowed). `scripts/run-tests.js` also sets `CCXRAY_NETWORK_GUARD_ENFORCE=1` for the unit group, which makes a blocked attempt sticky: it prints a `no-network guard: BLOCKED …` line and forces a non-zero exit code for that test file's process even if the code under test catches the thrown error. A unit test that reaches the network therefore fails instead of downloading anything (#717). Without the variable (stryker, ad-hoc runs) the guard only throws; guard self-tests run their probe children non-enforcing. A test that forks the hub must point `CCXRAY_PRICING_CACHE` at a seeded temp cache (see `test/hub.test.js`).
+
+`launcher-shims.proxy.e2e.test.js` uses temporary HOME and synthetic agents/upstreams to check shim identity registration, Claude custom-header merging, header stripping, rejected identities, and fail-open launches.
+`http-session-cwd.test.js` runs the HTTP session-cwd assignment in a VM with synthetic
+requests, real wire parsers, and index encoding to check Claude/Codex cwd fallback
+and wire-cwd precedence without a listener.
+
+`launcher-shims.test.js` keeps the filesystem-only zsh startup layout, manifest upgrade/removal,
+and static check tests in the unit lane. Real shell checks live in the heavy-lane
+`launcher-shims.e2e.test.js`, independently of its loopback proxy fixtures. They use temporary
+HOME/ZDOTDIR paths and a fake real binary, disable `GLOBAL_RCS` in the temporary `.zshenv`
+(the system zshenv is unavoidable), and simulate a macOS login PATH rebuild in `.zprofile`
+with `zsh -l -i`. Generated blocks are also sourced under KSH_ARRAYS, sh/ksh emulation,
+and both GLOB_SUBST settings with literal glob-special directories. Shell processes have a
+five-second timeout and skip with a reason when zsh is absent; filesystem assertions always run.
+
 Tests must not pass `process.env` to `getAgentLaunch('codex')`: OAuth-mode launches read the user's Codex `config.toml` (`$CODEX_HOME` or `$HOME/.codex`); pass a minimal env with a temp `CODEX_HOME`.
 `npm test` attempts every group even if an earlier group fails and returns a
 failure if any group fails. For a system Chrome install, use
 `PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome npm test`.
 
+`unknown-path.test.js` covers header-aware routing with synthetic gateway bearers,
+empty header values, trimmed string/array Grok `x-api-key` shapes, explicit
+Codex/ChatGPT conflicts, Grok header/hub path consistency, and request identity
+at both gates. Its e2e companion checks separate Anthropic, OpenAI, ChatGPT, and
+xAI fakes. `fixtures/routing/header-names.json` records names only from real clients
+against a recording fake upstream; MCP transport names are separate spec-derived
+cases pending capture. Header allowlist tests cover launcher declarations, operator
+family scopes, and HTTP/WS forwarding to those fakes. Codex noise-path defaults use a ChatGPT-shaped
+bearer and account header; the Anthropic positive control keeps its own headers.
+
+Routing fix: `request-signals.test.js` and the routing tests cover Anthropic-shaped
+and OpenAI-shaped values together and distinct nonempty `x-api-key` values
+(local HTTP/WS 421 with zero connections at all four fakes), identical repeats,
+Anthropic keys with gateway bearers (Anthropic), and xAI header forwarding
+(follow-up to #747).
+
 ## Test hygiene
+
+`bodyless-session.e2e.test.js` uses two keep-alive clients with synthetic agent ids,
+UUIDs and cwd, a fake upstream, and a child proxy with temporary HOME/CCXRAY_HOME
+and import/export disabled. It checks body-less attribution in index.ndjson and
+SSE; the entries API returns `{ entries, sessionTitles, restore }` and its default
+session scope excludes rows without a session id.
 
 A test must produce the same result on the author's machine and on a clean CI
 runner. The failure mode this section exists to prevent: a test silently reads
@@ -52,12 +89,25 @@ Blocked access throws `ETEST_HOME` and marks the process failed even if applicat
 code catches the error. Browser-cache reads remain available; do not globally
 replace HOME just to run Puppeteer. With no explicit `CCXRAY_HOME`, the runner
 creates and cleans an empty temporary home. Individual tests still isolate their
-own data and scan roots as described below. This is a Node filesystem guard, not
+own data and scan roots as described below.
+The first preloaded process also clears behaviour switches a developer may have
+exported (`CCXRAY_IMPORT_DISABLE`, `CCXRAY_FAIL_CLOSED`, the loopback-auth
+switches, `PROXY_HOST`, `CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN`, …), so spawned
+servers use the default loopback bind unless a test sets one explicitly. This is a Node filesystem guard, not
 a sandbox for arbitrary native programs.
 
 `test/home-isolation.test.js` simulates a real HOME entirely under a temporary
 root: it checks settings fallback, explicit homes, logs, direct writes, reads, and
 an allowed isolated write without ever probing the human's files.
+
+`test/unknown-path.e2e.test.js` checks header-aware routing with Anthropic,
+OpenAI, ChatGPT, and xAI recording fakes, an isolated hub home, a synthetic pricing
+cache, and clients registered through the hub socket. It distinguishes Codex
+ChatGPT-login and API-key `/v1/models?client_version=…` requests, asserts Grok
+conflicts make no xAI requests, and uses real `ws` sockets to check rejected
+Anthropic upgrades (zero upstream connections) and a Codex ChatGPT-shaped
+upgrade (one ChatGPT connection with an echo round trip). Routing fix (#745).
+
 `test/internal-api-404.e2e.test.js` uses an isolated home, empty index, mock upstream,
 disabled import/export and a fresh pricing fixture. It verifies unknown APIs leave
 both the upstream and durable turn storage untouched.
@@ -107,6 +157,12 @@ cover both missing and empty indexes under a domain filter, plus nonempty indexe
 with only synthetic excluded turns; the latter must retain the identity failure
 and prune hold. Durable status renders stored filter counts, using `unknown` for
 older attempt records that lack those facts.
+
+`test/prune-index-sync.test.js` uses an isolated home and 5000 synthetic filler
+rows with only a few log files. It runs restore then streaming prune to check
+body-less rows outside memory, expired rows, response-file orphans and imported
+twins. Pure cases cover the inclusive retention boundary and response survival;
+the streaming cases also check an explicit retention override (#748).
 
 Atomic-write tests run two barrier-controlled children with the same simulated PID
 and synthetic status/index data in a temporary home. They inspect each private
@@ -538,3 +594,24 @@ Agentflow v8.4.15 compatibility fixtures in `test/fixtures/agentflow/v8.4.15/`
 are hand-authored synthetic notebook/archive and manual owner-input cases.
 They model retained latest-completed history and Claude manual capture, without
 reading host sessions or requiring an upstream checkout.
+
+Header allowlist (follow-up to #745): `test/fixtures/routing/header-names.json`
+contains observed Claude/Codex header names and documented Grok header names,
+with synthetic values supplied by tests. `test/unknown-path.e2e.test.js` uses
+a temporary home and four local recording upstreams for HTTP and WebSocket.
+
+`usage-group.test.js` uses only synthetic indexed summaries, temporary storage,
+and in-process CLI output capture. It covers attribution, grouping, absolute
+windows, merge-before-filter, source selection, repricing, and argument errors.
+It also checks that cost-only and undated rows remain in non-grouped reports
+while grouped reports exclude them. The existing `usage.test.js` CLI regressions
+belong to the heavy lane; run both lanes serially when changing usage reports.
+To check the unit lane with an empty home, without setting CCXRAY_HOME:
+
+```bash
+T=$(mktemp -d); HOME=$T node scripts/run-tests.js unit
+T=$(mktemp -d); HOME=$T node scripts/run-tests.js heavy
+```
+
+The test preload creates its own temporary CCXRAY_HOME when none is supplied;
+individual storage fixtures remain isolated as described above.

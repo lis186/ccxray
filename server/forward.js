@@ -5,6 +5,7 @@ const http = require('http');
 const tls = require('tls');
 const crypto = require('crypto');
 const config = require('./config');
+const { checkHttpRoute } = require('./request-routing');
 const store = require('./store');
 const { buildEditedReqRecord } = require('./delta-helpers');
 const { calculateCost } = require('./pricing');
@@ -459,7 +460,7 @@ async function persistEditedRequest(ctx) {
 // ── Upstream error classification ───────────────────────────────────
 const RETRYABLE_CODES = new Set(['ETIMEDOUT', 'ENOTFOUND', 'EHOSTUNREACH', 'ECONNREFUSED', 'EAI_AGAIN']);
 
-function describeUpstreamError(err, host) {
+function describeUpstreamError(err, host, ctx = {}) {
   const code = err.code || '';
   const labels = {
     ETIMEDOUT: 'connection timed out',
@@ -479,25 +480,21 @@ function describeUpstreamError(err, host) {
   };
   const label = labels[code] || err.message || code || 'unknown error';
   const codeTag = code ? ` (${code})` : '';
-  let agentVer = null;
-  for (const e of store.versionIndex.values()) {
-    if (e.version && (!agentVer || e.version > agentVer.v)) {
-      agentVer = { v: e.version, label: e.agentLabel };
-    }
-  }
-  const verTag = agentVer ? ` [${agentVer.label} ${agentVer.v}]` : '';
+  const agentTag = ctx.agentLabel ? ` [${ctx.agentLabel}]` : '';
   return {
     code,
-    summary: `${host}: ${label}${codeTag}${verTag}`,
+    summary: `${host}: ${label}${codeTag}${agentTag}`,
     hint: hints[code] || null,
     retryable: RETRYABLE_CODES.has(code),
   };
 }
 
 // ── Forward request to Anthropic ─────────────────────────────────────
+
 function forwardRequest(ctx) {
   const { id, ts, startTime, parsedBody, rawBody, clientReq, clientRes, fwdHeaders, reqSessionId } = ctx;
-  const upstream = ctx.upstream || config.getUpstreamForRequest(clientReq.url);
+  const upstream = ctx.upstream || config.getUpstreamForRequestAndHeaders(clientReq.url, clientReq.headers, clientReq);
+  if (!checkHttpRoute(clientReq, clientRes, upstream)) return;
   const provider = upstream.provider || 'anthropic';
 
   // Counter + attribution prefix are committed here, not at request receipt.
@@ -517,7 +514,7 @@ function forwardRequest(ctx) {
       : null;
     let cwdForPrefix = meta?.cwd || null;
     if (!cwdForPrefix && reqSessionId && reqSessionId !== 'direct-api') {
-      cwdForPrefix = hub.lookupClientCwd();
+      cwdForPrefix = hub.lookupClientCwdForRequest(clientReq);
     }
     const isOrphan = isSubagent && ctx.sessionInferred && !cwdForPrefix && (!reqSessionId || reqSessionId === 'direct-api');
     const turnStep = parser.attributionTurnStep(parsedBody);
@@ -617,7 +614,7 @@ function forwardRequest(ctx) {
     let reqErrorHandled = false;
     proxyReq.on('error', (err) => {
       reqErrorHandled = true;
-      const info = describeUpstreamError(err, upstream.host);
+      const info = describeUpstreamError(err, upstream.host, ctx);
 
       if (info.retryable && attempt === 0 && !clientRes.headersSent && !clientRes.destroyed) {
         console.error(`\x1b[33m⏳ ${info.summary} — retrying…\x1b[0m`);
@@ -846,7 +843,7 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
     const currMsgCount = parsedBody?.messages?.length || 0;
     const thinkingStripped = computeThinkingStripped(isSubagent, reqSessionId, currMsgCount, parsedBody);
     const entry = {
-      id, ts: ctx.ts, method: ctx.clientReq.method, url: stripAuthParams(ctx.clientReq.url),
+      id, ts: ctx.ts, method: ctx.clientReq.method, path: ctx.clientReq.url.split('?')[0], url: stripAuthParams(ctx.clientReq.url),
       req: parsedBody, res: events,
       elapsed, status: proxyRes.statusCode, isSSE: true,
       receivedAt: startTime,
@@ -1002,7 +999,7 @@ function handleOpenAISSE(ctx, proxyRes, clientRes) {
     });
     if (titleGenTitle) fields.title = titleGenTitle;
     const entry = {
-      id, ts: ctx.ts, method: ctx.clientReq.method, url: stripAuthParams(ctx.clientReq.url),
+      id, ts: ctx.ts, method: ctx.clientReq.method, path: ctx.clientReq.url.split('?')[0], url: stripAuthParams(ctx.clientReq.url),
       req: parsedBody, res: events,
       elapsed, status: proxyRes.statusCode, isSSE: true,
       receivedAt: startTime,
@@ -1132,7 +1129,7 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
       });
       if (titleGenTitle) fields.title = titleGenTitle;
       entry = {
-        id, ts: ctx.ts, method: ctx.clientReq.method, url: stripAuthParams(ctx.clientReq.url),
+        id, ts: ctx.ts, method: ctx.clientReq.method, path: ctx.clientReq.url.split('?')[0], url: stripAuthParams(ctx.clientReq.url),
         req: parsedBody, res: resData,
         elapsed, status: proxyRes.statusCode, isSSE: !!openAIEvents,
         receivedAt: startTime,
@@ -1156,7 +1153,7 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
       const currMsgCount = parsedBody?.messages?.length || 0;
       const thinkingStripped = computeThinkingStripped(isSubagent, sessionId, currMsgCount, parsedBody);
       entry = {
-        id, ts: ctx.ts, method: ctx.clientReq.method, url: stripAuthParams(ctx.clientReq.url),
+        id, ts: ctx.ts, method: ctx.clientReq.method, path: ctx.clientReq.url.split('?')[0], url: stripAuthParams(ctx.clientReq.url),
         req: parsedBody, res: resData,
         elapsed, status: proxyRes.statusCode, isSSE: false,
         receivedAt: startTime,

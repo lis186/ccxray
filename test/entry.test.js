@@ -4,7 +4,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { INDEX_FIELDS, buildIndexLine, deploymentFields } = require('../server/entry');
 
-const EXCLUDED = ['req','res','tokens','method','url','_loaded','_writePromise','_loadingPromise'];
+const EXCLUDED = ['req','res','tokens','url','_loaded','_writePromise','_loadingPromise'];
 const LEGACY_INDEX_FIELDS = [
   'id','ts','sessionId','provider','agent','model','msgCount','toolCount','toolCalls','skillCalls',
   'isSubagent','sessionInferred','cwd','isSSE','usage','cost','maxContext','responseMetadata',
@@ -23,7 +23,7 @@ test('G1: INDEX_FIELDS preserves every legacy field name and order, then appends
     'accountEmail','accountDomain',
     'subagentId','subagentToolUseId',
     'effort','thinkingTokens','turnDurationMs',
-    'branch',
+    'branch','method','path',
   ]);
 });
 
@@ -104,6 +104,7 @@ test('deploymentFields allows request identity to override or suppress process e
 //   (3) any new key ∈ the site's explicit allowlist
 //   (4) legacy key values deepEqual — except the allowlisted deliberate fixes.
 function assertParity(entry, legacy, allowlist) {
+  allowlist = [...allowlist, 'method', 'path'];
   const got = JSON.parse(buildIndexLine(entry));
   for (const k of EXCLUDED) assert.ok(!(k in got), `excluded key leaked: ${k}`);
   for (const k of Object.keys(legacy)) assert.ok(k in got, `legacy key dropped: ${k}`);
