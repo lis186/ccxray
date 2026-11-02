@@ -245,7 +245,7 @@ function summarizeTurns(rows) {
   return { turns: a.calls,
     tokens: { ...a.tokens, reasoning: evidence.length ? evidence.reduce((sum, n) => sum + n, 0) : null },
     reasoningKnownTurns: evidence.length,
-    cost: a.cost, costFold: a.costFold, models: a.models,
+    cost: a.cost, costFold: a.costFold, models: Object.fromEntries(Object.entries(a.models)),
     firstTs: a.firstAt == null ? null : new Date(a.firstAt).toISOString(),
     lastTs: a.lastAt == null ? null : new Date(a.lastAt).toISOString() };
 }
@@ -267,6 +267,9 @@ function usageContract(rows, { from = null, to = null, by = null, turns = false 
     // hub.json is ephemeral, not a historical recording ledger. Session markers
     // prove a point observation, not continuous recording across a query window.
     coverage: 'unknown',
+    sourceCoverage: Object.fromEntries(['proxy', 'import'].map(source => [source,
+      calls.some(e => (e.sources || [e.imported ? 'import' : 'proxy']).includes(source))
+        ? 'observed' : 'not-observed'])),
     excludedMarkerRows: rows.length - calls.length,
     nullAgentIdTurns: calls.filter(e => e.agentId == null).length,
     nullBranchTurns: calls.filter(e => e.branch == null).length,

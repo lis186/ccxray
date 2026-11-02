@@ -622,3 +622,11 @@ null identities and empty results. `usage-contract-purity.test.js` runs the
 query module with only a temporary HOME (unsetting CCXRAY_HOME and LOGS_DIR), compares
 all HOME file bytes before/after, and traps timers, writes, sockets and network
 calls across require and run. It runs in the unit lane without spawning processes. These tests never inspect the real home or contact a running hub.
+
+For environments that prohibit sockets, the runner accepts
+`--exclude <comma-separated test basenames>`. Each excluded file is printed;
+this does not change the default CI suite. Record exclusions as “not run in
+sandbox”, including indirect export-lock and setup-removal socket users.
+Usage contract scenarios 1–3 and 5 live in `usage-contract.test.js`; scenario 4
+is in `usage-contract-purity.test.js`. The version manifest pins stable fields,
+and source coverage never equates missing observations with zero usage.

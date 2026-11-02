@@ -157,3 +157,87 @@ describe('version 1 usage query contract', () => {
     assert.throws(() => parseArgs(['--turns']), /requires --json/);
   });
 });
+
+// Schema manifests are deliberately literal: changing the contract requires a
+// new version entry and migration notes, rather than updating an unversioned snapshot.
+const V1_FIELDS = {
+  root: ['schemaVersion', 'window', 'coverage', 'sourceCoverage', 'excludedMarkerRows',
+    'nullAgentIdTurns', 'nullBranchTurns', 'totals', 'providerTotals', 'by', 'groups', 'turns'],
+  summary: ['turns', 'tokens', 'reasoningKnownTurns', 'cost', 'costFold', 'models', 'firstTs', 'lastTs'],
+  turn: ['id', 'sessionId', 'agentId', 'branch', 'cwd', 'provider', 'model', 'receivedAt',
+    'tokens', 'cost', 'costConfidence', 'costFold', 'sources'],
+};
+const keys = value => Object.keys(value).sort();
+it('Scenario 1: schemaVersion pins the complete stable field set', async () => {
+  const manifests = { 1: V1_FIELDS };
+  await fixture([turn('a')], async ({ home }) => {
+    const r = JSON.parse((await output(home, ['--json', '--turns', '--by', 'agent'])).stdout);
+    assert.equal(r.schemaVersion, 1);
+    const manifest = manifests[r.schemaVersion];
+    const contract = usageContract([turn('a')], { turns: true, by: 'agent' });
+    assert.deepEqual(keys(contract), [...manifest.root].sort());
+    assert.deepEqual(keys(r.totals), [...manifest.summary].sort());
+    assert.deepEqual(keys(r.providerTotals.anthropic), [...manifest.summary].sort());
+    assert.deepEqual(keys(r.groups[0]), [...manifest.summary, 'key'].sort());
+    assert.deepEqual(keys(r.turns[0]), [...manifest.turn].sort());
+    assert.deepEqual(keys(r.window), ['from', 'to']);
+    assert.deepEqual(keys(r.sourceCoverage), ['import', 'proxy']);
+    assert.deepEqual(keys(r.totals.tokens), ['cacheRead', 'cacheWrite', 'input', 'output', 'reasoning']);
+    assert.deepEqual(keys(r.totals.costFold), ['count', 'fallbackCost', 'fallbackCount', 'unknownCount']);
+    const noTurns = JSON.parse((await output(home, ['--json'])).stdout);
+    assert.equal(noTurns.schemaVersion, r.schemaVersion);
+    assert.equal(Object.hasOwn(noTurns, 'turns'), false);
+  });
+});
+
+it('Scenario 2: source coverage distinguishes missing observations from zero usage', async () => {
+  await fixture([turn('proxy', { usage: {} })], async ({ home }) => {
+    const r = JSON.parse((await output(home, ['--json'])).stdout);
+    assert.equal(r.coverage, 'unknown');
+    assert.deepEqual(r.sourceCoverage, { proxy: 'observed', import: 'not-observed' });
+    assert.equal(Object.hasOwn(r.providerTotals, 'openai'), false);
+    const empty = JSON.parse((await output(home, ['--json', '--agent-id', 'missing'])).stdout);
+    assert.equal(empty.totals.turns, 0);
+    assert.equal(empty.coverage, 'unknown');
+    assert.deepEqual(empty.sourceCoverage, { proxy: 'not-observed', import: 'not-observed' });
+  });
+  await fixture([turn('proxy', { responseId: 'copy' }),
+    turn('import', { responseId: 'copy', imported: true })], async ({ home }) => {
+    const r = JSON.parse((await output(home, ['--json'])).stdout);
+    assert.deepEqual(r.sourceCoverage, { proxy: 'observed', import: 'observed' });
+    assert.equal(r.totals.turns, 1);
+  });
+});
+
+it('Scenario 3: documented schema and compatibility rules match version 1', () => {
+  const doc = fs.readFileSync(path.join(__dirname, '../docs/usage-query-contract.md'), 'utf8');
+  const schema = JSON.parse(doc.match(/```json\n([\s\S]*?)\n```/)[1]);
+  assert.equal(schema.properties.schemaVersion.const, 1);
+  assert.deepEqual(keys(schema.properties), [...V1_FIELDS.root].sort());
+  assert.deepEqual(schema.required.sort(), V1_FIELDS.root.filter(k => k !== 'turns').sort());
+  assert.deepEqual(schema.$defs.turn.required.sort(), [...V1_FIELDS.turn].sort());
+  assert.deepEqual(schema.$defs.summary.required.sort(), [...V1_FIELDS.summary].sort());
+  assert.match(doc, /Any field addition, removal, rename, type or semantic change requires a new schema version/);
+  assert.match(doc, /not-observed.*never.*zero/);
+  assert.match(doc, /index.ndjson.*internal/);
+});
+
+it('Scenario 5: main integration preserves grouping and resolves all four review follow-ups', async () => {
+  await fixture([
+    turn('proxy', { responseId: 'copy', branch: null }),
+    turn('import', { responseId: 'copy', agentId: null, imported: true }),
+    turn('undated', { receivedAt: null }),
+    turn('codex', { sessionId: 'codex', provider: 'openai', imported: true, usage: {} }),
+  ], async ({ home }) => {
+    const flags = ['--json', '--agent-id', 'run-demo', '--branch', 'main', '--to', iso(T + 1)];
+    const plain = JSON.parse((await output(home, flags)).stdout);
+    const grouped = JSON.parse((await output(home, [...flags, '--by', 'agent'])).stdout);
+    assert.equal(plain.totals.turns, 2); // merged response + import-only Codex; no undated row
+    assert.equal(grouped.groups[0].turns, plain.totals.turns);
+    const codex = JSON.parse((await output(home, ['--json', '--session', 'codex'])).stdout);
+    assert.equal(codex.totals.tokens.reasoning, null);
+    const result = await output(home, ['--json', '--by', 'agent', '--agent-id', 'missing']);
+    assert.equal(result.status, 0);
+    assert.deepEqual(JSON.parse(result.stdout).groups, []);
+  });
+});

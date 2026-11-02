@@ -61,6 +61,13 @@ groups, models, cost, or null-identity counts.
 
 ## Coverage and completeness
 
+`sourceCoverage` reports `proxy` and `import` as `"observed"` when a selected model
+call has evidence from that source, otherwise `"not-observed"`. Merged response
+copies can show both sources. These are observations in the selected read model,
+after source selection and filters, not a recording uptime ledger.
+A not-observed source is never a claim of zero usage. Absent providers are omitted
+from `providerTotals`; consumers must not invent zero totals for them.
+
 `coverage` is currently always `"unknown"`. The current hub lock has an ephemeral
 start time, but no durable stop/gap history. Session markers prove individual
 observations, not continuous recording throughout an arbitrary window. Neither
@@ -83,6 +90,7 @@ single-scope, multi-cwd and grouped output, includes the same versioned fields:
 | --- | --- |
 | `window` | `{from, to}`: requested ISO timestamps, or null for unbounded ends. `--last` resolves to an absolute start at invocation time. |
 | `coverage` | `"unknown"` in version 1. |
+| `sourceCoverage` | `{proxy, import}` with `"observed"` or `"not-observed"` for each source. |
 | `totals` | Summary of all selected model calls. |
 | `providerTotals` | Map of provider ID to Summary; absent providers are omitted. Legacy rows with no provider use `anthropic`. |
 | `by` | `agent`, `branch`, `cwd`, `session`, or null when grouping was not requested. |
@@ -141,7 +149,7 @@ ignore unknown properties.
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": ["schemaVersion", "window", "coverage", "totals", "providerTotals", "by", "groups", "excludedMarkerRows", "nullAgentIdTurns", "nullBranchTurns"],
+  "required": ["schemaVersion", "window", "coverage", "sourceCoverage", "totals", "providerTotals", "by", "groups", "excludedMarkerRows", "nullAgentIdTurns", "nullBranchTurns"],
   "properties": {
     "schemaVersion": {"const": 1},
     "window": {
@@ -149,6 +157,8 @@ ignore unknown properties.
       "properties": {"from": {"$ref": "#/$defs/timestamp"}, "to": {"$ref": "#/$defs/timestamp"}}
     },
     "coverage": {"const": "unknown"},
+    "sourceCoverage": {"type": "object", "required": ["proxy", "import"], "additionalProperties": false,
+      "properties": {"proxy": {"enum": ["observed", "not-observed"]}, "import": {"enum": ["observed", "not-observed"]}}},
     "totals": {"$ref": "#/$defs/summary"},
     "providerTotals": {"type": "object", "additionalProperties": {"$ref": "#/$defs/summary"}},
     "by": {"enum": [null, "agent", "branch", "cwd", "session"]},
@@ -217,6 +227,7 @@ or `--turns` (supplementary report fields omitted here):
   "schemaVersion": 1,
   "window": {"from": "2026-06-01T00:00:00.000Z", "to": "2026-06-02T00:00:00.000Z"},
   "coverage": "unknown",
+  "sourceCoverage": {"proxy": "not-observed", "import": "observed"},
   "excludedMarkerRows": 1,
   "nullAgentIdTurns": 0,
   "nullBranchTurns": 0,
@@ -247,12 +258,12 @@ or `--turns` (supplementary report fields omitted here):
 
 ## Versioning and migration
 
-Within schema version 1, field names, types, selection rules, units and null
-semantics above remain stable. New optional top-level or Summary properties may be added. Changes to the
-per-turn allowlist, removing or renaming fields, changing meaning, or adding
-coverage states require a new
-schema version and migration notes. Check `schemaVersion` before consuming;
-reject unsupported versions and ignore unknown properties in supported versions.
+Any field addition, removal, rename, type or semantic change requires a new schema version
+and migration notes. This includes nested Summary, turn and coverage fields.
+Tests pin the exact stable field set to version 1. Consumers must check
+`schemaVersion`, reject unsupported versions and ignore unknown supplementary
+analytics fields. The optional `turns` field is controlled by the request flag;
+its presence does not change the version.
 
 The first version intentionally standardizes JSON on the shared merged read
 model. Earlier non-grouped reports could count cost-only or undated rows, apply

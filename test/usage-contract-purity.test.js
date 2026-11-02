@@ -13,7 +13,7 @@ function snapshot(root) {
   });
 }
 
-it('requires and runs offline without timers, writes, sockets or price fetches; HOME stays byte-identical', async () => {
+it('Scenario 4: requires and runs offline without timers, writes, sockets or price fetches; HOME stays byte-identical', async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'usage-contract-pure-'));
   const envKeys = ['HOME', 'CCXRAY_HOME', 'LOGS_DIR', 'CCXRAY_PRICING_CACHE'];
   const originalEnv = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
