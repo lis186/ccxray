@@ -34,7 +34,7 @@ for (const group of mode === 'all' ? Object.keys(groups) : [mode]) {
     // Unit lane must not touch the network (#717); loopback and unix sockets stay allowed.
     ...(group === 'unit' ? ['--require', './test/helpers/no-network.js'] : []),
     '--test',
-    ...(group === 'unit' ? [] : ['--test-concurrency=1']), ...files,
+    '--test-concurrency=1', ...files,
   ], {
     cwd: root,
     // Enforce: a blocked outbound attempt fails the test process even if the code catches the throw.

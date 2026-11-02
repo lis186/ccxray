@@ -4,10 +4,10 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const readline = require('readline');
-const { resolveCcxrayHome } = require('./paths');
+const { resolveCcxrayHome, resolveLogsDir } = require('./paths');
 const { mergeByResponseId } = require('./store');
 const { repricedView } = require('./reprice');
-const { readMergedTurns, selectTurns, groupTurns } = require('./usage-query');
+const { readMergedTurns, selectTurns, usageContract } = require('./usage-query');
 const { retentionDays, retentionCutoffDate, taipeiDate } = require('./retention');
 // INVARIANT(ADR 0017): the human aggregate below must render through the shared
 // fold-aware helper, not a bare `$` + number. format.js is isomorphic (no
@@ -18,7 +18,8 @@ const { formatAggCostText } = require('../public/format.js');
 const HELP = `Usage: ccxray usage [options]
 
 Options:
-  --json              JSON output (for agents)
+  --json              Versioned read-only JSON output
+  --turns             Include per-turn summaries with --json
   --tools             Show all tools (default: top 7)
   --session <id>      Filter to session(s), comma-separated or repeated
   --agent-id <id>     Filter agent IDs, comma-separated or repeated
@@ -53,14 +54,15 @@ function parseIso(value, flag) {
 }
 
 function parseArgs(argv) {
-  const args = { json: false, tools: false, open: false, sessionIds: [], since: null, to: null, cwds: [], agentIds: [], branches: [], by: null };
+  const args = { json: false, turns: false, tools: false, open: false, sessionIds: [], since: null, to: null, cwds: [], agentIds: [], branches: [], by: null };
   let hasLast = false, hasAbsolute = false;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--help' || argv[i] === '-h') { console.log(HELP); process.exit(0); }
     else if (argv[i] === '--json') args.json = true;
+    else if (argv[i] === '--turns') args.turns = true;
     else if (argv[i] === '--tools') args.tools = true;
     else if (argv[i] === '--open') args.open = true;
-    else if (['--from', '--since', '--to', '--until', '--by', '--agent-id', '--branch', '--last'].includes(argv[i])
+    else if (['--from', '--since', '--to', '--until', '--by', '--agent-id', '--branch', '--last', '--session', '--cwd'].includes(argv[i])
         && (!argv[i + 1] || argv[i + 1].startsWith('--'))) {
       throw new Error(`Missing value for ${argv[i]}.`);
     }
@@ -98,6 +100,8 @@ function parseArgs(argv) {
   }
   if (hasLast && hasAbsolute) throw new Error('Cannot combine --last with --from/--to (or --since/--until).');
   if (args.since != null && args.to != null && args.since > args.to) throw new Error('--from must be before or equal to --to.');
+  if (args.turns && !args.json) throw new Error("--turns requires --json.");
+  if (args.json && args.open) throw new Error("--open cannot be combined with read-only --json.");
   return args;
 }
 
@@ -138,9 +142,9 @@ async function run(argv) {
   try { args = parseArgs(argv); }
   catch (err) { console.error(err.message); process.exitCode = 1; return; }
   const home = resolveCcxrayHome();
-  const indexPath = path.join(home, 'logs', 'index.ndjson');
+  const indexPath = path.join(resolveLogsDir(), 'index.ndjson');
 
-  if (!fs.existsSync(indexPath)) {
+  if (!fs.existsSync(indexPath) && !args.json && !args.by) {
     const err = { error: 'no logs found', hint: `check CCXRAY_HOME (currently ${home})` };
     if (args.json) console.log(JSON.stringify(err));
     else console.error(`No logs found at ${indexPath}`);
@@ -148,7 +152,7 @@ async function run(argv) {
   }
 
   let entries;
-  if (args.by) {
+  if (args.by || args.json) {
     // Grouped reports merge and choose one source before any filters, then
     // reprice in memory. Even an out-of-window proxy determines session source.
     ({ turns: entries } = await readMergedTurns({ logsDir: path.dirname(indexPath) }));
@@ -156,7 +160,7 @@ async function run(argv) {
       from: args.since ?? -Infinity, to: args.to ?? Infinity,
       agentIds: args.agentIds.length ? args.agentIds : null,
       branches: args.branches.length ? args.branches : null,
-    }).filter(e => e.model || e.usage);
+    });
   } else {
     // Preserve the legacy report's rows and selection order, including cost-only
     // rows and rows without timestamps. Stream to avoid the single-string limit.
@@ -168,10 +172,7 @@ async function run(argv) {
       if (!line) continue;
       try { entries.push(JSON.parse(line)); } catch {}
     }
-    if (args.since != null) entries = entries.filter(e => (e.receivedAt || 0) >= args.since);
-    if (args.to != null) entries = entries.filter(e => (e.receivedAt || 0) < args.to);
-    if (args.agentIds.length) entries = entries.filter(e => args.agentIds.includes(e.agentId));
-    if (args.branches.length) entries = entries.filter(e => args.branches.includes(e.branch));
+    if (args.since != null || args.to != null) entries = selectTurns(entries, { from: args.since ?? -Infinity, to: args.to ?? Infinity });
   }
   // ponytail: #4 smart --cwd — an absolute/`~` path is a prefix match; anything
   // else (a bare name or relative fragment) is a case-insensitive substring.
@@ -195,22 +196,27 @@ async function run(argv) {
   }
   // Legacy reports reprice and deduplicate after cwd/time selection and before
   // resolving aliases, so costliest sees one repriced turn per response.
-  if (!args.by) entries = dedupeEntries(repricedView(entries));
+  if (!args.by && !args.json) {
+    entries = dedupeEntries(repricedView(entries));
+    if (args.agentIds.length) entries = entries.filter(e => args.agentIds.includes(e.agentId));
+    if (args.branches.length) entries = entries.filter(e => args.branches.includes(e.branch));
+  }
   // ponytail: #1 smart --session — resolved AFTER --last/--cwd so `latest` and
   // `costliest` pick the newest/priciest session *within* the filtered scope,
   // not globally (alias → UUID prefix → title substring).
   if (args.sessionIds.length) {
+    const aliasEntries = (args.json || args.by) ? entries.filter(e => e.model || e.usage) : entries;
     const exact = [], fuzzy = [];
     for (const id of args.sessionIds) {
       if (id === 'latest') {
         // by receivedAt, not array order: index lines are append-order and can
         // arrive out of sequence under hub concurrency or startup restoration.
-        const newest = entries.reduce((a, e) => (e.receivedAt || 0) > (a?.receivedAt || 0) ? e : a, null);
+        const newest = aliasEntries.reduce((a, e) => (e.receivedAt || 0) > (a?.receivedAt || 0) ? e : a, null);
         exact.push(newest?.sessionId);
       }
       else if (id === 'costliest') {
         const bySess = {};
-        for (const e of entries) if (e.sessionId) bySess[e.sessionId] = (bySess[e.sessionId] || 0) + (e.cost?.cost || 0);
+        for (const e of aliasEntries) if (e.sessionId) bySess[e.sessionId] = (bySess[e.sessionId] || 0) + (e.cost?.cost || 0);
         exact.push(Object.entries(bySess).sort((a, b) => b[1] - a[1])[0]?.[0]);
       }
       else fuzzy.push(id);
@@ -221,7 +227,12 @@ async function run(argv) {
     ));
   }
 
-  if (!entries.length) {
+  const contract = (args.json || args.by) ? usageContract(entries, {
+    from: args.since, to: args.to, by: args.by, turns: args.turns,
+  }) : null;
+  if (contract) entries = entries.filter(e => e.model || e.usage);
+
+  if (!entries.length && !contract) {
     const filters = [];
     if (args.sessionIds.length) filters.push(`--session "${args.sessionIds.join(', ')}"`);
     if (args.cwds.length) filters.push(`--cwd "${args.cwds.join(', ')}"`);
@@ -240,11 +251,9 @@ async function run(argv) {
   }
 
   if (args.by) {
-    const groups = groupTurns(entries, args.by);
+    const groups = contract.groups;
     const retention = retentionStatus(args);
-    const result = { by: args.by, groups,
-      nullAgentIdTurns: entries.filter(e => e.agentId == null).length,
-      ...(args.by === 'branch' ? { nullBranchTurns: entries.filter(e => e.branch == null).length } : {}),
+    const result = { ...contract,
       meta: { retentionDays: retention.days, retentionCutoff: retention.cutoff,
         ...(retention.warning ? { retentionWarning: retention.warning } : {}) } };
     if (args.json) console.log(JSON.stringify(result));
@@ -285,7 +294,7 @@ async function run(argv) {
       retentionCutoff: retention.cutoff,
       ...(retention.warning ? { retentionWarning: retention.warning } : {}),
     };
-    if (args.json) { console.log(JSON.stringify({ projects, meta })); }
+    if (args.json) { console.log(JSON.stringify({ ...contract, projects, meta })); }
     else {
       const B = '\x1b[1m', D = '\x1b[2m', R = '\x1b[0m';
       console.log(`\n${B}Project Comparison${R}`);
@@ -298,8 +307,11 @@ async function run(argv) {
 
   // Build the skill-scope map once here (it reads the filesystem) and pass it
   // in, keeping analyze() pure and deterministic for direct/test callers.
-  const result = analyze(entries, { ...args, scopeMap: buildSkillScopeMap() });
-  if (args.json) console.log(JSON.stringify(result));
+  const result = analyze(entries, { ...args, scopeMap: args.json ? {} : buildSkillScopeMap() });
+  if (args.json) {
+    for (const session of result.sessions.topSessions) session.title = null;
+    console.log(JSON.stringify({ ...result, ...contract }));
+  }
   else printHuman(result);
 
   // ponytail: --open jumps to dashboard for the resolved session

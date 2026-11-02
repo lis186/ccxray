@@ -1,34 +1,17 @@
 # `ccxray usage` — Output Schema Reference
 
-`ccxray usage` summarizes your logged Claude Code / Codex traffic straight from
-`~/.ccxray/logs/index.ndjson` — no running server required. The `--json` output
-is an **agent-facing contract**: small (target `<4KB`) with a **stable shape** —
-the key set and field types below don't change without a deliberate, changelogged
-update. Field *values* are derived from the index plus your arguments, with a few
-inputs resolved at run time: `--last` is relative to wall-clock `now` and
-`--cwd ~` expands to the local home dir (see [Filter semantics](#filter-semantics)),
-and `skills[].scope` is read from the local filesystem (see the [`skills`](#skills)
-note). So treat the **shape** as the contract; expect values to track the index
-and the runtime environment.
+`ccxray usage --json` provides a versioned, read-only query with no running
+server required. External consumers should use the [usage query contract](usage-query-contract.md)
+for flags, JSON Schema, examples, token/cache semantics, coverage limitations
+and versioning. `index.ndjson` is internal storage and must not be parsed by consumers.
 
-The single source of truth for the shapes below is
-[`server/usage.js`](https://github.com/lis186/ccxray/blob/v2.5.0-rc.1/server/usage.js): `analyze()` builds the single-scope
-object, while `run()` assembles grouped, multi-cwd comparison and error
-objects. `groupTurns()` in `server/usage-query.js` builds each grouped rollup. This
-doc mirrors them; if they ever disagree, the code wins — and that disagreement
-is a bug to fix here.
-
-> **Contract note.** Because agents consume `--json`, the field set, types, and
-> the top-level shapes (single-scope object, multi-cwd object, grouped object,
-> error object) are treated as a contract. Shape changes must be deliberate and noted
-> in the changelog below. The `usage --json shape contract` block in
-> [`test/usage.test.js`](https://github.com/lis186/ccxray/blob/v2.5.0-rc.1/test/usage.test.js) locks every section's exact key
-> set and field types (plus the multi-cwd and error shapes), so an accidental
-> field add/remove fails CI — a deliberate change must update both that test and
-> this doc in the same commit. A separate test guards the `<5KB` size ceiling
-> (the `<4KB` above is the working target that sits under that ceiling).
-
----
+Version 1 adds `schemaVersion`, `window`, `coverage`, `totals`, `providerTotals`,
+`by`, `groups`, `excludedMarkerRows`, `nullAgentIdTurns`, `nullBranchTurns`, and
+optional `turns` to every successful JSON shape. The fields documented below
+remain supplementary analytics; versioned summaries are the supported query
+interface. JSON uses the merged read model and excludes markers and undated rows.
+Session titles and skill scopes are null in JSON. Default output has no fixed
+size guarantee; the dummy single-scope fixture is checked below 10 KB.
 
 ## Output modes at a glance
 
@@ -40,7 +23,7 @@ The output shape depends on the arguments:
 | `--by <dimension>` | [Grouped object](#grouped-object) | 0 |
 | Default (0 or 1 `--cwd`, without `--by`) | [Single-scope object](#1-single-scope-object-default) | 0 |
 | `--cwd a,b` (**2+** values, without `--by`) | [Multi-cwd object](#2-multi-cwd-comparison-object) | 0 |
-| No index / no matching entries | [Error object](#3-error-object) | 1 |
+| No index / no matching entries | [Successful empty result](#3-empty-results-and-errors) | 0 |
 
 Rounded numeric fields are rounded to **at most** the number of decimals noted
 per field. The value is coerced back to a JSON number (`+x.toFixed(n)`), so
@@ -107,7 +90,7 @@ Each `topSessions[]` element:
 | `cost` | number | USD, **2 dp**. |
 | `costAgg` | object | Confidence fold for `cost`, always present: `{count, fallbackCount, fallbackCost, unknownCount}`, all numbers. `fallbackCount`/`fallbackCost` cover turns priced from a default rate; `unknownCount` counts turns that contributed **nothing** to `cost`, so a non-zero value means `cost` is a lower bound. Render `cost` through this fold (`formatAggCost`/`formatAggCostText`, ADR 0017) — a consumer of this JSON cannot see the turns, so it cannot re-derive the fold, and printing `cost` alone reports a fabricated or under-counted total as an exact one. |
 | `durationMin` | number | First→last `receivedAt` span in minutes, **1 dp**. `0` if fewer than 2 timestamped turns. |
-| `title` | string \| null | Best non-continuation title, truncated to 40 chars. `null` if none. |
+| `title` | string \| null | Always `null` in JSON; human reports may show a truncated title. |
 | `branch` | string \| null | Git branch of the session's latest-received turn that recorded one (see `branch` in [data-model.md](data-model.md)). `null` when no turn recorded a branch (outside git, detached HEAD, or entries older than branch recording). |
 | `model` | string | The session's **dominant** model (most turns), as a single string — not a map. `"unknown"` if absent. |
 | `provider` | string | Provider of the first turn. |
@@ -142,7 +125,7 @@ Array of skills, sorted by `invocations` descending. May be `[]`.
 | `name` | string | Skill name (may be namespaced, e.g. `superpowers:brainstorming`). |
 | `invocations` | number | Total times invoked. |
 | `loads` | number \| null | Distinct sessions that invoked it (a proxy for unique "loads"). `null` only on the synthetic legacy row. |
-| `scope` | string \| null | `"user"`, `"project"`, `"plugin"`, or `null`. Resolved by scanning skill directories **at analysis time**, so a since-deleted skill reads as `null`. |
+| `scope` | string \| null | `"user"`, `"project"`, `"plugin"`, or `null`. Always `null` in JSON; human reports resolve scope from local skill directories. |
 
 **Legacy row.** Entries logged before per-skill tracking (`skillCalls`) existed
 contribute a single appended row `{ "name": "(pre-tracking)", "invocations": N,
@@ -232,37 +215,28 @@ filtering, so every matched cwd that survived appears as one row.
 
 ---
 
-## 3. Error object
+## 3. Empty results and errors
 
-On failure, `--json` prints a single error object and exits with code **1**:
-
-```jsonc
-{ "error": "<reason>", "hint": "<actionable hint>" }
-```
-
-| `error` | When | `hint` |
-|---------|------|--------|
-| `"no logs found"` | `index.ndjson` does not exist under the active `CCXRAY_HOME`. | Names the resolved home so you can fix `CCXRAY_HOME`. |
-| `"no matching entries"` | The index exists but no entry survived the filters. | Suggests loosening a specific filter (or notes the index is empty). |
-
-Without `--json`, the same conditions print a human message to **stderr** (still
-exit 1). Invalid `--last` durations also exit 1 with a stderr message, before any
-JSON is produced.
+JSON queries with missing logs, an empty index, or no matching turns exit 0 with
+zero totals and `groups: []`. `turns` is an empty array if requested. Coverage
+remains unknown. Human non-grouped reports retain their stderr error and exit 1
+for missing logs or no matches. Invalid flags/windows and read errors exit 1
+with a stderr message, before JSON is produced.
 
 ---
 
 ## Filter semantics
 
-These apply to both human and `--json` output. Grouped reports use the shared
+These apply to both human and `--json` output. JSON and grouped reports use the shared
 `server/usage-query.js` read model: responseId copies are merged (ADR 0012),
 non-Anthropic sessions use one source (proxy if observed, otherwise import),
 and stored stale costs are repriced in memory through the existing pricing
 helper. These steps precede attribution and time filters. Grouped reports read the
 whole index before selection so even an out-of-window proxy observation fixes
 the Codex session's source. Rows with neither a model nor usage are markers and
-do not count as turns in grouped reports. Non-grouped reports preserve legacy
+do not count as turns in JSON or grouped reports. Non-grouped human reports preserve legacy
 rows, including cost-only rows, and apply time/cwd filters before repricing and
-responseId deduplication. No index files are modified.
+responseId deduplication; agentId/branch filters run after deduplication on the canonical row. No index files are modified.
 
 ### `--agent-id <id>` and `--branch <name>`
 
@@ -327,7 +301,7 @@ Groups sort by key ascending with null last. Counts and tokens are sums;
 `models` maps model IDs to turn counts. `firstTs`/`lastTs` are the earliest/latest
 selected timestamps as ISO strings, or null when unavailable. Reasoning uses
 recorded `thinkingTokens`, then output token details (reasoning/thinking), then
-`reasoning_output_tokens`; absent evidence contributes zero. Reasoning can be
+`reasoning_output_tokens`; absent evidence produces null when no row has evidence. Explicit zero remains zero; mixed groups sum known evidence and report `reasoningKnownTurns`. Import-only Codex rows fold reasoning into output and lack a separate reasoning count. Reasoning can be
 part of output tokens, so do not add it to output to calculate total tokens.
 Grouped costs retain numeric precision and use the existing aggregate ADR 0017
 `costFold`; consumers must render cost with this fold. Unpriced calls contribute
@@ -379,8 +353,7 @@ Lifts the `tools.top` cap from 7 to all tools (and shows all in human output).
 
 After printing, opens the dashboard to the resolved session — only valid when
 exactly one session matched. With **2+** matches it prints a stderr note and
-skips opening; with **0** matched sessions it silently does nothing. Either way
-it never changes the JSON. In [multi-cwd comparison mode](#2-multi-cwd-comparison-object)
+skips opening; with **0** matched sessions it silently does nothing. The flag is rejected with `--json` to preserve read-only execution. In [multi-cwd comparison mode](#2-multi-cwd-comparison-object)
 (`--cwd a,b`) `--open` is ignored entirely.
 
 ---
@@ -396,6 +369,12 @@ it never changes the JSON. In [multi-cwd comparison mode](#2-multi-cwd-compariso
 ---
 
 ## Changelog
+
+- **2026-11-01** — Added the [version 1 query contract](usage-query-contract.md),
+  offline JSON totals, optional turn summaries, provider summaries, marker counts,
+  unknown coverage and successful empty results. JSON uses canonical merged
+  attribution; unknown reasoning is null and explicit zero remains zero.
+  Missing `--last`, `--session`, and `--cwd` values error consistently.
 
 - **2026-11-01** — Added agentId/branch filters, absolute windows and aliases,
   and opt-in grouped text/JSON output. Default JSON shapes remain unchanged.

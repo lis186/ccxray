@@ -396,11 +396,11 @@ describe('usage parseArgs', () => {
     assert.match(r.stderr, /Invalid --last duration/);
   });
 
-  it('--last 0d matches nothing and exits 1', () => {
-    const r = cliErr('--json', '--last', '0d');
-    assert.equal(r.code, 1);
-    const err = JSON.parse(r.stdout);
-    assert.equal(err.error, 'no matching entries');
+  it('--last 0d matches nothing and returns empty JSON', () => {
+    const r = JSON.parse(cli('--json', '--last', '0d'));
+    assert.equal(r.schemaVersion, 1);
+    assert.equal(r.totals.turns, 0);
+    assert.deepEqual(r.groups, []);
   });
 
   it('--last 9999d includes all entries', () => {
@@ -409,11 +409,11 @@ describe('usage parseArgs', () => {
     assert.ok(r.meta.totalEntries > 0);
   });
 
-  it('--cwd with no match exits 1', () => {
-    const r = cliErr('--json', '--cwd', '/nonexistent/path/xyz');
-    assert.equal(r.code, 1);
-    const err = JSON.parse(r.stdout);
-    assert.equal(err.error, 'no matching entries');
+  it('--cwd with no match returns empty JSON', () => {
+    const r = JSON.parse(cli('--json', '--cwd', '/nonexistent/path/xyz'));
+    assert.equal(r.schemaVersion, 1);
+    assert.equal(r.totals.turns, 0);
+    assert.deepEqual(r.groups, []);
   });
 
   it('--cwd with broad prefix returns subset', () => {
@@ -477,29 +477,31 @@ describe('usage parseArgs', () => {
   });
 
   it('--cwd comma-separated matches union of paths', () => {
-    const r = cliErr('--json', '--cwd', '/no/match/a,/no/match/b');
-    assert.equal(r.code, 1);
-    // both paths tried, neither matched
-    const err = JSON.parse(r.stdout);
-    assert.equal(err.error, 'no matching entries');
+    const r = JSON.parse(cli('--json', '--cwd', '/no/match/a,/no/match/b'));
+    assert.equal(r.schemaVersion, 1);
+    assert.equal(r.totals.turns, 0);
+    assert.deepEqual(r.groups, []);
   });
 
   it('--cwd repeated flag accumulates', () => {
-    const r = cliErr('--json', '--cwd', '/no/match/a', '--cwd', '/no/match/b');
-    assert.equal(r.code, 1);
+    const r = JSON.parse(cli('--json', '--cwd', '/no/match/a', '--cwd', '/no/match/b'));
+    assert.equal(r.schemaVersion, 1);
+    assert.equal(r.totals.turns, 0);
+    assert.deepEqual(r.groups, []);
   });
 
-  it('--last and --cwd combine — no match exits 1', () => {
-    const r = cliErr('--json', '--last', '9999d', '--cwd', '/nonexistent');
-    assert.equal(r.code, 1);
+  it('--last and --cwd combine — no match returns empty JSON', () => {
+    const r = JSON.parse(cli('--json', '--last', '9999d', '--cwd', '/nonexistent'));
+    assert.equal(r.schemaVersion, 1);
+    assert.equal(r.totals.turns, 0);
+    assert.deepEqual(r.groups, []);
   });
 
-  it('empty result from --session + --cwd names both filters in the hint', () => {
-    const r = cliErr('--json', '--session', 'aaaaaaaa', '--cwd', '/no/such/dir');
-    assert.equal(r.code, 1);
-    const err = JSON.parse(r.stdout);
-    assert.match(err.hint, /--session/);
-    assert.match(err.hint, /--cwd/);
+  it('empty result from --session + --cwd returns empty JSON', () => {
+    const r = JSON.parse(cli('--json', '--session', 'aaaaaaaa', '--cwd', '/no/such/dir'));
+    assert.equal(r.schemaVersion, 1);
+    assert.equal(r.totals.turns, 0);
+    assert.deepEqual(r.groups, []);
   });
 
   it('--last and --session combine', () => {
@@ -597,14 +599,16 @@ describe('usage CLI', () => {
     assert.ok(r.cache);
   });
 
-  it('--json output is under 5KB', () => {
+  it('--json output is under 10KB', () => {
     const out = cli('--json');
-    assert.ok(Buffer.byteLength(out) < 5120, `JSON output ${Buffer.byteLength(out)} bytes exceeds 5KB`);
+    assert.ok(Buffer.byteLength(out) < 10240, `JSON output ${Buffer.byteLength(out)} bytes exceeds 10KB`);
   });
 
-  it('--session with nonexistent id exits 1', () => {
-    const r = cliErr('--session', 'nonexistent-session-id-xyz');
-    assert.equal(r.code, 1);
+  it('--session with nonexistent id returns empty JSON', () => {
+    const r = JSON.parse(cli('--session', 'nonexistent-session-id-xyz'));
+    assert.equal(r.schemaVersion, 1);
+    assert.equal(r.totals.turns, 0);
+    assert.deepEqual(r.groups, []);
   });
 
   it('--json --session combined works', () => {
@@ -625,18 +629,12 @@ describe('usage CLI', () => {
     assert.ok(out.includes('Cache'));
   });
 
-  it('bad CCXRAY_HOME exits 1 with JSON error', () => {
-    try {
-      execFileSync(process.execPath, ['server/index.js', 'usage', '--json'], {
-        env: { ...isolatedEnv(FIX_HOME), CCXRAY_HOME: '/tmp/no-such-ccxray-dir-' + process.pid },
-        timeout: 5000,
-      });
-      assert.fail('should have exited 1');
-    } catch (e) {
-      assert.equal(e.status, 1);
-      const r = JSON.parse(e.stdout.toString());
-      assert.equal(r.error, 'no logs found');
-    }
+  it('missing logs return an empty versioned JSON result', () => {
+    const missing = '/tmp/no-such-ccxray-dir-' + process.pid;
+    const out = execFileSync(process.execPath, ['server/index.js', 'usage', '--json'], {
+      env: { ...isolatedEnv(FIX_HOME), CCXRAY_HOME: missing, LOGS_DIR: path.join(missing, 'logs') }, timeout: 5000,
+    });
+    assert.equal(JSON.parse(out).totals.turns, 0);
   });
 });
 
@@ -649,7 +647,7 @@ describe('usage --json shape contract', () => {
   const sameKeys = (o, expected) => assert.deepEqual(Object.keys(o).sort(), [...expected].sort());
 
   it('single-scope object has exactly the documented top-level keys', () => {
-    sameKeys(JSON.parse(cli('--json')), ['meta', 'sessions', 'models', 'tools', 'skills', 'prompts', 'cache', 'gapCache']);
+    sameKeys(JSON.parse(cli('--json')), ['meta', 'sessions', 'models', 'tools', 'skills', 'prompts', 'cache', 'gapCache', 'schemaVersion', 'window', 'coverage', 'excludedMarkerRows', 'nullAgentIdTurns', 'nullBranchTurns', 'totals', 'providerTotals', 'by', 'groups']);
   });
 
   it('meta has the documented shape', () => {
@@ -768,7 +766,7 @@ describe('usage --json shape contract', () => {
 
   it('multi-cwd mode returns { projects, meta } with the documented row shape, cost-desc', () => {
     const out = JSON.parse(cli('--json', '--cwd', '/work,/other'));
-    sameKeys(out, ['projects', 'meta']);
+    sameKeys(out, ['projects', 'meta', 'schemaVersion', 'window', 'coverage', 'excludedMarkerRows', 'nullAgentIdTurns', 'nullBranchTurns', 'totals', 'providerTotals', 'by', 'groups']);
     // Retention is reported ONCE for the query, never duplicated per project.
     sameKeys(out.meta, ['retentionDays', 'retentionCutoff', 'retentionWarning']);
     assert.equal(typeof out.meta.retentionDays, 'number');
@@ -862,13 +860,11 @@ describe('usage --json shape contract', () => {
     }
   });
 
-  it('error object is exactly { error, hint }', () => {
-    const r = cliErr('--json', '--cwd', '/no/such/dir/at/all');
-    assert.equal(r.code, 1);
-    const err = JSON.parse(r.stdout);
-    sameKeys(err, ['error', 'hint']);
-    assert.equal(typeof err.error, 'string');
-    assert.equal(typeof err.hint, 'string');
+  it('empty JSON is a versioned successful result', () => {
+    const r = JSON.parse(cli('--json', '--cwd', '/no/such/dir/at/all'));
+    assert.equal(r.schemaVersion, 1);
+    assert.equal(r.totals.turns, 0);
+    assert.deepEqual(r.groups, []);
   });
 });
 
