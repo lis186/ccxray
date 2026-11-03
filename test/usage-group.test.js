@@ -27,9 +27,11 @@ async function fixture(rows, fn) {
 
 async function output(home, argv) {
   const oldHome = process.env.CCXRAY_HOME;
+  const oldLogsDir = process.env.LOGS_DIR;
   const oldLog = console.log, oldError = console.error, oldCode = process.exitCode;
   const lines = [], errors = [];
   process.env.CCXRAY_HOME = home;
+  process.env.LOGS_DIR = path.join(home, 'logs');
   console.log = s => lines.push(s);
   console.error = s => errors.push(s);
   process.exitCode = 0;
@@ -38,21 +40,59 @@ async function output(home, argv) {
     return { stdout: lines.join('\n'), stderr: errors.join('\n'), status: process.exitCode };
   } finally {
     console.log = oldLog; console.error = oldError; process.exitCode = oldCode;
+    if (oldLogsDir === undefined) delete process.env.LOGS_DIR;
+    else process.env.LOGS_DIR = oldLogsDir;
     if (oldHome === undefined) delete process.env.CCXRAY_HOME;
     else process.env.CCXRAY_HOME = oldHome;
   }
 }
 
 describe('usage grouping and attribution', () => {
-  it('preserves cost-only and undated legacy rows outside grouped reports', async () => {
+  it('filters legacy attribution after merging the canonical row', async () => {
+    await fixture([
+      turn('proxy', { responseId: 'dummy-merge', branch: null, usage: { input_tokens: 1 } }),
+      turn('import', { responseId: 'dummy-merge', imported: true, agentId: null }),
+    ], async ({ home }) => {
+      const plain = JSON.parse((await output(home, ['--json', '--agent-id', 'herdr:w1:p1'])).stdout);
+      const grouped = JSON.parse((await output(home, ['--json', '--agent-id', 'herdr:w1:p1', '--by', 'agent'])).stdout);
+      assert.equal(plain.cache.totalOutputTokens, grouped.groups[0].tokens.output);
+      assert.match((await output(home, ['--agent-id', 'herdr:w1:p1', '--branch', 'main'])).stdout, /hit rate: 33\.3%/);
+    });
+  });
+
+  it('excludes undated and nonfinite rows with only an upper time bound', async () => {
+    await fixture([turn('dated'), turn('undated', { receivedAt: null }),
+      turn('invalid', { receivedAt: 'invalid' })], async ({ home }) => {
+      const result = JSON.parse((await output(home, ['--json', '--until', iso(T + 1)])).stdout);
+      assert.equal(result.meta.totalEntries, 1);
+      assert.match((await output(home, ['--until', iso(T + 1)])).stdout, /1 entries/);
+    });
+  });
+
+  it('keeps zero reasoning evidence distinct from missing evidence', () => {
+    assert.equal(groupTurns([turn('missing', { usage: {} })], 'agent')[0].tokens.reasoning, null);
+    assert.equal(groupTurns([turn('zero', { thinkingTokens: 0 }), turn('missing', { usage: {} })], 'agent')[0].tokens.reasoning, 0);
+  });
+
+  it('rejects missing session, cwd and last values', () => {
+    for (const flag of ['--session', '--cwd', '--last']) {
+      assert.throws(() => parseArgs([flag]), /Missing value/);
+      assert.throws(() => parseArgs([flag, '--json']), /Missing value/);
+    }
+  });
+
+  it('preserves cost-only rows in text while JSON counts model calls', async () => {
     await fixture([
       turn('call'),
       { id: 'cost-only', receivedAt: T + 1, sessionId: 'legacy', cost: { cost: 2 } },
       { id: 'undated', sessionId: 'legacy', cost: { cost: 3 } },
     ], async ({ home }) => {
       const legacy = JSON.parse((await output(home, ['--json'])).stdout);
-      assert.equal(legacy.meta.totalCost, 6);
-      assert.equal(legacy.meta.totalEntries, 3);
+      assert.equal(legacy.meta.totalCost, 1);
+      assert.equal(legacy.meta.totalEntries, 1);
+      const text = (await output(home, [])).stdout;
+      assert.match(text, /3 entries/);
+      assert.match(text, /\$6\.00/);
       const grouped = JSON.parse((await output(home, ['--json', '--by', 'session'])).stdout);
       assert.deepEqual(grouped.groups.map(g => [g.key, g.turns, g.cost]), [['session-1', 1, 1]]);
     });
@@ -122,7 +162,7 @@ describe('usage grouping and attribution', () => {
   });
 
   it('parses grouped JSON and renders text with explicit null counts and confidence', async () => {
-    await fixture([turn('a'), turn('b', { agentId: null, branch: null, cost: null }), { id: 'marker', receivedAt: T }], async ({ home }) => {
+    await fixture([turn('a'), turn('b', { agentId: null, branch: null, cost: null, usage: { input_tokens: 1 } }), { id: 'marker', receivedAt: T }], async ({ home }) => {
       const json = await output(home, ['--json', '--by', 'branch']);
       assert.equal(json.status, 0);
       const result = JSON.parse(json.stdout);
@@ -134,6 +174,7 @@ describe('usage grouping and attribution', () => {
       assert.match(text, /\(null\): 1 turns · —/);
       assert.match(text, /Null agentId: 1 turns/);
       assert.match(text, /cacheWrite 30/);
+      assert.match(text, /reasoning unknown/);
     });
   });
 

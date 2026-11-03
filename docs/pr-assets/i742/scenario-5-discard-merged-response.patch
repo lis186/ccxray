@@ -1,0 +1,11 @@
+# Code commit: eb7c546f6ac3075650360d02969dab530e0e840e
+--- a/server/usage-query.js
++++ b/server/usage-query.js
+@@ -144,6 +144,7 @@
+     if (rootSet && !(e.cwd && rootSet.has(stripSlash(e.cwd)))) return false;
+     if (sessionSet && !sessionSet.has(e.sessionId)) return false;
+     if (agentSet && !agentSet.has(e.agentId ?? null)) return false;
++    if (e.sources?.length === 2) return false;
+     if (branchSet && !branchSet.has(e.branch ?? null)) return false;
+     return true;
+   });

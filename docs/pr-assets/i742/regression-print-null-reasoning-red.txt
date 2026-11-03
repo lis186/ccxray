@@ -1,0 +1,66 @@
+Code commit: eb7c546f6ac3075650360d02969dab530e0e840e
+Command: HOME=<fresh> CCXRAY_HOME=<fresh> LOGS_DIR=<fresh> GIT_CONFIG_GLOBAL=<fresh> CCXRAY_EXPORT_DISABLE=1 CCXRAY_NETWORK_GUARD_ENFORCE=1 node --require ./test/helpers/home-guard.js --require ./test/helpers/no-network.js --experimental-test-isolation=none --test --test-reporter=tap --test-concurrency=1 '--test-name-pattern=parses grouped JSON' test/usage-group.test.js
+Exit: 1
+TAP version 13
+# Subtest: usage grouping and attribution
+    # Subtest: parses grouped JSON and renders text with explicit null counts and confidence
+    not ok 1 - parses grouped JSON and renders text with explicit null counts and confidence
+      ---
+      duration_ms: 13.704375
+      type: 'test'
+      location: '<fixture>/tree/test/usage-group.test.js:164:3'
+      failureType: 'testCodeFailure'
+      error: |-
+        The input did not match the regular expression /reasoning unknown/. Input:
+        
+        'Usage by branch\n' +
+          'main: 1 turns · $1.00 · input 10 / cacheRead 20 / cacheWrite 30 / output 40 / reasoning 5\n' +
+          '  models {"dummy-model":1} · 2026-06-01T10:00:00.000Z → 2026-06-01T10:00:00.000Z\n' +
+          '(null): 1 turns · — · input 1 / cacheRead 0 / cacheWrite 0 / output 0 / reasoning null\n' +
+          '  models {"dummy-model":1} · 2026-06-01T10:00:00.000Z → 2026-06-01T10:00:00.000Z\n' +
+          'Null agentId: 1 turns\n' +
+          'Null branch: 1 turns\n' +
+          'Requested range reaches past the reliable retention window; older history may have been removed by retention, so totals are a LOWER BOUND.'
+        
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected:
+      actual: |-
+        Usage by branch
+        main: 1 turns · $1.00 · input 10 / cacheRead 20 / cacheWrite 30 / output 40 / reasoning 5
+          models {"dummy-model":1} · 2026-06-01T10:00:00.000Z → 2026-06-01T10:00:00.000Z
+        (null): 1 turns · — · input 1 / cacheRead 0 / cacheWrite 0 / output 0 / reasoning null
+          models {"dummy-model":1} · 2026-06-01T10:00:00.000Z → 2026-06-01T10:00:00.000Z
+        Null agentId: 1 turns
+        Null branch: 1 turns
+        Requested range reaches past the reliable retention window; older history may have been removed by retention, so totals are a LOWER BOUND.
+      operator: 'match'
+      stack: |-
+        <fixture>/tree/test/usage-group.test.js:177:14
+        process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+        async fixture (<fixture>/tree/test/usage-group.test.js:24:16)
+        async TestContext.<anonymous> (<fixture>/tree/test/usage-group.test.js:165:5)
+        async Test.run (node:internal/test_runner/test:1409:7)
+        async Promise.all (index 10)
+        async Suite.run (node:internal/test_runner/test:1905:7)
+        async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)
+      ...
+    1..1
+not ok 1 - usage grouping and attribution
+  ---
+  duration_ms: 14.208208
+  type: 'suite'
+  location: '<fixture>/tree/test/usage-group.test.js:50:1'
+  failureType: 'subtestsFailed'
+  error: '1 subtest failed'
+  code: 'ERR_TEST_FAILURE'
+  ...
+1..1
+# tests 1
+# suites 1
+# pass 0
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 29.586625

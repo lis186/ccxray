@@ -1,0 +1,36 @@
+{
+  "codeCommit": "eb7c546f6ac3075650360d02969dab530e0e840e",
+  "probes": [
+    {
+      "command": "HOME=<fresh> CCXRAY_HOME=<fresh> LOGS_DIR=<fresh> GIT_CONFIG_GLOBAL=<fresh> CCXRAY_EXPORT_DISABLE=1 node server/index.js usage --json --turns --agent-id run-demo --branch main",
+      "exit": 0,
+      "schemaVersion": 1,
+      "coverage": "unknown",
+      "sourceCoverage": {
+        "proxy": "observed",
+        "import": "observed"
+      },
+      "turns": 1,
+      "excludedMarkerRows": 0
+    },
+    {
+      "command": "HOME=<fresh> CCXRAY_HOME=<fresh> LOGS_DIR=<fresh> GIT_CONFIG_GLOBAL=<fresh> CCXRAY_EXPORT_DISABLE=1 node server/index.js usage --json --turns --agent-id missing --branch main",
+      "exit": 0,
+      "schemaVersion": 1,
+      "coverage": "unknown",
+      "sourceCoverage": {
+        "proxy": "not-observed",
+        "import": "not-observed"
+      },
+      "turns": 0,
+      "excludedMarkerRows": 0
+    }
+  ],
+  "before": {
+    ".ccxray/logs/index.ndjson": "f10c3c5cea8ea0def33abcf32408d3079dfe7e527e39e30bebc308ecbd5cc64d"
+  },
+  "after": {
+    ".ccxray/logs/index.ndjson": "f10c3c5cea8ea0def33abcf32408d3079dfe7e527e39e30bebc308ecbd5cc64d"
+  },
+  "unchanged": true
+}

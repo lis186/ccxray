@@ -4,7 +4,7 @@ How ccxray's test suite is run, and the hygiene rules every test must follow.
 
 ```bash
 npm test                          # All three groups, sequentially (requires Chrome)
-npm run test:unit                 # Unit tests, default Node file concurrency
+npm run test:unit                 # Unit tests, file concurrency 1
 npm run test:heavy                # Spawn-heavy / server e2e, file concurrency 1
 npm run test:browser              # Puppeteer e2e, file concurrency 1
 node scripts/run-tests.js all --list # Inspect group membership without running
@@ -615,3 +615,23 @@ T=$(mktemp -d); HOME=$T node scripts/run-tests.js heavy
 
 The test preload creates its own temporary CCXRAY_HOME when none is supplied;
 individual storage fixtures remain isolated as described above.
+
+Usage contract tests use dummy index rows only. `usage-contract.test.js` checks
+versioned summaries, deduplication, normalized Codex session totals (`test/fixtures/usage/codex-session.json`), markers,
+null identities and empty results. `usage-contract-purity.test.js` runs the
+query module with only a temporary HOME (unsetting CCXRAY_HOME and LOGS_DIR), compares
+all HOME file bytes before/after, and traps timers, writes, sockets and network
+calls across require and run, including filesystem metadata operations and child-process creation.
+The runner conservatively assigns it to the heavy lane because it imports
+`child_process` to trap spawning; the test itself spawns nothing. These tests
+never inspect the real home or contact a running hub. Selector fixtures in
+`usage.test.js` carry dummy model/usage evidence so they test model calls;
+cost-only marker exclusion is checked separately in `usage-group.test.js`.
+
+For environments that prohibit sockets, the runner accepts
+`--exclude <comma-separated test basenames>`. Each excluded file is printed;
+this does not change the default CI suite. Record exclusions as “not run in
+sandbox”, including indirect export-lock and setup-removal socket users.
+Usage contract scenarios 1–3 and 5 live in `usage-contract.test.js`; scenario 4
+is in `usage-contract-purity.test.js`. The version manifest pins stable fields,
+and source coverage never equates missing observations with zero usage.

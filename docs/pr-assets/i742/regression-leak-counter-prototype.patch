@@ -1,0 +1,12 @@
+# Code commit: eb7c546f6ac3075650360d02969dab530e0e840e
+--- a/server/usage-query.js
++++ b/server/usage-query.js
+@@ -213,7 +213,7 @@
+   out.readShare = denom ? out.tokens.cacheRead / denom : null;
+   // Count with null prototypes, then expose ordinary JSON-shaped objects.
+   // fromEntries preserves hostile names as own data properties.
+-  out.models = Object.fromEntries(Object.entries(out.models));
++
+   out.effort = Object.fromEntries(Object.entries(out.effort));
+   return out;
+ }

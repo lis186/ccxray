@@ -1,0 +1,25 @@
+{
+  "sessionId": "dummy-codex",
+  "sessionUsage": {
+    "input_tokens": 270,
+    "cached_input_tokens": 170,
+    "output_tokens": 30,
+    "reasoning_output_tokens": 16
+  },
+  "importedTurns": [
+    {
+      "id": "dummy-import-1",
+      "input_tokens": 40,
+      "cache_read_input_tokens": 80,
+      "cache_creation_input_tokens": 0,
+      "output_tokens": 17
+    },
+    {
+      "id": "dummy-import-2",
+      "input_tokens": 60,
+      "cache_read_input_tokens": 90,
+      "cache_creation_input_tokens": 0,
+      "output_tokens": 29
+    }
+  ]
+}

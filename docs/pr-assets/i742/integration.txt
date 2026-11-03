@@ -1,0 +1,10 @@
+{
+  "codeCommit": "eb7c546f6ac3075650360d02969dab530e0e840e",
+  "branch": "feat/742-usage-contract",
+  "localMain": "9b76d46ccb12c87356f3279a6af638e2fdb6f207",
+  "ancestorExitCodes": {
+    "9b76d46": 0,
+    "f668bf8": 0
+  },
+  "remoteRefresh": false
+}

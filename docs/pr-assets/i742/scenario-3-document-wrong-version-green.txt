@@ -1,0 +1,19 @@
+Code commit: eb7c546f6ac3075650360d02969dab530e0e840e
+Command: HOME=<fresh> CCXRAY_HOME=<fresh> LOGS_DIR=<fresh> GIT_CONFIG_GLOBAL=<fresh> CCXRAY_EXPORT_DISABLE=1 CCXRAY_NETWORK_GUARD_ENFORCE=1 node --require ./test/helpers/home-guard.js --require ./test/helpers/no-network.js --experimental-test-isolation=none --test --test-reporter=tap --test-concurrency=1 '--test-name-pattern=^Scenario 3:' test/usage-contract.test.js
+Exit: 0
+TAP version 13
+# Subtest: Scenario 3: documented schema and compatibility rules match version 1
+ok 1 - Scenario 3: documented schema and compatibility rules match version 1
+  ---
+  duration_ms: 0.894667
+  type: 'test'
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 1
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 14.3655

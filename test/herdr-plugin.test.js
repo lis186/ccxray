@@ -4231,7 +4231,10 @@ describe('Herdr plugin commands', () => {
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /ccxray Usage Summary/);
     assert.match(result.stdout, /1 turns across 1 sessions/);
-    assert.match(result.stdout, /Validate Herdr plugin/);
+    // usage --json query contract v1 (#742) returns sessions.topSessions[].title as null,
+    // so the summary names the top session by its short id only.
+    assert.match(result.stdout, /^- Top session: 11111111 \(1 turns, \$0\.12\)$/m);
+    assert.doesNotMatch(result.stdout, /Validate Herdr plugin/);
   });
 
   // Guards the pluginEnv() isolation: running this suite from inside a Herdr

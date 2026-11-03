@@ -10,6 +10,7 @@ const readline = require('readline');
 const { resolveLogsDir, stripSlash } = require('./paths');
 const { mergeByResponseId } = require('./store');
 const { repricedCost } = require('./reprice');
+const { normalizeStoredUsage } = require('./providers');
 
 // The proxy copy of a turn is stamped at request time and the imported copy at
 // the transcript's timestamp; they differ by seconds. Reading this far past each
@@ -155,8 +156,8 @@ function aggregate(turns) {
     cost: 0,
     // ADR 0017 fold; rendered through formatAggCostText, never as a bare number.
     costFold: { fallbackCost: 0, fallbackCount: 0, unknownCount: 0, count: 0 },
-    models: {},
-    effort: {},
+    models: Object.create(null),
+    effort: Object.create(null),
     durationMs: 0,
     durationEstimated: false,
     firstAt: null,
@@ -168,7 +169,7 @@ function aggregate(turns) {
     // records unbilled requests); it would only inflate the call count.
     if (!e.model && !e.usage) continue;
     out.calls++;
-    const u = e.usage || {};
+    const u = normalizeStoredUsage(e) || {};
     out.tokens.input += u.input_tokens || 0;
     out.tokens.output += u.output_tokens || 0;
     out.tokens.cacheRead += u.cache_read_input_tokens || 0;
@@ -210,6 +211,10 @@ function aggregate(turns) {
   }
   const denom = out.tokens.input + out.tokens.cacheRead + out.tokens.cacheWrite;
   out.readShare = denom ? out.tokens.cacheRead / denom : null;
+  // Count with null prototypes, then expose ordinary JSON-shaped objects.
+  // fromEntries preserves hostile names as own data properties.
+  out.models = Object.fromEntries(Object.entries(out.models));
+  out.effort = Object.fromEntries(Object.entries(out.effort));
   return out;
 }
 
@@ -226,16 +231,70 @@ function groupTurns(turns, by) {
     buckets.get(key).push(e);
   }
   return [...buckets].map(([key, rows]) => {
-    const a = aggregate(rows);
-    const reasoning = rows.reduce((sum, e) => sum + (e.thinkingTokens
-      ?? e.usage?.output_tokens_details?.reasoning_tokens
-      ?? e.usage?.output_tokens_details?.thinking_tokens
-      ?? e.usage?.reasoning_output_tokens ?? 0), 0);
-    return { key, turns: a.calls, tokens: { ...a.tokens, reasoning },
-      cost: a.cost, costFold: a.costFold, models: a.models,
-      firstTs: a.firstAt == null ? null : new Date(a.firstAt).toISOString(),
-      lastTs: a.lastAt == null ? null : new Date(a.lastAt).toISOString() };
+    return { key, ...summarizeTurns(rows) };
   }).sort((a, b) => a.key === b.key ? 0 : a.key == null ? 1 : b.key == null ? -1 : a.key < b.key ? -1 : 1);
+}
+
+function reasoningTokens(e) {
+  const value = e.thinkingTokens
+    ?? e.usage?.output_tokens_details?.reasoning_tokens
+    ?? e.usage?.output_tokens_details?.thinking_tokens
+    ?? e.usage?.reasoning_output_tokens;
+  return Number.isFinite(value) ? value : null;
+}
+
+function summarizeTurns(rows) {
+  const a = aggregate(rows);
+  const evidence = rows.filter(e => e.model || e.usage).map(reasoningTokens).filter(n => n != null);
+  return { turns: a.calls,
+    tokens: { ...a.tokens, reasoning: evidence.length ? evidence.reduce((sum, n) => sum + n, 0) : null },
+    reasoningKnownTurns: evidence.length,
+    cost: a.cost, costFold: a.costFold, models: Object.fromEntries(Object.entries(a.models)),
+    firstTs: a.firstAt == null ? null : new Date(a.firstAt).toISOString(),
+    lastTs: a.lastAt == null ? null : new Date(a.lastAt).toISOString() };
+}
+
+// Allowlisted summaries only: never serialize an index row or request/response body.
+// rows have already been merged, source-selected and filtered by the caller.
+function usageContract(rows, { from = null, to = null, by = null, turns = false } = {}) {
+  const calls = rows.filter(e => e.model || e.usage);
+  const providers = new Map();
+  for (const e of calls) {
+    const provider = e.provider || 'anthropic';
+    if (!providers.has(provider)) providers.set(provider, []);
+    providers.get(provider).push(e);
+  }
+  const iso = n => n == null ? null : new Date(n).toISOString();
+  return {
+    schemaVersion: 1,
+    window: { from: iso(from), to: iso(to) },
+    // hub.json is ephemeral, not a historical recording ledger. Session markers
+    // prove a point observation, not continuous recording across a query window.
+    coverage: 'unknown',
+    sourceCoverage: Object.fromEntries(['proxy', 'import'].map(source => [source,
+      calls.some(e => (e.sources || [e.imported ? 'import' : 'proxy']).includes(source))
+        ? 'observed' : 'not-observed'])),
+    excludedMarkerRows: rows.length - calls.length,
+    nullAgentIdTurns: calls.filter(e => e.agentId == null).length,
+    nullBranchTurns: calls.filter(e => e.branch == null).length,
+    totals: summarizeTurns(calls),
+    providerTotals: Object.fromEntries([...providers].sort(([a], [b]) => a.localeCompare(b))
+      .map(([provider, entries]) => [provider, summarizeTurns(entries)])),
+    by,
+    groups: by ? groupTurns(calls, by) : [],
+    ...(turns ? { turns: calls.map(e => {
+      const a = summarizeTurns([e]);
+      const priced = repricedCost(e);
+      const costConfidence = a.costFold.unknownCount ? 'unknown'
+        : a.costFold.fallbackCount ? 'fallback'
+        : ['exact', 'prefix'].includes(priced?.confidence) ? priced.confidence : 'legacy';
+      return { id: e.id ?? null, sessionId: e.sessionId ?? null,
+        agentId: e.agentId ?? null, branch: e.branch ?? null, cwd: e.cwd ?? null,
+        provider: e.provider || 'anthropic', model: e.model ?? null,
+        receivedAt: receivedAt(e), tokens: a.tokens, cost: a.cost, costConfidence, costFold: a.costFold,
+        sources: e.sources || [e.imported ? 'import' : 'proxy'] };
+    }).sort((a, b) => a.receivedAt - b.receivedAt || String(a.id).localeCompare(String(b.id))) } : {}),
+  };
 }
 
 async function query({ roots, from, to, sessions, agentIds, branches } = {}, { logsDir } = {}) {
@@ -255,5 +314,7 @@ module.exports = {
   selectTurns,
   aggregate,
   groupTurns,
+  summarizeTurns,
+  usageContract,
   query,
 };

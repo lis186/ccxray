@@ -1,0 +1,12 @@
+# Code commit: eb7c546f6ac3075650360d02969dab530e0e840e
+--- a/server/usage-query.js
++++ b/server/usage-query.js
+@@ -247,7 +247,7 @@
+   const a = aggregate(rows);
+   const evidence = rows.filter(e => e.model || e.usage).map(reasoningTokens).filter(n => n != null);
+   return { turns: a.calls,
+-    tokens: { ...a.tokens, reasoning: evidence.length ? evidence.reduce((sum, n) => sum + n, 0) : null },
++    tokens: { ...a.tokens, reasoning: evidence.length ? evidence.reduce((sum, n) => sum + n, 0) : 0 },
+     reasoningKnownTurns: evidence.length,
+     cost: a.cost, costFold: a.costFold, models: Object.fromEntries(Object.entries(a.models)),
+     firstTs: a.firstAt == null ? null : new Date(a.firstAt).toISOString(),

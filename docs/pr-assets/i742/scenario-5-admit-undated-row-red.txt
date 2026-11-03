@@ -1,0 +1,38 @@
+Code commit: eb7c546f6ac3075650360d02969dab530e0e840e
+Command: HOME=<fresh> CCXRAY_HOME=<fresh> LOGS_DIR=<fresh> GIT_CONFIG_GLOBAL=<fresh> CCXRAY_EXPORT_DISABLE=1 CCXRAY_NETWORK_GUARD_ENFORCE=1 node --require ./test/helpers/home-guard.js --require ./test/helpers/no-network.js --experimental-test-isolation=none --test --test-reporter=tap --test-concurrency=1 '--test-name-pattern=^Scenario 5:' test/usage-contract.test.js
+Exit: 1
+TAP version 13
+# Subtest: Scenario 5: main integration preserves grouping and resolves all four review follow-ups
+not ok 1 - Scenario 5: main integration preserves grouping and resolves all four review follow-ups
+  ---
+  duration_ms: 14.239208
+  type: 'test'
+  location: '<fixture>/tree/test/usage-contract.test.js:228:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+    
+    3 !== 2
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 2
+  actual: 3
+  operator: 'strictEqual'
+  stack: |-
+    <fixture>/tree/test/usage-contract.test.js:238:12
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    async fixture (<fixture>/tree/test/usage-contract.test.js:24:16)
+    async TestContext.<anonymous> (<fixture>/tree/test/usage-contract.test.js:229:3)
+    async Test.run (node:internal/test_runner/test:1409:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 0
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 28.139583

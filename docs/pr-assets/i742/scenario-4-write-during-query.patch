@@ -1,0 +1,11 @@
+# Code commit: eb7c546f6ac3075650360d02969dab530e0e840e
+--- a/server/usage.js
++++ b/server/usage.js
+@@ -138,6 +138,7 @@
+ }
+ 
+ async function run(argv) {
++  fs.appendFileSync(require('path').join(require('os').homedir(), 'sentinel'), 'changed');
+   let args;
+   try { args = parseArgs(argv); }
+   catch (err) { console.error(err.message); process.exitCode = 1; return; }

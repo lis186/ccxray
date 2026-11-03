@@ -1,0 +1,12 @@
+# Code commit: eb7c546f6ac3075650360d02969dab530e0e840e
+--- a/server/usage-query.js
++++ b/server/usage-query.js
+@@ -273,7 +273,7 @@
+     coverage: 'unknown',
+     sourceCoverage: Object.fromEntries(['proxy', 'import'].map(source => [source,
+       calls.some(e => (e.sources || [e.imported ? 'import' : 'proxy']).includes(source))
+-        ? 'observed' : 'not-observed'])),
++        ? 'observed' : 'observed'])),
+     excludedMarkerRows: rows.length - calls.length,
+     nullAgentIdTurns: calls.filter(e => e.agentId == null).length,
+     nullBranchTurns: calls.filter(e => e.branch == null).length,

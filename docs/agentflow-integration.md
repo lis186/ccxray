@@ -4,6 +4,10 @@
 - Date: 2026-10-06
 - Related: PR #637 (subagent import, proxy cwd, 1-hour cache pricing, indexed effort), #639 (CLI flags), #640 (live proxy cwd), #641, ADR 0012 (responseId read-time merge), ADR 0017 (aggregate cost confidence)
 
+External usage consumers should use the [versioned read-only usage query contract](usage-query-contract.md).
+`index.ndjson` is internal storage, not a consumer API. The contract documents
+canonical merge/source selection, provider token semantics, and unknown recording coverage.
+
 ## Goal
 
 [agentflow](https://github.com/agfnow/agentflow) keeps an AI-assisted project's history in a notebook (`.agentflow/devlog.md`). This integration answers one question for every step recorded there: **how many tokens it used, which models, at what reasoning effort, how long it took, and what it cost.**

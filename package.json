@@ -45,6 +45,7 @@
     "docs/export-onboarding.md",
     "docs/agentflow-report.md",
     "docs/usage.md",
+    "docs/usage-query-contract.md",
     "LICENSE"
   ],
   "type": "commonjs",

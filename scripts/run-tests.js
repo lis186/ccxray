@@ -16,13 +16,24 @@ for (const name of fs.readdirSync(path.join(root, 'test')).sort()) {
 }
 
 const mode = process.argv[2] || 'all';
+// Explicit exclusions let restricted environments report unavailable fixtures
+// without weakening the default suite used by CI.
+const excludeAt = process.argv.indexOf('--exclude');
+const excluded = new Set(excludeAt < 0 ? [] : (process.argv[excludeAt + 1] || '').split(',').filter(Boolean));
+if (excludeAt >= 0 && !excluded.size) throw new Error('--exclude requires comma-separated test basenames');
+for (const name of excluded) {
+  if (!Object.values(groups).flat().includes(`test/${name}`)) throw new Error(`Unknown excluded test: ${name}`);
+}
 if (mode !== 'all' && !Object.hasOwn(groups, mode)) {
-  console.error('Usage: node scripts/run-tests.js [all|unit|heavy|browser] [--list]');
+  console.error('Usage: node scripts/run-tests.js [all|unit|heavy|browser] [--list] [--exclude names]');
   process.exit(1);
 }
 let failed = false;
 for (const group of mode === 'all' ? Object.keys(groups) : [mode]) {
-  const files = groups[group];
+  const files = groups[group].filter(file => !excluded.has(path.basename(file)));
+  for (const file of groups[group].filter(file => excluded.has(path.basename(file)))) {
+    console.log(`Excluded by request: ${file}`);
+  }
   console.log(`${group}: ${files.length} test files`);
   if (process.argv.includes('--list')) {
     console.log(files.join('\n'));
@@ -34,7 +45,7 @@ for (const group of mode === 'all' ? Object.keys(groups) : [mode]) {
     // Unit lane must not touch the network (#717); loopback and unix sockets stay allowed.
     ...(group === 'unit' ? ['--require', './test/helpers/no-network.js'] : []),
     '--test',
-    ...(group === 'unit' ? [] : ['--test-concurrency=1']), ...files,
+    '--test-concurrency=1', ...files,
   ], {
     cwd: root,
     // Enforce: a blocked outbound attempt fails the test process even if the code catches the throw.
