@@ -88,9 +88,11 @@ describe('storage adapter: gzip round-trip (#776)', () => {
     assert.equal(await storage.readShared('sys_i.json'), '"first"');
   });
 
-  it('an old build cannot parse a gzip file (fail-safe, D1)', async () => {
+  it('a plain-JSON reader cannot parse a gzip file (older builds see unreadable text, not a clean miss)', async () => {
     await storage.write(ID(1), '_req.json', body());
-    assert.throws(() => JSON.parse(raw(ID(1) + '_req.json').toString('utf8')));
+    const asOldBuildReads = fs.readFileSync(path.join(dir, ID(1) + '_req.json'), 'utf8');
+    assert.throws(() => JSON.parse(asOldBuildReads));
+    assert.ok(asOldBuildReads.includes('\ufffd') || asOldBuildReads.charCodeAt(0) === 0x1f, 'mojibake, as older response readers would surface');
   });
 });
 
@@ -113,7 +115,7 @@ function legacyHome() {
   return files;
 }
 
-const quiet = { log: () => {} };
+const quiet = { log: () => {}, liveServerCheck: async () => null };
 
 describe('migrate-logs (#776)', () => {
   it('--apply converts every kind and each file decompresses byte-identical', async () => {
@@ -159,15 +161,15 @@ describe('migrate-logs (#776)', () => {
     assert.equal(again.skippedGzip, Object.keys(files).length);
   });
 
-  it('pauses when free space < reserve + 2 × file size, largest file first, and resumes later', async () => {
+  it('pauses when free space < reserve + the actual compressed tmp size, largest first, and resumes later', async () => {
     const files = legacyHome();
-    const sizes = Object.entries(files).map(([p, b]) => [p, b.length]).sort((a, b) => b[1] - a[1]);
-    const [biggest, biggestSize] = sizes[0];
-    const calls = [];
-    const r = await migrateLogs({
-      apply: true, storage, ...quiet, reserveBytes: 1000,
-      freeBytes: () => { calls.push(1); return calls.length === 1 ? 1000 + 2 * biggestSize : 1000 + 2 * sizes[1][1] - 1; },
-    });
+    const sizes = Object.entries(files).map(([p, b]) => [p, b.length, zlib.gzipSync(b, { level: 6 }).length]).sort((a, b) => b[1] - a[1]);
+    const [biggest, , gz0] = sizes[0];
+    const gz1 = sizes[1][2];
+    const reserve = 1000;
+    const seq = [Infinity, reserve + gz0, reserve + gz1 - 1]; // initial probe, file 1 (exact fit), file 2 (one byte short)
+    let n = 0;
+    const r = await migrateLogs({ apply: true, storage, ...quiet, reserveBytes: reserve, freeBytes: () => seq[Math.min(n++, seq.length - 1)] });
     assert.equal(r.converted, 1, 'only the largest file fit');
     assert.equal(r.paused, true);
     assert.ok(isGzip(fs.readFileSync(biggest)), 'largest-first');
@@ -175,6 +177,35 @@ describe('migrate-logs (#776)', () => {
     const resumed = await migrateLogs({ apply: true, storage, ...quiet, freeBytes: () => Infinity });
     assert.equal(resumed.paused, false);
     for (const [p, original] of Object.entries(files)) assert.ok(zlib.gunzipSync(fs.readFileSync(p)).equals(original));
+  });
+
+  it('refuses --apply (fail closed) when free space cannot be determined', async () => {
+    const files = legacyHome();
+    for (const freeBytes of [() => null, () => undefined, () => { throw new Error('no statfs'); }]) {
+      const logs = [];
+      const r = await migrateLogs({ apply: true, storage, liveServerCheck: async () => null, log: m => logs.push(m), freeBytes });
+      assert.equal(r.refused, true);
+      assert.equal(r.reason, 'free-space-unknown');
+      assert.match(logs.join('\n'), /cannot determine free disk space/);
+    }
+    for (const [p, original] of Object.entries(files)) assert.ok(fs.readFileSync(p).equals(original));
+    assert.ok(!fs.existsSync(path.join(dir, '.index-maintenance.lock')));
+  });
+
+  it('skip checks run before the space check: a huge gzip / incompressible first file cannot pause the run', async () => {
+    const big = path.join(dir, ID(1) + '_res.json');
+    fs.writeFileSync(big, zlib.gzipSync(Buffer.alloc(200000, 'a'))); age(big);          // already gzip, largest
+    const rand = path.join(dir, ID(2) + '_res.json');
+    fs.writeFileSync(rand, require('crypto').randomBytes(100000)); age(rand);           // incompressible
+    const small = path.join(dir, ID(3) + '_req.json');
+    fs.writeFileSync(small, body()); age(small);
+    const smallGz = zlib.gzipSync(fs.readFileSync(small), { level: 6 }).length;
+    const r = await migrateLogs({ apply: true, storage, ...quiet, reserveBytes: 0, freeBytes: () => smallGz }); // exactly enough for the small file only
+    assert.equal(r.paused, false);
+    assert.equal(r.skippedGzip, 1);
+    assert.equal(r.skippedNoGain, 1);
+    assert.equal(r.converted, 1);
+    assert.ok(isGzip(fs.readFileSync(small)));
   });
 
   it('skips files younger than 10 minutes', async () => {
@@ -215,6 +246,57 @@ describe('migrate-logs (#776)', () => {
     assert.equal((await storage.statShared('sys_dddddddddddd.json')).mtime.toISOString(), OLD.toISOString());
   });
 
+  it('CAS includes dev: a fingerprint whose device changed is not overwritten', async () => {
+    const p = path.join(dir, ID(1) + '_req.json');
+    fs.writeFileSync(p, body()); age(p);
+    const original = fs.readFileSync(p);
+    const r = await migrateLogs({ apply: true, storage, ...quiet, statSync: f => ({ ...fs.statSync(f), dev: fs.statSync(f).dev + 1 }) });
+    assert.equal(r.changed, 1);
+    assert.equal(r.converted, 0);
+    assert.ok(fs.readFileSync(p).equals(original));
+    assert.deepEqual(fs.readdirSync(dir).filter(n => n.endsWith('.migrate-tmp')), []);
+  });
+
+  it('keeps a non-0600 mode under a restrictive umask (fchmod before rename)', async () => {
+    const p = path.join(dir, ID(1) + '_req.json');
+    fs.writeFileSync(p, body()); fs.chmodSync(p, 0o660); age(p);
+    const prev = process.umask(0o077);
+    try { await migrateLogs({ apply: true, storage, ...quiet }); } finally { process.umask(prev); }
+    assert.ok(isGzip(fs.readFileSync(p)));
+    assert.equal(fs.statSync(p).mode & 0o777, 0o660);
+  });
+
+  it('--apply refuses while a live server is detected, leaving files and the lock untouched', async () => {
+    const files = legacyHome();
+    const logs = [];
+    const r = await migrateLogs({ apply: true, storage, log: m => logs.push(m), liveServerCheck: async () => 'a ccxray hub is running (pid 1)' });
+    assert.equal(r.refused, true);
+    assert.equal(r.reason, 'live-server');
+    assert.match(logs.join('\n'), /Refusing to migrate: a ccxray hub is running/);
+    for (const [p, original] of Object.entries(files)) assert.ok(fs.readFileSync(p).equals(original));
+    assert.ok(!fs.existsSync(path.join(dir, '.index-maintenance.lock')));
+    // dry-run is always allowed, even with a live server
+    const dry = await migrateLogs({ apply: false, storage, log: () => {}, liveServerCheck: async () => 'live' });
+    assert.equal(dry.converted, Object.keys(files).length);
+  });
+
+  it('dry-run is read-only: no storage.init(), so a legacy-only home is not created or moved', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-dry-'));
+    try {
+      const legacy = path.join(root, 'legacy'); fs.mkdirSync(legacy);
+      fs.writeFileSync(path.join(legacy, 'index.ndjson'), '{"id":"x"}\n');
+      fs.writeFileSync(path.join(legacy, ID(1) + '_req.json'), body());
+      const logsDir = path.join(root, 'logs');
+      const st = createLocalStorage(logsDir, { legacyDir: legacy });
+      for (const apply of [false, true]) {
+        const r = await migrateLogs({ apply, storage: st, ...quiet });
+        assert.equal(r.converted, 0);
+        assert.ok(!fs.existsSync(logsDir), `logs dir not created (apply=${apply})`);
+        assert.ok(fs.existsSync(path.join(legacy, ID(1) + '_req.json')), 'legacy file not moved');
+      }
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('does not convert a file that gzip would not shrink', async () => {
     const p = path.join(dir, ID(7) + '_res.json');
     fs.writeFileSync(p, '[]'); age(p);
@@ -239,11 +321,15 @@ describe('migrate-logs (#776)', () => {
 });
 
 describe('ccxray migrate-logs CLI (#776)', () => {
+  const { startProxy, freePort } = require('./helpers/proxy-fixture');
+  beforeEach(async () => { proxyPort = await freePort(); extraEnv = {}; });
+  // PROXY_PORT points at a free port so the live-server probe never meets a real ccxray on 5577.
+  let proxyPort, extraEnv = {};
   const run = (home, ...args) => {
     try {
       return { code: 0, out: execFileSync(process.execPath, ['server/index.js', 'migrate-logs', ...args], {
         cwd: path.join(__dirname, '..'), timeout: 15000, encoding: 'utf8',
-        env: { ...process.env, HOME: home, CCXRAY_HOME: home, LOGS_DIR: path.join(home, 'logs') },
+        env: { ...process.env, HOME: home, CCXRAY_HOME: home, LOGS_DIR: path.join(home, 'logs'), PROXY_PORT: String(proxyPort), ...extraEnv },
       }) };
     } catch (e) { return { code: e.status, out: String(e.stdout) + String(e.stderr) }; }
   };
@@ -266,6 +352,25 @@ describe('ccxray migrate-logs CLI (#776)', () => {
     assert.equal(applied.code, 0, applied.out);
     assert.match(applied.out, /Converted 1 file/);
     assert.ok(zlib.gunzipSync(fs.readFileSync(f)).equals(original));
+  });
+});
+
+describe('ccxray migrate-logs vs a live server (#776)', () => {
+  it('--apply refuses against a real running proxy and converts nothing', async () => {
+    const { startProxy } = require('./helpers/proxy-fixture');
+    const fx = await startProxy();
+    try {
+      await fx.post({ model: 'claude-sonnet-4-6', max_tokens: 5, messages: [{ role: 'user', content: 'hi' }] });
+      const f = path.join(fx.logs, ID(1) + '_req.json');
+      fs.writeFileSync(f, body()); age(f);
+      const run = (...a) => { try { return { code: 0, out: execFileSync(process.execPath, ['server/index.js', 'migrate-logs', ...a], { cwd: path.join(__dirname, '..'), encoding: 'utf8', timeout: 15000,
+        env: { ...process.env, HOME: fx.home, CCXRAY_HOME: fx.home, LOGS_DIR: fx.logs, PROXY_PORT: String(fx.port) } }) }; } catch (e) { return { code: e.status, out: String(e.stdout) + String(e.stderr) }; } };
+      const apply = run('--apply');
+      assert.equal(apply.code, 1, apply.out);
+      assert.match(apply.out, /Refusing to migrate: a ccxray/);
+      assert.ok(!isGzip(fs.readFileSync(f)));
+      assert.equal(run('--dry-run').code, 0);
+    } finally { await fx.stop(); }
   });
 });
 

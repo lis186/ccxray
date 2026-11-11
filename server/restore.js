@@ -16,6 +16,7 @@ const { broadcastEntryUpdate } = require('./sse-broadcast');
 const sessionIdx = require('./session-index');
 const { assessWeather } = require('../public/weather');
 const { retentionCutoffDate } = require('./retention');
+const { maintenanceLockHolder } = require('./maintenance-lock');
 
 
 // #211: model marker ("The exact model ID is ...") from the persisted system
@@ -670,6 +671,15 @@ function sweepOrphanedPruneTmpFiles(logsDir, kill = process.kill) {
 // `retentionDays` overrides config for an enrolled export home, whose retention was
 // fixed at enrollment and must not shrink just because this process lacks that env.
 async function pruneLogs({ retentionDays = config.LOG_RETENTION_DAYS } = {}) {
+  // #776: another process (migrate-logs --apply, rebuild-index --apply) holds the
+  // ADR 0021 maintenance lock and is rewriting log files / the index. Pruning or
+  // rewriting underneath it could resurrect a deleted file or drop its output, so
+  // skip this startup sweep; the next start prunes as usual.
+  const holder = maintenanceLockHolder(config.storage);
+  if (holder) {
+    console.log(`\x1b[33m[ccxray] Skipping prune: index maintenance (${holder.op || 'unknown'}${holder.pid ? `, pid ${holder.pid}` : ''}) holds the maintenance lock.\x1b[0m`);
+    return;
+  }
   // The sweep precedes the exclusive storage lock; a second concurrent call in
   // this process could remove the first call's temp. That is unreachable from
   // the single startup call site in server/index.js:1261.
