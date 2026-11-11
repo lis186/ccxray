@@ -25,6 +25,7 @@ Commands:
   open                Open dashboard in browser
   import              Import transcripts (--once or --target-transcript)
   rebuild-index       Rebuild index.ndjson from log files
+  migrate-logs        Gzip existing log files, one-way (--dry-run | --apply)
   setup               Install the Claude shell wrapper (export opt-in: --export)
   setup-statusline    Configure Claude Code status line
   hud on|off|status   Turn the Context HUD on or off, or show it (off by default)
@@ -218,6 +219,7 @@ const unknownCommand = cliCommand
   && cliCommand !== 'open'
   && cliCommand !== 'secret'
   && cliCommand !== 'rebuild-index'
+  && cliCommand !== 'migrate-logs'
   && cliCommand !== 'import'
   && cliCommand !== 'setup'
   && cliCommand !== 'setup-statusline'
@@ -351,6 +353,17 @@ if (process.argv[2] === 'rebuild-index') {
       .then(r => process.exit(r && r.refused ? 1 : 0))
       .catch(err => { console.error(`rebuild-index failed: ${err.message}`); process.exit(1); });
   }
+  return;
+}
+
+// ── "migrate-logs [--dry-run|--apply]" — early exit, no server/hub boot ──
+// One-way gzip of pre-existing plain log files (#776). Dry-run by default.
+if (process.argv[2] === 'migrate-logs') {
+  const dry = process.argv.includes('--dry-run'), apply = process.argv.includes('--apply');
+  if (dry && apply) { console.error('migrate-logs: --dry-run and --apply are mutually exclusive'); process.exit(1); }
+  require('./migrate-logs').migrateLogs({ apply })
+    .then(r => process.exit(r && (r.refused || r.paused || r.failed) ? 1 : 0))
+    .catch(err => { console.error(`migrate-logs failed: ${err.message}`); process.exit(1); });
   return;
 }
 

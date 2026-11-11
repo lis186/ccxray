@@ -755,4 +755,4 @@ async function reimportEntries({ storage = config.storage, log = console.log } =
   }
 }
 
-module.exports = { rebuildIndex, reimportEntries, reconstructReq, tsFromId, nearestPrecedingSession, indexFingerprint };
+module.exports = { rebuildIndex, reimportEntries, reconstructReq, tsFromId, nearestPrecedingSession, indexFingerprint, acquireMaintenanceLock, releaseMaintenanceLock };
