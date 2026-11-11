@@ -175,7 +175,7 @@ const { readSettings, hudStatusText } = require('./settings');
 const { broadcastSessionStatus, broadcastPendingRequest } = require('./sse-broadcast');
 const { dispatch, mintAutoOpenUrl, formatAutoOpenUrl, verifyDashboardWrite } = require('./auth');
 const { failRequest } = require('./routes/route-errors');
-const { findSharedPrefix } = require('./delta-helpers');
+const { findSharedPrefix, shouldForceFullRecord } = require('./delta-helpers');
 const { extractPromptAgentType } = require('./system-prompt');
 const providers = require('./providers');
 const { handleWebSocketUpgrade, drainWebSocketProxy } = require('./ws-proxy');
@@ -628,8 +628,11 @@ function handleHttpRequest(clientReq, clientRes) {
       } else if (peekSid && config.storage.supportsDelta) {
         const prev = sessionLastReq.get(peekSid);
         const sharedCount = prev ? findSharedPrefix(prev.messages, currMessages) : 0;
-        const forceFull = !prev ||
-          (config.DELTA_SNAPSHOT_N > 0 && (prev.deltaCount || 0) >= config.DELTA_SNAPSHOT_N);
+        // INVARIANT(#774): never start a delta whose ancestor retention prune could
+        // reach — see deltaAncestorTooOld (delta-helpers) and the note at pruneLogs.
+        const forceFull = shouldForceFullRecord(prev, {
+          snapshotN: config.DELTA_SNAPSHOT_N, retentionDays: config.LOG_RETENTION_DAYS,
+        });
 
         const meta = peekSid ? { session_id: peekSid } : undefined;
         if (!forceFull && sharedCount >= 2) {

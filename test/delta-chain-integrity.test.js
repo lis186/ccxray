@@ -20,7 +20,9 @@ const store = require('../server/store');
 const { createLocalStorage } = require('../server/storage/local');
 const { loadEntryReqRes, pruneLogs, findChainChildren, sweepOrphanedPruneTmpFiles } = require('../server/restore');
 const { reconstructReq } = require('../server/rebuild-index');
-const { resolveChainMessages, spliceDelta } = require('../server/delta-helpers');
+const {
+  resolveChainMessages, spliceDelta, classifyReqHead, deltaAncestorTooOld, shouldForceFullRecord,
+} = require('../server/delta-helpers');
 
 const msg = (role, text) => ({ role, content: text });
 const ANCHOR = [msg('user', 'a'), msg('assistant', 'b'), msg('user', 'c')];
@@ -124,6 +126,39 @@ describe('#774 delta chain integrity', () => {
     });
   });
 
+  describe('lazy load hardening', () => {
+    it('does not hang on an in-memory prevId cycle; returns incomplete', async () => {
+      await writeReq('cyc-a', rec({ prevId: 'cyc-b', msgOffset: 1, messages: D1 }));
+      await writeReq('cyc-b', rec({ prevId: 'cyc-a', msgOffset: 1, messages: D2 }));
+      const a = inMemory('cyc-a');
+      inMemory('cyc-b');
+      const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('loadEntryReqRes hung on a cycle')), 3000));
+      await Promise.race([loadEntryReqRes(a), timeout]);
+      assert.ok(a.req.incomplete, 'a cycle surfaces as an incomplete chain');
+    });
+
+    it('marks incomplete when the delta offset leaves a gap past the parent', async () => {
+      await writeReq('gap-0', rec({ messages: ANCHOR })); // covers absolute 0..2
+      await writeReq('gap-1', rec({ prevId: 'gap-0', msgOffset: 10, messages: D1 }));
+      const entry = coldEntry('gap-1');
+      await loadEntryReqRes(entry);
+      assert.deepEqual(entry.req.messages, D1, 'non-contiguous parent history is not spliced');
+      assert.deepEqual(entry.req.incomplete, { reason: 'missing-ancestor', prevId: 'gap-0', msgOffset: 10 });
+    });
+
+    it('marks incomplete for a corrupt (negative / non-integer) msgOffset', async () => {
+      await writeReq('bad-0', rec({ messages: ANCHOR }));
+      await writeReq('bad-1', rec({ prevId: 'bad-0', msgOffset: -2, messages: D1 }));
+      await writeReq('bad-2', rec({ prevId: 'bad-0', msgOffset: '3', messages: D1 }));
+      for (const id of ['bad-1', 'bad-2']) {
+        const entry = coldEntry(id);
+        await loadEntryReqRes(entry);
+        assert.ok(entry.req.incomplete, id);
+        assert.deepEqual(entry.req.messages, D1, id);
+      }
+    });
+  });
+
   describe('resolveChainMessages', () => {
     it('returns null when the id itself is unreadable', async () => {
       assert.equal(await resolveChainMessages(storage, 'nope'), null);
@@ -155,6 +190,24 @@ describe('#774 delta chain integrity', () => {
       fs.unlinkSync(path.join(tmpDir, 'm-0_req.json')); // cache must answer without disk
       const b = await resolveChainMessages(storage, 'm-1', { cache });
       assert.deepEqual(b, a);
+    });
+
+    it('spliceDelta rejects an offset beyond parent coverage, below its base, or corrupt', () => {
+      const parent = { messages: [msg('user', 'x'), msg('assistant', 'y')], base: 3, missing: null };
+      const own = [msg('user', 'z')];
+      const gap = spliceDelta(parent, { prevId: 'p', msgOffset: 9, messages: own });
+      assert.deepEqual(gap, { messages: own, base: 9, missing: { prevId: 'p', msgOffset: 9 } });
+      const below = spliceDelta(parent, { prevId: 'p', msgOffset: 1, messages: own });
+      assert.equal(below.base, 1);
+      assert.ok(below.missing);
+      for (const bad of [-1, 1.5, '3', NaN]) {
+        const st = spliceDelta(parent, { prevId: 'p', msgOffset: bad, messages: own });
+        assert.deepEqual(st.messages, own);
+        assert.ok(st.missing, String(bad));
+      }
+      // exactly adjacent is contiguous and stays complete
+      const ok = spliceDelta({ messages: [msg('user', 'x')], base: 0, missing: null }, { prevId: 'p', msgOffset: 1, messages: own });
+      assert.equal(ok.missing, null);
     });
 
     it('spliceDelta places messages by absolute offset', () => {
@@ -323,6 +376,80 @@ describe('#774 delta chain integrity', () => {
       assert.deepEqual(fs.readdirSync(tmpDir).filter(f => f.includes('.reanchor-')), []);
     });
 
+    it('re-anchors a kept child whose id sorts BEFORE its ancestor (clock rollback)', async () => {
+      await seedChain();
+      const rolledBack = '2019-12-31T23-59-59-000'; // protected via memory, lexically older than OLD_A
+      await writeReq(rolledBack, rec({ prevId: OLD_B, msgOffset: 5, messages: D2 }));
+      await writeRes(rolledBack);
+      inMemory(rolledBack);
+      writeIndex([OLD_A, OLD_B, rolledBack]);
+
+      await pruneLogs({ retentionDays: 14 });
+
+      assert.equal(exists(OLD_B), false);
+      const onDisk = JSON.parse(fs.readFileSync(path.join(tmpDir, rolledBack + '_req.json'), 'utf8'));
+      assert.deepEqual(onDisk.messages, [...ANCHOR, ...D1, ...D2]);
+      assert.ok(!('prevId' in onDisk));
+    });
+
+    it('re-anchors every sibling of one expired ancestor (fork)', async () => {
+      await seedChain();
+      const kids = [todayId(20), todayId(21)];
+      await writeReq(kids[0], rec({ prevId: OLD_B, msgOffset: 5, messages: D2 }));
+      await writeReq(kids[1], rec({ prevId: OLD_B, msgOffset: 5, messages: [msg('user', 'other branch')] }));
+      writeIndex([OLD_A, OLD_B, ...kids]);
+
+      await pruneLogs({ retentionDays: 14 });
+
+      assert.equal(exists(OLD_B), false);
+      const m0 = JSON.parse(fs.readFileSync(path.join(tmpDir, kids[0] + '_req.json'), 'utf8')).messages;
+      const m1 = JSON.parse(fs.readFileSync(path.join(tmpDir, kids[1] + '_req.json'), 'utf8')).messages;
+      assert.deepEqual(m0, [...ANCHOR, ...D1, ...D2]);
+      assert.deepEqual(m1, [...ANCHOR, ...D1, msg('user', 'other branch')]);
+    });
+
+    it('deletes NO expired log when a candidate cannot be classified; logs once', async () => {
+      await seedChain();
+      const child = todayId(22);
+      await writeReq(child, rec({ prevId: OLD_B, msgOffset: 5, messages: D2 }));
+      fs.mkdirSync(path.join(tmpDir, todayId(23) + '_req.json')); // unreadable candidate (EISDIR)
+      writeIndex([OLD_A, OLD_B, child]);
+
+      const errors = [];
+      const origErr = console.error;
+      console.error = (...a) => { errors.push(a.join(' ')); };
+      try { await pruneLogs({ retentionDays: 14 }); } finally { console.error = origErr; }
+
+      for (const id of [OLD_A, OLD_B]) {
+        assert.equal(exists(id), true, id + ' kept');
+        assert.equal(exists(id, '_res.json'), true, id + ' _res kept');
+      }
+      assert.equal(errors.filter(l => /could not classify/.test(l)).length, 1, errors.join('\n'));
+      assert.ok(JSON.parse(fs.readFileSync(path.join(tmpDir, child + '_req.json'), 'utf8')).prevId, 'child untouched');
+    });
+
+    it('fsyncs the rewritten file, then the directory, before any ancestor is deleted', async () => {
+      await seedChain();
+      const child = todayId(24);
+      await writeReq(child, rec({ prevId: OLD_B, msgOffset: 5, messages: D2 }));
+      writeIndex([OLD_A, OLD_B, child]);
+      const events = [];
+      const realFsync = fs.fsyncSync, realRename = fs.renameSync, realOpen = fs.openSync;
+      const dirFds = new Set();
+      fs.openSync = function (p, ...rest) { const fd = realOpen.call(this, p, ...rest); if (p === tmpDir) dirFds.add(fd); return fd; };
+      fs.fsyncSync = function (fd) { events.push(dirFds.has(fd) ? 'fsync-dir' : 'fsync-file'); return realFsync.call(this, fd); };
+      fs.renameSync = function (a, b) { events.push('rename'); return realRename.call(this, a, b); };
+      const origDelete = storage.deleteFile;
+      storage.deleteFile = async function (f) { events.push('delete'); return origDelete.call(this, f); };
+      try { await pruneLogs({ retentionDays: 14 }); } finally {
+        fs.fsyncSync = realFsync; fs.renameSync = realRename; fs.openSync = realOpen; storage.deleteFile = origDelete;
+      }
+      const firstDelete = events.indexOf('delete');
+      assert.ok(firstDelete > 0);
+      const before = events.slice(0, firstDelete);
+      assert.deepEqual(before.slice(0, 3), ['fsync-file', 'rename', 'fsync-dir']);
+    });
+
     it('leaves an unreferenced old record alone to be pruned as before', async () => {
       await writeReq(OLD_A, rec({ messages: ANCHOR }));
       await writeRes(OLD_A);
@@ -335,8 +462,42 @@ describe('#774 delta chain integrity', () => {
     });
   });
 
+  describe('writer rule: no new delta onto an ancestor prune could reach', () => {
+    const NOW = new Date('2026-11-20T12:00:00+08:00');
+    const idDaysAgo = (n) => new Date(NOW.getTime() - n * 86400000 - 3600000).toISOString().slice(0, 10) + 'T10-00-00-000';
+
+    it('forces a full record once the previous record is older than floor(retention/2) days', () => {
+      assert.equal(deltaAncestorTooOld(idDaysAgo(0), 14, NOW), false);
+      assert.equal(deltaAncestorTooOld(idDaysAgo(6), 14, NOW), false);
+      assert.equal(deltaAncestorTooOld(idDaysAgo(8), 14, NOW), true);
+      assert.equal(deltaAncestorTooOld(idDaysAgo(2), 4, NOW), false);
+      assert.equal(deltaAncestorTooOld(idDaysAgo(3), 4, NOW), true);
+    });
+
+    it('uses a 1-day minimum window, and never forces when retention is off', () => {
+      assert.equal(deltaAncestorTooOld(idDaysAgo(0), 1, NOW), false);
+      assert.equal(deltaAncestorTooOld(idDaysAgo(2), 1, NOW), true);
+      for (const off of [0, -1, NaN, undefined]) assert.equal(deltaAncestorTooOld(idDaysAgo(300), off, NOW), false, String(off));
+    });
+
+    it('shouldForceFullRecord keeps its other triggers and adds the age rule', () => {
+      const fresh = { id: idDaysAgo(0), deltaCount: 1 };
+      assert.equal(shouldForceFullRecord(undefined, { retentionDays: 14, now: NOW }), true);
+      assert.equal(shouldForceFullRecord(fresh, { retentionDays: 14, now: NOW }), false);
+      assert.equal(shouldForceFullRecord(fresh, { snapshotN: 1, retentionDays: 14, now: NOW }), true);
+      assert.equal(shouldForceFullRecord({ id: idDaysAgo(10), deltaCount: 1 }, { retentionDays: 14, now: NOW }), true);
+      assert.equal(shouldForceFullRecord({ id: idDaysAgo(10), deltaCount: 1 }, { retentionDays: 0, now: NOW }), false);
+    });
+
+    it('server/index.js routes the writer decision through shouldForceFullRecord', () => {
+      const src = fs.readFileSync(path.join(__dirname, '..', 'server', 'index.js'), 'utf8');
+      assert.match(src, /shouldForceFullRecord\(prev,\s*\{[^}]*retentionDays:\s*config\.LOG_RETENTION_DAYS/);
+    });
+  });
+
   describe('findChainChildren (head-only scan)', () => {
     const ANC = '2020-01-01T00-00-00-000';
+    const scan = (ids, doomed = [ANC]) => findChainChildren(ids.map(i => i + '_req.json'), new Set(doomed));
 
     it('finds deltas by head and never reads a full record in full', async () => {
       const reads = [];
@@ -346,25 +507,67 @@ describe('#774 delta chain integrity', () => {
         const delta = todayId(10), full = todayId(11);
         await writeReq(delta, rec({ prevId: ANC, msgOffset: 3, messages: D1 }));
         await writeReq(full, rec({ messages: ANCHOR }));
-        const files = [delta, full].map(i => i + '_req.json');
-        const kids = await findChainChildren(files, new Set([ANC]), ANC);
-        assert.deepEqual(kids.map(k => k.id), [delta]);
+        const { children, failed } = await scan([delta, full]);
+        assert.equal(failed, null);
+        assert.deepEqual(children.map(k => k.id), [delta]);
         assert.deepEqual(reads, [delta], 'the full record was classified from its head alone');
       } finally { storage.read = origRead; }
     });
 
-    it('falls back to a full read when extra params push prevId past the head window', async () => {
+    it('falls back to a full read when extra params push the keys past the head window', async () => {
       const delta = todayId(12);
       await writeReq(delta, rec({ pad: 'x'.repeat(20000), prevId: ANC, msgOffset: 3, messages: D1 }));
-      const kids = await findChainChildren([delta + '_req.json'], new Set([ANC]), ANC);
-      assert.deepEqual(kids.map(k => k.id), [delta]);
+      assert.deepEqual((await scan([delta])).children.map(k => k.id), [delta]);
     });
 
-    it('ignores deltas whose head is not doomed and ids not newer than the oldest doomed', async () => {
-      const keepHead = todayId(13);
+    it('is not fooled by a NESTED messages/prevId key in an extra param', async () => {
+      const delta = todayId(13), full = todayId(14);
+      // nested "messages" ahead of the real prevId must not make the delta look full
+      await writeReq(delta, rec({ extra: { messages: [], prevId: 'nested' }, prevId: ANC, msgOffset: 3, messages: D1 }));
+      // a nested prevId inside a message must not make the full record look like a delta
+      await writeReq(full, rec({ messages: [{ role: 'user', content: '"prevId":"x"', prevId: ANC }] }));
+      const { children } = await scan([delta, full]);
+      assert.deepEqual(children.map(k => k.id), [delta]);
+    });
+
+    it('ignores deltas whose chain head is not doomed', async () => {
+      const keepHead = todayId(15);
       await writeReq(keepHead, rec({ prevId: 'someone-else', msgOffset: 3, messages: D1 }));
-      assert.deepEqual(await findChainChildren([keepHead + '_req.json'], new Set([ANC]), ANC), []);
-      assert.deepEqual(await findChainChildren([keepHead + '_req.json'], new Set([ANC]), 'zzzz'), []);
+      assert.deepEqual((await scan([keepHead])).children, []);
+    });
+
+    it('does NOT trust id order: a child whose id sorts BEFORE its ancestor is still found (clock rollback)', async () => {
+      const rolledBack = '2019-12-31T23-59-59-000'; // lexically older than ANC
+      await writeReq(rolledBack, rec({ prevId: ANC, msgOffset: 3, messages: D1 }));
+      assert.deepEqual((await scan([rolledBack])).children.map(k => k.id), [rolledBack]);
+    });
+
+    it('reports failure on an unreadable candidate, but not on a vanished or empty one', async () => {
+      const dirAsFile = todayId(16);
+      fs.mkdirSync(path.join(tmpDir, dirAsFile + '_req.json')); // read fails with EISDIR, not ENOENT
+      assert.match((await scan([dirAsFile])).failed, new RegExp(dirAsFile));
+
+      const empty = todayId(17);
+      fs.writeFileSync(path.join(tmpDir, empty + '_req.json'), '');
+      assert.equal((await scan([empty, 'vanished-id'])).failed, null);
+
+      const truncated = todayId(18);
+      fs.writeFileSync(path.join(tmpDir, truncated + '_req.json'), '{"mod');
+      assert.match((await scan([truncated])).failed, new RegExp(truncated));
+    });
+  });
+
+  describe('classifyReqHead', () => {
+    it('counts only depth-1 keys', () => {
+      assert.equal(classifyReqHead('{"a":{"messages":1,"prevId":2},"prevId":"p","msgOffset":3,"messages":[]}'), 'delta');
+      assert.equal(classifyReqHead('{"model":"m","messages":[{"prevId":"x"}]}'), 'full');
+      assert.equal(classifyReqHead('{"s":"say \\"prevId\\": hi","messages":[]}'), 'full');
+      assert.equal(classifyReqHead('{"model":"messages","prevId":"p"'), 'delta');
+    });
+    it('is unknown when neither depth-1 key is in the head', () => {
+      assert.equal(classifyReqHead(''), 'unknown');
+      assert.equal(classifyReqHead('{"pad":"xxxx'), 'unknown');
+      assert.equal(classifyReqHead('{"a":["prevId","messages"],'), 'unknown');
     });
   });
 
