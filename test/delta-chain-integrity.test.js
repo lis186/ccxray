@@ -700,37 +700,74 @@ describe('#774 delta chain integrity', () => {
       try { assert.throws(() => fsyncDir(tmpDir), /EACCES/); } finally { fs.fsyncSync = realFsync; }
     });
 
-    it('writerRetentionDays: the shorter enrolled retention wins; cached for an hour', () => {
+    it('writerRetentionDays: the shorter enrolled retention wins; other states fall back to config', () => {
       _resetWriterRetentionCache();
-      const NOW = 1_700_000_000_000;
-      let reads = 0;
-      const enrolled = (days) => () => { reads++; return { state: 'enrolled', retentionDays: days }; };
-      assert.equal(writerRetentionDays(14, { now: NOW, home: 'h1', readEnrollment: enrolled(4) }), 4);
-      assert.equal(writerRetentionDays(14, { now: NOW + 59 * 60000, home: 'h1', readEnrollment: enrolled(2) }), 4, 'cached within the hour');
-      assert.equal(reads, 1);
-      assert.equal(writerRetentionDays(14, { now: NOW + 61 * 60000, home: 'h1', readEnrollment: enrolled(2) }), 2, 're-read after the hour');
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-enroll-inj-774-'));
+      fs.mkdirSync(path.join(home, 'logs'));
+      const opts = (readEnrollment) => ({ home, logsDir: path.join(home, 'logs'), readEnrollment });
+      const enrolled = (days) => () => ({ state: 'enrolled', retentionDays: days });
+      try {
+        assert.equal(writerRetentionDays(14, opts(enrolled(4))), 4);
+        assert.equal(writerRetentionDays(14, opts(enrolled(30))), 14, 'longer enrollment does not raise it');
+        assert.equal(writerRetentionDays(0, opts(enrolled(4))), 4, 'enrolled prune still applies when env retention is off');
+        for (const e of [null, { state: 'removed', retentionDays: 2 }, { state: 'invalid' }, { state: 'enrolled', retentionDays: 0 }]) {
+          assert.equal(writerRetentionDays(14, opts(() => e)), 14);
+        }
+        assert.equal(writerRetentionDays(14, opts(() => { throw new Error('boom'); })), 14);
+      } finally { _resetWriterRetentionCache(); fs.rmSync(home, { recursive: true, force: true }); }
+    });
+
+    it('writerRetentionDays follows the enrollment file: a change applies to the very next call (no stale cache)', () => {
       _resetWriterRetentionCache();
-      assert.equal(writerRetentionDays(14, { now: NOW, home: 'h2', readEnrollment: enrolled(30) }), 14, 'longer enrollment does not raise it');
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-enroll-cache-774-'));
+      const logsDir = path.join(home, 'logs');
+      fs.mkdirSync(logsDir);
+      const file = path.join(home, 'export-enrollment.json');
+      const write = (days, mtimeSec) => {
+        fs.writeFileSync(file, JSON.stringify({ state: 'enrolled', enrolledAt: '2026-01-01T00:00:00Z', retentionDays: days }));
+        fs.utimesSync(file, mtimeSec, mtimeSec);
+      };
+      try {
+        assert.equal(writerRetentionDays(14, { home, logsDir }), 14, 'no enrollment yet');
+        write(10, 1_700_000_000);
+        assert.equal(writerRetentionDays(14, { home, logsDir }), 10);
+        write(1, 1_700_000_100);                                  // enrollment shortened mid-run
+        assert.equal(writerRetentionDays(14, { home, logsDir }), 1, 'the new value is used immediately');
+        write(9, 1_700_000_200);                                  // same size, different mtime
+        assert.equal(writerRetentionDays(14, { home, logsDir }), 9);
+        fs.unlinkSync(file);
+        assert.equal(writerRetentionDays(14, { home, logsDir }), 14, 'removing the file returns to config');
+      } finally { _resetWriterRetentionCache(); fs.rmSync(home, { recursive: true, force: true }); }
+    });
+
+    it('a logs root that is not <home>/logs gets the 1-day window (another home may prune it)', () => {
       _resetWriterRetentionCache();
-      assert.equal(writerRetentionDays(0, { now: NOW, home: 'h3', readEnrollment: enrolled(4) }), 4, 'enrolled prune still applies when env retention is off');
-      for (const e of [null, { state: 'removed', retentionDays: 2 }, { state: 'invalid' }, { state: 'enrolled', retentionDays: 0 }]) {
-        _resetWriterRetentionCache();
-        assert.equal(writerRetentionDays(14, { now: NOW, home: 'h4', readEnrollment: () => e }), 14);
-      }
-      _resetWriterRetentionCache();
-      assert.equal(writerRetentionDays(14, { now: NOW, home: 'h5', readEnrollment: () => { throw new Error('boom'); } }), 14);
-      _resetWriterRetentionCache();
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-shared-root-774-'));
+      const own = path.join(home, 'logs');
+      const other = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-other-root-774-'));
+      fs.mkdirSync(own);
+      try {
+        assert.equal(writerRetentionDays(14, { home, logsDir: own }), 14, 'own logs dir: config applies');
+        assert.equal(writerRetentionDays(14, { home, logsDir: other }), 2, 'explicit LOGS_DIR: 1-day window (retention 2)');
+        assert.equal(writerRetentionDays(0, { home, logsDir: other }), 2, 'even with retention off');
+        assert.equal(writerRetentionDays(1, { home, logsDir: other }), 1, 'a shorter config stays shorter');
+        const NOW = new Date('2026-11-20T12:00:00+08:00');
+        const twoDaysOld = new Date(NOW.getTime() - 2 * 86400000).toISOString().slice(0, 10) + 'T10-00-00-000';
+        assert.equal(shouldForceFullRecord({ id: twoDaysOld, deltaCount: 1 }, { retentionDays: 14, now: NOW }), false);
+        assert.equal(shouldForceFullRecord({ id: twoDaysOld, deltaCount: 1 }, { retentionDays: writerRetentionDays(14, { home, logsDir: other }), now: NOW }), true);
+      } finally { _resetWriterRetentionCache(); fs.rmSync(home, { recursive: true, force: true }); fs.rmSync(other, { recursive: true, force: true }); }
     });
 
     it('with a real enrollment file shorter than config, the writer forces full where config alone would not', () => {
       _resetWriterRetentionCache();
       const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-enroll-774-'));
       try {
+        fs.mkdirSync(path.join(home, 'logs'));
         fs.writeFileSync(path.join(home, 'export-enrollment.json'), JSON.stringify({ state: 'enrolled', enrolledAt: '2026-01-01T00:00:00Z', retentionDays: 4 }));
         const NOW = new Date('2026-11-20T12:00:00+08:00');
         const prevId = new Date(NOW.getTime() - 5 * 86400000).toISOString().slice(0, 10) + 'T10-00-00-000'; // 5 days old
         assert.equal(shouldForceFullRecord({ id: prevId, deltaCount: 1 }, { retentionDays: 14, now: NOW }), false, 'config alone: window is 7 days');
-        const effective = writerRetentionDays(14, { now: NOW.getTime(), home });
+        const effective = writerRetentionDays(14, { home, logsDir: path.join(home, 'logs') });
         assert.equal(effective, 4);
         assert.equal(shouldForceFullRecord({ id: prevId, deltaCount: 1 }, { retentionDays: effective, now: NOW }), true, 'enrolled 4d: window is 2 days');
       } finally { _resetWriterRetentionCache(); fs.rmSync(home, { recursive: true, force: true }); }
@@ -768,6 +805,80 @@ describe('#774 delta chain integrity', () => {
       await loadEntryReqRes(d);
       assert.deepEqual(d.req.messages, D2);
       assert.deepEqual(d.req.incomplete, { reason: 'missing-ancestor', prevId: child, msgOffset: 5 });
+    });
+  });
+
+  describe('round 4: malformed deltas and deletion order', () => {
+    const A = '2020-01-01T00-00-00-000', B = '2020-01-01T00-00-01-000';
+    const quiet = async (fn) => {
+      const errors = [];
+      const orig = console.error;
+      console.error = (...a) => { errors.push(a.join(' ')); };
+      try { await fn(); } finally { console.error = orig; }
+      return errors;
+    };
+
+    it('a record naming an ancestor is a delta whatever its offset says (JSON round-trip of NaN is null)', async () => {
+      const roundTripped = JSON.parse(JSON.stringify(rec({ prevId: 'mal-0', msgOffset: NaN, messages: D1 })));
+      assert.equal(roundTripped.msgOffset, null);
+      await writeReq('mal-0', rec({ messages: ANCHOR }));
+      await writeReq('mal-1', roundTripped);
+      const entry = coldEntry('mal-1');
+      await loadEntryReqRes(entry);
+      assert.deepEqual(entry.req.messages, D1);
+      assert.deepEqual(entry.req.incomplete, { reason: 'missing-ancestor', prevId: 'mal-0', msgOffset: null }, 'not presented as complete');
+      assert.equal(await reconstructReq('mal-1', storage, new Map()), null, 'rebuild-index rejects it');
+    });
+
+    it('prune treats a null-offset record as a child of its prevId and re-anchors it as unknown alignment', async () => {
+      const child = todayId(40);
+      await writeReq(A, rec({ messages: ANCHOR }));
+      await writeReq(child, JSON.parse(JSON.stringify(rec({ prevId: A, msgOffset: NaN, messages: D1 }))));
+      writeIndex([A, child]);
+      await quiet(() => pruneLogs({ retentionDays: 14 }));
+      assert.equal(exists(A), false);
+      const onDisk = JSON.parse(fs.readFileSync(path.join(tmpDir, child + '_req.json'), 'utf8'));
+      assert.ok(!('prevId' in onDisk) && !('msgOffset' in onDisk));
+      assert.deepEqual(onDisk.incomplete, { reason: 'missing-ancestor', prevId: A, msgOffset: null, persisted: true });
+    });
+
+    // A (anchor) <- B (delta), both expired; C (today) is a kept delta on B.
+    async function seedChain(cId) {
+      await writeReq(A, rec({ messages: ANCHOR }));
+      await writeReq(B, rec({ prevId: A, msgOffset: 3, messages: D1 }));
+      await writeReq(cId, rec({ prevId: B, msgOffset: 5, messages: D2 }));
+      for (const id of [A, B, cId]) await writeRes(id);
+      writeIndex([A, B, cId]);
+    }
+
+    it('deletes descendants before ancestors', async () => {
+      const child = todayId(41);
+      await seedChain(child);
+      const order = [];
+      const origDelete = storage.deleteFile;
+      storage.deleteFile = async function (f) { order.push(f); return origDelete.call(this, f); };
+      try { await pruneLogs({ retentionDays: 14 }); } finally { storage.deleteFile = origDelete; }
+      assert.ok(order.indexOf(B + '_req.json') >= 0 && order.indexOf(A + '_req.json') >= 0);
+      assert.ok(order.indexOf(B + '_req.json') < order.indexOf(A + '_req.json'), order.join(', '));
+    });
+
+    it('keeps the ancestors when a descendant cannot be deleted', async () => {
+      const child = todayId(42);
+      await seedChain(child);
+      const origDelete = storage.deleteFile;
+      storage.deleteFile = async function (f) {
+        if (f === B + '_req.json') throw Object.assign(new Error('EBUSY: injected'), { code: 'EBUSY' });
+        return origDelete.call(this, f);
+      };
+      let errors;
+      try { errors = await quiet(() => pruneLogs({ retentionDays: 14 })); } finally { storage.deleteFile = origDelete; }
+      assert.equal(exists(B), true, 'the file that could not be deleted stays');
+      assert.equal(exists(A), true, 'so its ancestor is NOT deleted this prune');
+      assert.equal(exists(A, '_res.json'), true);
+      assert.ok(errors.some(l => /could not delete/.test(l) && l.includes(B)), errors.join('\n'));
+      // the next prune (failure gone) finishes the job
+      await pruneLogs({ retentionDays: 14 });
+      assert.equal(exists(A) || exists(B), false);
     });
   });
 });

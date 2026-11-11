@@ -1,5 +1,7 @@
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
 const { retentionCutoffDate } = require('./retention');
 
 // Shared helpers for delta log storage. Used by both the live server
@@ -88,8 +90,12 @@ function buildEditedReqRecord(parsedBody, { sysHash = null, toolsHash = null, se
 // real ceiling is turns per session; this only has to stop a corrupt chain.
 const DELTA_CHAIN_MAX_DEPTH = 100000;
 
+// A record naming an ancestor is a delta, WHATEVER its msgOffset says: a null /
+// NaN (JSON round-trips NaN to null) / negative / non-integer offset is a
+// malformed delta, which spliceDelta turns into an unknown-alignment state
+// instead of letting its suffix pass as a complete conversation (#774).
 function isDeltaRecord(rec) {
-  return !!rec && rec.prevId != null && rec.msgOffset != null;
+  return !!rec && rec.prevId != null;
 }
 
 // State of a FULL record. One carrying a persisted `incomplete` (a prune
@@ -199,26 +205,52 @@ async function resolveChainMessages(storage, id, { cache, maxDepth = DELTA_CHAIN
 // ── Effective retention for the writer rule ──────────────────────────
 //
 // INVARIANT(#774): the writer's force-full threshold must use the SMALLEST
-// retention that can prune this data root: min(config.LOG_RETENTION_DAYS, the
-// retention fixed in an enrolled export home's enrollment file). export-sync's
-// pruneDecision prunes with the enrollment's retentionDays when enrolled, which
-// can be shorter than this process's env. Read through export-sync's own
-// readEnrollment (same validity rules) and cached — one file read per hour.
-const WRITER_RETENTION_TTL_MS = 3600000;
-let _writerRetention = null; // { key, at, days }
+// retention that can prune this data root.
+//  - min(config.LOG_RETENTION_DAYS, the retention fixed in an enrolled export
+//    home's enrollment file): export-sync's pruneDecision prunes with the
+//    enrollment's retentionDays when enrolled. Read through export-sync's own
+//    readEnrollment (same validity rules). The result is cached against the
+//    enrollment file's (ino, size, mtime) — one stat per call — so a changed
+//    enrollment applies to the very next write, never an hour later.
+//  - LOGS_DIR scope: when the logs root is NOT <CCXRAY_HOME>/logs (LOGS_DIR set
+//    explicitly), other homes with unknown retention may prune the same
+//    directory, and this process cannot read their enrollment. The only
+//    protection is a 1-day window (retention treated as 2 days). RESIDUAL: two
+//    homes sharing one logs root are protected by this 1-day rule alone; a
+//    prune that starts after a child is written onto an ancestor older than a
+//    day can still orphan it.
+const SHARED_ROOT_RETENTION_DAYS = 2; // floor(2/2) = the 1-day window
+let _writerRetention = null; // { key, days }
 
-function writerRetentionDays(configDays, { now = Date.now(), home, readEnrollment, ttlMs = WRITER_RETENTION_TTL_MS } = {}) {
-  const key = `${configDays}|${home || ''}`;
-  if (_writerRetention && _writerRetention.key === key && now - _writerRetention.at < ttlMs) return _writerRetention.days;
+function logsRootIsExplicit(homeDir, logsDir) {
+  const real = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+  return real(logsDir) !== real(path.join(homeDir, 'logs'));
+}
+
+function enrollmentSignature(homeDir) {
+  try {
+    const st = fs.statSync(path.join(homeDir, 'export-enrollment.json'));
+    return `${st.ino}:${st.size}:${st.mtimeMs}`;
+  } catch { return 'absent'; }
+}
+
+function writerRetentionDays(configDays, { home, logsDir, readEnrollment } = {}) {
+  const homeDir = home || require('./paths').resolveCcxrayHome();
+  const root = logsDir || require('./config').LOGS_DIR;
+  const shared = logsRootIsExplicit(homeDir, root);
+  // An injected reader (tests) has no file to watch, so it is never cached.
+  const key = readEnrollment ? null : `${configDays}|${homeDir}|${shared}|${enrollmentSignature(homeDir)}`;
+  if (key && _writerRetention && _writerRetention.key === key) return _writerRetention.days;
   let days = configDays;
   try {
     const read = readEnrollment || require('./export-sync').readEnrollment;
-    const enrollment = read(home || require('./paths').resolveCcxrayHome());
+    const enrollment = read(homeDir);
     if (enrollment && enrollment.state === 'enrolled' && enrollment.retentionDays > 0) {
       days = configDays > 0 ? Math.min(configDays, enrollment.retentionDays) : enrollment.retentionDays;
     }
   } catch { /* unreadable enrollment: pruneDecision falls back to config too */ }
-  _writerRetention = { key, at: now, days };
+  if (shared) days = days > 0 ? Math.min(days, SHARED_ROOT_RETENTION_DAYS) : SHARED_ROOT_RETENTION_DAYS;
+  if (key) _writerRetention = { key, days };
   return days;
 }
 
@@ -266,6 +298,12 @@ function shouldForceFullRecord(prev, { snapshotN = 0, retentionDays, now } = {})
 // "messages" seen first => 'full'; neither within the head => 'unknown' (the
 // caller reads and parses the whole file).
 function classifyReqHead(head) {
+  return scanReqHead(head).kind;
+}
+
+// Same scan, also returning the prevId VALUE when the head holds it whole
+// (prune uses it to order deletions descendant-first without parsing the file).
+function scanReqHead(head) {
   let depth = 0;
   let expectKey = false;
   for (let i = 0; i < head.length; i++) {
@@ -278,10 +316,10 @@ function classifyReqHead(head) {
         if (head[j] === '"') break;
         key += head[j];
       }
-      if (j >= head.length) return 'unknown'; // string cut by the head boundary
+      if (j >= head.length) return { kind: 'unknown' }; // string cut by the head boundary
       if (depth === 1 && expectKey) {
-        if (key === 'prevId') return 'delta';
-        if (key === 'messages') return 'full';
+        if (key === 'prevId') return { kind: 'delta', prevId: readStringValue(head, j + 1) };
+        if (key === 'messages') return { kind: 'full' };
         expectKey = false;
       }
       i = j;
@@ -295,12 +333,29 @@ function classifyReqHead(head) {
       expectKey = true;
     }
   }
-  return 'unknown';
+  return { kind: 'unknown' };
+}
+
+// String value following `:` at `from`, or undefined when absent/cut/not a string.
+function readStringValue(head, from) {
+  let i = from;
+  while (i < head.length && /\s/.test(head[i])) i++;
+  if (head[i] !== ':') return undefined;
+  i++;
+  while (i < head.length && /\s/.test(head[i])) i++;
+  if (head[i] !== '"') return undefined;
+  let j = i + 1;
+  for (; j < head.length; j++) {
+    if (head[j] === '\\') { j++; continue; }
+    if (head[j] === '"') break;
+  }
+  if (j >= head.length) return undefined;
+  try { return JSON.parse(head.slice(i, j + 1)); } catch { return undefined; }
 }
 
 module.exports = {
   msgNorm, findSharedPrefix, findSharedPrefixFromLast, buildEditedReqRecord,
   DELTA_CHAIN_MAX_DEPTH, isDeltaRecord, anchorState, spliceDelta, resolveChainMessages,
   ChainReadError, writerRetentionDays, _resetWriterRetentionCache,
-  deltaAncestorTooOld, shouldForceFullRecord, classifyReqHead,
+  deltaAncestorTooOld, shouldForceFullRecord, classifyReqHead, scanReqHead,
 };

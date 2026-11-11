@@ -16,7 +16,7 @@ const { broadcastEntryUpdate } = require('./sse-broadcast');
 const sessionIdx = require('./session-index');
 const { assessWeather } = require('../public/weather');
 const { retentionCutoffDate } = require('./retention');
-const { isDeltaRecord, spliceDelta, resolveChainMessages, classifyReqHead, ChainReadError } = require('./delta-helpers');
+const { isDeltaRecord, spliceDelta, resolveChainMessages, scanReqHead, ChainReadError } = require('./delta-helpers');
 
 
 // #211: model marker ("The exact model ID is ...") from the persisted system
@@ -719,7 +719,7 @@ async function findChainChildren(files, doomedIds) {
       if (config.storage.readHead) {
         const head = await config.storage.readHead(id, '_req.json', REANCHOR_HEAD_BYTES);
         if (head.length === 0) continue;
-        if (classifyReqHead(head) === 'full') continue;
+        if (scanReqHead(head).kind === 'full') continue;
       }
       const text = await config.storage.read(id, '_req.json');
       if (text.length === 0) continue;
@@ -852,6 +852,69 @@ async function reanchorDelta(location, child, cache) {
   }
 }
 
+// Parent (prevId) of each doomed id that has a `_req.json`, restricted to ids in
+// the same doomed set. Head-only where the head holds prevId whole; a file whose
+// parent cannot be learned simply has no parent link (its deletion order falls
+// back to depth 0).
+async function doomedParents(reqIds) {
+  const parentOf = new Map();
+  for (const id of reqIds) {
+    let prevId;
+    try {
+      let scan = { kind: 'unknown' };
+      if (config.storage.readHead) scan = scanReqHead(await config.storage.readHead(id, '_req.json', REANCHOR_HEAD_BYTES));
+      if (scan.kind === 'full') continue;
+      prevId = scan.prevId;
+      if (prevId === undefined) prevId = JSON.parse(await config.storage.read(id, '_req.json')).prevId;
+    } catch { continue; }
+    if (typeof prevId === 'string' && reqIds.has(prevId)) parentOf.set(id, prevId);
+  }
+  return parentOf;
+}
+
+// #774: delete expired logs DESCENDANT-FIRST. A kept ancestor with a deleted
+// descendant is harmless; the reverse (ancestor gone, descendant left behind by a
+// failed unlink) is a permanent truncation. Within each id the `_req.json` goes
+// first; if it cannot be deleted the id keeps all its files and so do all of its
+// ancestors for this prune.
+async function deleteDescendantsFirst(doomed) {
+  const byId = new Map();
+  for (const { filename, id } of doomed) {
+    if (!byId.has(id)) byId.set(id, []);
+    byId.get(id).push(filename);
+  }
+  const isReq = (f) => f.endsWith('_req.json') && !f.endsWith('_req.received.json');
+  const reqIds = new Set([...byId].filter(([, names]) => names.some(isReq)).map(([id]) => id));
+  const parentOf = await doomedParents(reqIds);
+  const depth = (id) => {
+    const seen = new Set([id]);
+    let d = 0;
+    for (let p = parentOf.get(id); p !== undefined && !seen.has(p); p = parentOf.get(p)) { seen.add(p); d++; }
+    return d;
+  };
+  const order = [...byId.keys()].sort((a, b) => depth(b) - depth(a) || (a < b ? 1 : a > b ? -1 : 0));
+  const blocked = new Set();
+  let deleted = 0, kept = 0;
+  for (const id of order) {
+    const names = byId.get(id);
+    if (blocked.has(id)) { kept += names.length; continue; }
+    const req = names.find(isReq);
+    if (req) {
+      try { await config.storage.deleteFile(req); deleted++; } catch (err) {
+        console.error(`[ccxray] prune: could not delete ${req} (${err && err.message}) — keeping its ancestors this run`);
+        for (let p = parentOf.get(id); p !== undefined && !blocked.has(p); p = parentOf.get(p)) blocked.add(p);
+        kept += names.length;
+        continue;
+      }
+    }
+    for (const name of names) {
+      if (name === req) continue;
+      try { await config.storage.deleteFile(name); deleted++; } catch {}
+    }
+  }
+  return { deleted, kept };
+}
+
 // INVARIANT(#774): pruneLogs never deletes an ancestor a kept delta still chains
 // to (re-anchor first). The one case it cannot see — a process writing a NEW
 // delta onto an ancestor mid-prune — is closed at the writer instead: server/index.js
@@ -927,13 +990,9 @@ async function pruneLogs({ retentionDays = config.LOG_RETENTION_DAYS } = {}) {
   // chains to it — the child is re-anchored (rewritten FULL) first, or the
   // ancestor is kept. Retention semantics stay intact for everything else.
   const chainKept = await reanchorBeforePrune(files, new Set(doomed.map(d => d.id)));
-  for (const { filename, id } of doomed) {
-    if (chainKept.has(id)) { kept++; continue; }
-    try {
-      await config.storage.deleteFile(filename);
-      deleted++;
-    } catch {}
-  }
+  const del = await deleteDescendantsFirst(doomed.filter(d => !chainKept.has(d.id)));
+  deleted += del.deleted;
+  kept += del.kept + doomed.filter(d => chainKept.has(d.id)).length;
 
   if (deleted > 0 || kept > 0) {
     const keptMsg = kept > 0 ? `, kept ${kept} referenced by restored entries` : '';
