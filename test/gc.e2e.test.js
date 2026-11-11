@@ -29,26 +29,46 @@ describe('ccxray gc CLI (#775)', () => {
   });
   after(() => fs.rmSync(home, { recursive: true, force: true }));
 
-  it('requires exactly one of --dry-run / --apply', () => {
-    for (const args of [['gc'], ['gc', '--dry-run', '--apply']]) {
+  it('requires --dry-run, --apply or --purge (not combined)', () => {
+    for (const args of [['gc'], ['gc', '--verbose'], ['gc', '--dry-run', '--apply'], ['gc', '--apply', '--purge']]) {
       const r = ccxray(args);
       assert.equal(r.status, 1, args.join(' '));
-      assert.match(r.stderr, /Usage: ccxray gc --dry-run \| --apply \[--verbose\]/);
+      assert.match(r.stderr, /Usage: ccxray gc --dry-run \| --apply \| --purge/);
     }
     assert.ok(fs.existsSync(path.join(home, 'logs', 'shared', 'sys_aaaaaaaaaaaa.json')));
   });
 
-  it('--dry-run prints a summary (file names only with --verbose) and deletes nothing; --apply deletes it', () => {
+  it('--dry-run prints a summary (file names only with --verbose) and moves nothing; --apply quarantines it', () => {
     const dry = ccxray(['gc', '--dry-run']);
     assert.equal(dry.status, 0, dry.stderr);
-    assert.match(dry.stdout, /total\s+1 files .*would delete 1/);
+    assert.match(dry.stdout, /total\s+1 files .*would quarantine 1/);
     assert.doesNotMatch(dry.stdout, /sys_aaaaaaaaaaaa\.json/);
     const verbose = ccxray(['gc', '--dry-run', '--verbose']);
     assert.equal(verbose.status, 0, verbose.stderr);
-    assert.match(verbose.stdout, /would delete sys_aaaaaaaaaaaa\.json/);
+    assert.match(verbose.stdout, /would quarantine sys_aaaaaaaaaaaa\.json/);
     assert.ok(fs.existsSync(path.join(home, 'logs', 'shared', 'sys_aaaaaaaaaaaa.json')));
     const applied = ccxray(['gc', '--apply']);
     assert.equal(applied.status, 0, applied.stderr);
-    assert.ok(!fs.existsSync(path.join(home, 'logs', 'shared', 'sys_aaaaaaaaaaaa.json')));
+    const shared = path.join(home, 'logs', 'shared');
+    assert.ok(!fs.existsSync(path.join(shared, 'sys_aaaaaaaaaaaa.json')));
+    const trash = fs.readdirSync(shared).filter(n => n.startsWith('.gc-trash-'));
+    assert.equal(trash.length, 1, 'quarantined, not unlinked');
+    assert.ok(fs.existsSync(path.join(shared, trash[0], 'sys_aaaaaaaaaaaa.json')));
+    assert.match(applied.stdout, /Nothing is freed yet/);
+  });
+
+  it('--purge --dry-run previews; --purge deletes only quarantine older than 7 days', () => {
+    const shared = path.join(home, 'logs', 'shared');
+    const oldDir = path.join(shared, '.gc-trash-2020-01-01T00-00-00-000Z');
+    fs.mkdirSync(oldDir);
+    fs.writeFileSync(path.join(oldDir, 'sys_bbbbbbbbbbbb.json'), '{}');
+    const dry = ccxray(['gc', '--purge', '--dry-run']);
+    assert.equal(dry.status, 0, dry.stderr);
+    assert.match(dry.stdout, /would purge \.gc-trash-2020-01-01/);
+    assert.ok(fs.existsSync(oldDir));
+    const purged = ccxray(['gc', '--purge']);
+    assert.equal(purged.status, 0, purged.stderr);
+    assert.ok(!fs.existsSync(oldDir));
+    assert.equal(fs.readdirSync(shared).filter(n => n.startsWith('.gc-trash-')).length, 1, 'fresh quarantine kept');
   });
 });
