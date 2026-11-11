@@ -174,6 +174,8 @@ Before pushing, confirm the suite passes against an empty home: `CCXRAY_HOME=$(m
 | `server/settings.js` | Server-side settings persistence (`~/.ccxray/settings.json`) |
 | `server/url-sanitize.js` | URL sanitization for logged entries |
 | `server/usage-query.js` | Reads, filters, and aggregates indexed usage for the CLI |
+| `server/migrate-logs.js` | `ccxray migrate-logs [--dry-run\|--apply]` (#776): one-way gzip of pre-existing plain log files; resumable, largest-first, takes the ADR 0021 maintenance lock, per-file round-trip check + CAS rename that keeps mtime |
+| `server/storage/gzip.js` | Transparent log gzip (#776): `encodeForWrite` (async level-6 gzip unless `CCXRAY_COMPRESS_DISABLE=1`) and magic-byte `decodeToString`. Any code reading a log or `shared/` file outside the storage adapter must use `decodeToStringSync` (tests: `test/helpers/read-log.js`) |
 | `server/storage/` | Local filesystem storage is supported. `STORAGE_BACKEND=s3` fails fast; the S3/R2 adapter is an incomplete skeleton. The factory tracks writes and exposes `drain()` for graceful shutdown |
 | `server/adapters/` | Per-provider account/rate-limit sources for the Usage tab: `claude-adapter.js` (statusline hook that snapshots Claude rate limits), `codex-adapter.js` (Codex rate limits from session JSONL), `grok-adapter.js` (Grok billing card), `shared.js`. Not used by the importer |
 | `server/agentflow/` | Notebook discovery, transcript evidence, attribution, completeness, and report rendering/CLI |
