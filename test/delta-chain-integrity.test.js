@@ -9,6 +9,7 @@ const { describe, it, before, after, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const { readLogText } = require('./helpers/read-log'); // #776: log files may be gzip
 const os = require('os');
 
 const TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-delta-chain-home-'));
@@ -245,7 +246,7 @@ describe('#774 delta chain integrity', () => {
 
       assert.equal(exists(OLD_A), false, 'ancestor anchor deleted');
       assert.equal(exists(OLD_B), false, 'ancestor delta deleted');
-      const onDisk = JSON.parse(fs.readFileSync(path.join(tmpDir, child + '_req.json'), 'utf8'));
+      const onDisk = JSON.parse(readLogText(path.join(tmpDir, child + '_req.json')));
       assert.ok(!('prevId' in onDisk) && !('msgOffset' in onDisk), 'child is a full record');
       assert.equal(JSON.stringify(onDisk.messages), preMessages);
       assert.equal(onDisk.model, 'm');
@@ -268,7 +269,7 @@ describe('#774 delta chain integrity', () => {
       await pruneLogs({ retentionDays: 14 });
 
       assert.equal(exists(OLD_B), false);
-      const onDisk = JSON.parse(fs.readFileSync(path.join(tmpDir, child + '_req.json'), 'utf8'));
+      const onDisk = JSON.parse(readLogText(path.join(tmpDir, child + '_req.json')));
       assert.deepEqual(onDisk.messages, [...ANCHOR, ...D1, ...D2]);
       assert.ok(!('prevId' in onDisk));
     });
@@ -297,7 +298,7 @@ describe('#774 delta chain integrity', () => {
 
       assert.equal(exists(OLD_B), false, 'ancestor deleted');
       assert.equal(exists(OLD_B, '_res.json'), false);
-      const onDisk = JSON.parse(fs.readFileSync(path.join(tmpDir, child + '_req.json'), 'utf8'));
+      const onDisk = JSON.parse(readLogText(path.join(tmpDir, child + '_req.json')));
       assert.ok(!('prevId' in onDisk) && !('msgOffset' in onDisk));
       assert.equal(JSON.stringify(onDisk.messages), preMessages, 'exactly the resolvable messages');
       assert.deepEqual(onDisk.incomplete, { reason: 'missing-ancestor', prevId: OLD_A, msgOffset: 3, persisted: true });
@@ -348,7 +349,7 @@ describe('#774 delta chain integrity', () => {
 
       assert.equal(exists(P), false);
       assert.equal(exists(Q), false);
-      const onDisk = JSON.parse(fs.readFileSync(path.join(tmpDir, child + '_req.json'), 'utf8'));
+      const onDisk = JSON.parse(readLogText(path.join(tmpDir, child + '_req.json')));
       assert.deepEqual(onDisk.messages, [...D1, ...D2, msg('user', 'h')]);
       assert.deepEqual(onDisk.incomplete, { reason: 'missing-ancestor', prevId: 'missing-Z', msgOffset: 3, persisted: true });
     });
@@ -362,7 +363,7 @@ describe('#774 delta chain integrity', () => {
       let mutated = false;
       storage.read = async function (id, suffix) {
         const r = await origRead.call(this, id, suffix);
-        if (id === OLD_B && !mutated) { mutated = true; fs.appendFileSync(childPath, ' '); } // a concurrent writer
+        if (id === OLD_B && !mutated) { mutated = true; fs.writeFileSync(childPath, readLogText(childPath) + ' '); } // a concurrent writer (valid, different content; works for gzip and plain)
         return r;
       };
       const errors = [];
@@ -372,7 +373,7 @@ describe('#774 delta chain integrity', () => {
 
       assert.equal(exists(OLD_B), true, 'ancestor kept');
       assert.equal(exists(OLD_B, '_res.json'), true);
-      assert.ok(JSON.parse(fs.readFileSync(childPath, 'utf8')).prevId, 'child still a delta');
+      assert.ok(JSON.parse(readLogText(childPath)).prevId, 'child still a delta');
       assert.ok(errors.some(l => l.includes(OLD_B) && l.includes(child) && /source changed/.test(l)), errors.join('\n'));
       assert.deepEqual(fs.readdirSync(tmpDir).filter(f => f.includes('.reanchor-')), []);
     });
@@ -388,7 +389,7 @@ describe('#774 delta chain integrity', () => {
       await pruneLogs({ retentionDays: 14 });
 
       assert.equal(exists(OLD_B), false);
-      const onDisk = JSON.parse(fs.readFileSync(path.join(tmpDir, rolledBack + '_req.json'), 'utf8'));
+      const onDisk = JSON.parse(readLogText(path.join(tmpDir, rolledBack + '_req.json')));
       assert.deepEqual(onDisk.messages, [...ANCHOR, ...D1, ...D2]);
       assert.ok(!('prevId' in onDisk));
     });
@@ -403,8 +404,8 @@ describe('#774 delta chain integrity', () => {
       await pruneLogs({ retentionDays: 14 });
 
       assert.equal(exists(OLD_B), false);
-      const m0 = JSON.parse(fs.readFileSync(path.join(tmpDir, kids[0] + '_req.json'), 'utf8')).messages;
-      const m1 = JSON.parse(fs.readFileSync(path.join(tmpDir, kids[1] + '_req.json'), 'utf8')).messages;
+      const m0 = JSON.parse(readLogText(path.join(tmpDir, kids[0] + '_req.json'))).messages;
+      const m1 = JSON.parse(readLogText(path.join(tmpDir, kids[1] + '_req.json'))).messages;
       assert.deepEqual(m0, [...ANCHOR, ...D1, ...D2]);
       assert.deepEqual(m1, [...ANCHOR, ...D1, msg('user', 'other branch')]);
     });
@@ -426,7 +427,7 @@ describe('#774 delta chain integrity', () => {
         assert.equal(exists(id, '_res.json'), true, id + ' _res kept');
       }
       assert.equal(errors.filter(l => /could not classify/.test(l)).length, 1, errors.join('\n'));
-      assert.ok(JSON.parse(fs.readFileSync(path.join(tmpDir, child + '_req.json'), 'utf8')).prevId, 'child untouched');
+      assert.ok(JSON.parse(readLogText(path.join(tmpDir, child + '_req.json'))).prevId, 'child untouched');
     });
 
     it('fsyncs the rewritten file, then the directory, before any ancestor is deleted', async () => {
@@ -610,7 +611,7 @@ describe('#774 delta chain integrity', () => {
       try { await fn(); } finally { console.error = orig; }
       return errors;
     };
-    const readJson = (id) => JSON.parse(fs.readFileSync(path.join(tmpDir, id + '_req.json'), 'utf8'));
+    const readJson = (id) => JSON.parse(readLogText(path.join(tmpDir, id + '_req.json')));
 
     it('strict resolver: ENOENT is a missing link, everything else throws ChainReadError', async () => {
       await writeReq('s-0', rec({ prevId: 'absent', msgOffset: 3, messages: D1 }));
@@ -632,11 +633,11 @@ describe('#774 delta chain integrity', () => {
       const child = todayId(30);
       await seedABC(child);
       fs.writeFileSync(path.join(tmpDir, B + '_req.json'), '{"model":"m","prevId":"' + A); // truncated mid-write
-      const before = fs.readFileSync(path.join(tmpDir, child + '_req.json'), 'utf8');
+      const before = readLogText(path.join(tmpDir, child + '_req.json'));
       const errors = await quietErrors(() => pruneLogs({ retentionDays: 14 }));
       assert.equal(exists(A), true);
       assert.equal(exists(B), true);
-      assert.equal(fs.readFileSync(path.join(tmpDir, child + '_req.json'), 'utf8'), before, 'child not rewritten');
+      assert.equal(readLogText(path.join(tmpDir, child + '_req.json')), before, 'child not rewritten');
       assert.equal(errors.filter(l => /keeping all expired logs/.test(l)).length, 1, errors.join('\n'));
     });
 
@@ -837,7 +838,7 @@ describe('#774 delta chain integrity', () => {
       writeIndex([A, child]);
       await quiet(() => pruneLogs({ retentionDays: 14 }));
       assert.equal(exists(A), false);
-      const onDisk = JSON.parse(fs.readFileSync(path.join(tmpDir, child + '_req.json'), 'utf8'));
+      const onDisk = JSON.parse(readLogText(path.join(tmpDir, child + '_req.json')));
       assert.ok(!('prevId' in onDisk) && !('msgOffset' in onDisk));
       assert.deepEqual(onDisk.incomplete, { reason: 'missing-ancestor', prevId: A, msgOffset: null, persisted: true });
     });
