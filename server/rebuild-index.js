@@ -151,7 +151,15 @@ async function reconstructReq(id, storage, cache) {
       cache.set(id, null);
       return null;
     }
-    messages = spliceDelta(parent, stripped).messages;
+    // The leaf's own splice must be complete too: a readable parent with a gapped
+    // or corrupt offset would otherwise rebuild as a suffix-only entry (wrong
+    // msgCount/convId).
+    const spliced = spliceDelta(parent, stripped);
+    if (spliced.missing) {
+      cache.set(id, null);
+      return null;
+    }
+    messages = spliced.messages;
   }
 
   const parsedBody = { ...stripped, system, tools, messages };

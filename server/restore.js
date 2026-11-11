@@ -16,7 +16,7 @@ const { broadcastEntryUpdate } = require('./sse-broadcast');
 const sessionIdx = require('./session-index');
 const { assessWeather } = require('../public/weather');
 const { retentionCutoffDate } = require('./retention');
-const { isDeltaRecord, spliceDelta, resolveChainMessages, classifyReqHead } = require('./delta-helpers');
+const { isDeltaRecord, spliceDelta, resolveChainMessages, classifyReqHead, ChainReadError } = require('./delta-helpers');
 
 
 // #211: model marker ("The exact model ID is ...") from the persisted system
@@ -757,30 +757,53 @@ async function reanchorBeforePrune(files, doomedIds) {
 
   const cache = new Map();
   let reanchored = 0;
+  // Abort = stop re-anchoring and retain EVERY remaining doomed id (and those
+  // already kept): a failure that is not a confirmed absence must never lead to a
+  // deletion. Children already rewritten stay valid full records.
+  const abort = (why) => {
+    console.error(`[ccxray] prune: ${why} — keeping all expired logs this run (will retry next startup)`);
+    return new Set([...keep, ...doomedIds]);
+  };
   while (pending.length) {
     const child = pending.shift();
     if (!doomedIds.has(child.rec.prevId)) continue; // its head was kept meanwhile
-    const why = await reanchorDelta(location, child, cache);
+    let why;
+    try { why = await reanchorDelta(location, child, cache); } catch (err) {
+      if (err instanceof ChainReadError) return abort(`could not read the chain of ${child.id} (${err.message})`);
+      throw err;
+    }
     if (!why) { reanchored++; continue; }
     const head = child.rec.prevId;
     console.error(`[ccxray] prune: kept ${head} — could not re-anchor ${child.id}: ${why}`);
     doomedIds.delete(head);
     keep.add(head);
     // The kept ancestor is now itself a kept delta; if ITS head is doomed it needs the same treatment.
+    let text, rec;
     try {
-      const text = await config.storage.read(head, '_req.json');
-      const rec = JSON.parse(text);
-      if (isDeltaRecord(rec) && doomedIds.has(rec.prevId)) pending.push({ id: head, text, rec });
-    } catch { /* unreadable head: nothing chains through it */ }
+      text = await config.storage.read(head, '_req.json');
+      rec = JSON.parse(text);
+    } catch (err) {
+      if (err && err.code === 'ENOENT') continue; // gone: nothing chains through it
+      return abort(`could not re-read kept ancestor ${head} (${err && err.message})`);
+    }
+    if (isDeltaRecord(rec) && doomedIds.has(rec.prevId)) pending.push({ id: head, text, rec });
   }
   if (reanchored > 0) console.log(`\x1b[90m   Re-anchored ${reanchored} delta record(s) to full before pruning their ancestors\x1b[0m`);
   return keep;
 }
 
-// Best-effort directory fsync (a no-op where a directory cannot be opened for it, e.g. Windows).
+// Directory fsync. Only an explicitly-unsupported platform/filesystem answer is
+// swallowed; any other error propagates, which makes the re-anchor fail and
+// retains the ancestor (the replacement must be durable before it is deleted).
+const FSYNC_DIR_UNSUPPORTED = new Set(['EINVAL', 'ENOTSUP', 'EISDIR', 'EPERM']);
 function fsyncDir(dir) {
   let fd;
-  try { fd = fs.openSync(dir, 'r'); fs.fsyncSync(fd); } catch { /* unsupported platform/fs */ } finally {
+  try {
+    fd = fs.openSync(dir, 'r');
+    fs.fsyncSync(fd);
+  } catch (err) {
+    if (!FSYNC_DIR_UNSUPPORTED.has(err && err.code)) throw err;
+  } finally {
     if (fd !== undefined) try { fs.closeSync(fd); } catch {}
   }
 }
@@ -791,7 +814,7 @@ function fsyncDir(dir) {
 // `incomplete: { reason, prevId, msgOffset, persisted: true }`, so the
 // truncation stays marked and the ancestor no longer has to be kept forever.
 async function reanchorDelta(location, child, cache) {
-  const state = await resolveChainMessages(config.storage, child.id, { cache });
+  const state = await resolveChainMessages(config.storage, child.id, { cache, strict: true });
   if (!state) return 'chain unreadable';
   const full = { ...child.rec };
   delete full.prevId;
@@ -1040,4 +1063,4 @@ async function pruneLogs({ retentionDays = config.LOG_RETENTION_DAYS } = {}) {
   }
 }
 
-module.exports = { findChainChildren, loadEntryReqRes, restoreFromLogs, pruneLogs, pruneIndexLines, boundedIndexLines, sweepOrphanedPruneTmpFiles };
+module.exports = { findChainChildren, fsyncDir, loadEntryReqRes, restoreFromLogs, pruneLogs, pruneIndexLines, boundedIndexLines, sweepOrphanedPruneTmpFiles };

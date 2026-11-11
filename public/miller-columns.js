@@ -2730,7 +2730,11 @@ function renderSectionsCol(idx) {
   }
   html += '</div>';
   // #774: a delta whose ancestor is gone reaches us as a suffix — say so in the header only.
-  if (req.incomplete) html += '<div class="ch-line2 ch-incomplete" title="This turn was stored as a delta and its earlier history is no longer on disk">history truncated: first ' + escapeHtml(String(req.incomplete.msgOffset)) + ' messages unavailable</div>';
+  if (req.incomplete) {
+    const lost = req.incomplete.msgOffset;
+    html += '<div class="ch-line2 ch-incomplete" title="This turn was stored as a delta and its earlier history is no longer on disk">history truncated: '
+      + (Number.isInteger(lost) ? 'first ' + escapeHtml(String(lost)) + ' messages' : 'earlier messages') + ' unavailable</div>';
+  }
   html += '</div>';
 
   if (tok?.contextBreakdown) {

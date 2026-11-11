@@ -39,7 +39,7 @@ function writeFixtureHome() {
   const logs = path.join(home, 'logs');
   fs.mkdirSync(logs, { recursive: true });
   const base = Date.now();
-  const times = [0, 1, 2, 3].map(i => new Date(base + i * 1000));
+  const times = [0, 1, 2, 3, 4].map(i => new Date(base + i * 1000));
   const ids = times.map(idFor);
   const put = (id, body) => {
     fs.writeFileSync(path.join(logs, id + '_req.json'), JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 100, ...body }));
@@ -51,6 +51,8 @@ function writeFixtureHome() {
   put(ids[1], { messages: [msg('user', 'a'), msg('assistant', 'b'), msg('user', 'c')] });
   put(ids[2], { prevId: ids[1], msgOffset: 3, messages: [msg('assistant', 'd'), msg('user', 'e')] });
   put(ids[3], { incomplete: { reason: 'missing-ancestor', prevId: 'pruned', msgOffset: 4, persisted: true }, messages: [msg('user', 'only the tail survives')] });
+  // 4: persisted-incomplete from a CORRUPT offset — alignment unknown, so no count
+  put(ids[4], { incomplete: { reason: 'missing-ancestor', prevId: 'pruned', msgOffset: null, persisted: true }, messages: [msg('user', 'alignment unknown')] });
   const lines = ids.map((id, i) => JSON.stringify(entryLine(id, times[i], { responseId: 'msg_badge_' + i })));
   fs.writeFileSync(path.join(logs, 'index.ndjson'), lines.join('\n') + '\n');
   return { home, ids };
@@ -148,5 +150,9 @@ describe('#774 incomplete-turn badge', () => {
 
   it('keeps showing the badge for a persisted-incomplete (re-anchored) record', async () => {
     assert.equal(await badgeFor(3), 'history truncated: first 4 messages unavailable');
+  });
+
+  it('renders a count-free warning when the lost-prefix size is unknown (corrupt offset)', async () => {
+    assert.equal(await badgeFor(4), 'history truncated: earlier messages unavailable');
   });
 });

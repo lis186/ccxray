@@ -18,10 +18,11 @@ after(() => fs.rmSync(TEST_HOME, { recursive: true, force: true }));
 const config = require('../server/config');
 const store = require('../server/store');
 const { createLocalStorage } = require('../server/storage/local');
-const { loadEntryReqRes, pruneLogs, findChainChildren, sweepOrphanedPruneTmpFiles } = require('../server/restore');
+const { loadEntryReqRes, pruneLogs, findChainChildren, sweepOrphanedPruneTmpFiles, fsyncDir } = require('../server/restore');
 const { reconstructReq } = require('../server/rebuild-index');
 const {
   resolveChainMessages, spliceDelta, classifyReqHead, deltaAncestorTooOld, shouldForceFullRecord,
+  ChainReadError, writerRetentionDays, _resetWriterRetentionCache,
 } = require('../server/delta-helpers');
 
 const msg = (role, text) => ({ role, content: text });
@@ -153,7 +154,7 @@ describe('#774 delta chain integrity', () => {
       for (const id of ['bad-1', 'bad-2']) {
         const entry = coldEntry(id);
         await loadEntryReqRes(entry);
-        assert.ok(entry.req.incomplete, id);
+        assert.deepEqual(entry.req.incomplete, { reason: 'missing-ancestor', prevId: 'bad-0', msgOffset: null }, id + ': alignment is unknown, not 0');
         assert.deepEqual(entry.req.messages, D1, id);
       }
     });
@@ -491,7 +492,7 @@ describe('#774 delta chain integrity', () => {
 
     it('server/index.js routes the writer decision through shouldForceFullRecord', () => {
       const src = fs.readFileSync(path.join(__dirname, '..', 'server', 'index.js'), 'utf8');
-      assert.match(src, /shouldForceFullRecord\(prev,\s*\{[^}]*retentionDays:\s*config\.LOG_RETENTION_DAYS/);
+      assert.match(src, /shouldForceFullRecord\(prev,\s*\{[^}]*retentionDays:\s*writerRetentionDays\(config\.LOG_RETENTION_DAYS\)/);
     });
   });
 
@@ -589,6 +590,184 @@ describe('#774 delta chain integrity', () => {
       assert.equal(fs.existsSync(path.join(tmpDir, fresh)), true, 'in-flight tmp not raced');
       assert.equal(fs.existsSync(path.join(tmpDir, '2020-01-01T00-00-02-000_req.json')), true);
       assert.equal(fs.existsSync(path.join(tmpDir, 'index.ndjson')), true);
+    });
+  });
+
+  describe('round 3: strict prune, retention, rebuild, corrupt alignment', () => {
+    const A = '2020-01-01T00-00-00-000', B = '2020-01-01T00-00-01-000';
+    // A (anchor) <- B (delta) <- C (kept delta, today)
+    async function seedABC(cId) {
+      await writeReq(A, rec({ messages: ANCHOR }));
+      await writeReq(B, rec({ prevId: A, msgOffset: 3, messages: D1 }));
+      await writeReq(cId, rec({ prevId: B, msgOffset: 5, messages: D2 }));
+      for (const id of [A, B, cId]) await writeRes(id);
+      writeIndex([A, B, cId]);
+    }
+    const quietErrors = async (fn) => {
+      const errors = [];
+      const orig = console.error;
+      console.error = (...a) => { errors.push(a.join(' ')); };
+      try { await fn(); } finally { console.error = orig; }
+      return errors;
+    };
+    const readJson = (id) => JSON.parse(fs.readFileSync(path.join(tmpDir, id + '_req.json'), 'utf8'));
+
+    it('strict resolver: ENOENT is a missing link, everything else throws ChainReadError', async () => {
+      await writeReq('s-0', rec({ prevId: 'absent', msgOffset: 3, messages: D1 }));
+      const st = await resolveChainMessages(storage, 's-0', { strict: true });
+      assert.deepEqual(st.missing, { prevId: 'absent', msgOffset: 3 });
+
+      fs.writeFileSync(path.join(tmpDir, 's-bad_req.json'), '{"mod');
+      await writeReq('s-1', rec({ prevId: 's-bad', msgOffset: 3, messages: D1 }));
+      await assert.rejects(resolveChainMessages(storage, 's-1', { strict: true }), ChainReadError);
+      // lazy-load (non-strict) keeps treating it as incomplete
+      assert.ok((await resolveChainMessages(storage, 's-1')).missing);
+
+      await writeReq('s-c1', rec({ prevId: 's-c2', msgOffset: 1, messages: D1 }));
+      await writeReq('s-c2', rec({ prevId: 's-c1', msgOffset: 1, messages: D2 }));
+      await assert.rejects(resolveChainMessages(storage, 's-c2', { strict: true }), ChainReadError);
+    });
+
+    it('a corrupt ancestor aborts the prune: no persisted-incomplete child, no ancestor deleted', async () => {
+      const child = todayId(30);
+      await seedABC(child);
+      fs.writeFileSync(path.join(tmpDir, B + '_req.json'), '{"model":"m","prevId":"' + A); // truncated mid-write
+      const before = fs.readFileSync(path.join(tmpDir, child + '_req.json'), 'utf8');
+      const errors = await quietErrors(() => pruneLogs({ retentionDays: 14 }));
+      assert.equal(exists(A), true);
+      assert.equal(exists(B), true);
+      assert.equal(fs.readFileSync(path.join(tmpDir, child + '_req.json'), 'utf8'), before, 'child not rewritten');
+      assert.equal(errors.filter(l => /keeping all expired logs/.test(l)).length, 1, errors.join('\n'));
+    });
+
+    it('a transient read error (EIO) on an ancestor aborts the prune instead of persisting a truncation', async () => {
+      const child = todayId(31);
+      await seedABC(child);
+      const origRead = storage.read;
+      storage.read = async function (id, suffix) {
+        if (id === B && suffix === '_req.json') throw Object.assign(new Error('EIO: i/o error'), { code: 'EIO' });
+        return origRead.call(this, id, suffix);
+      };
+      let errors;
+      try { errors = await quietErrors(() => pruneLogs({ retentionDays: 14 })); } finally { storage.read = origRead; }
+      assert.equal(exists(A) && exists(B), true);
+      assert.ok(!('incomplete' in readJson(child)), 'no truncation persisted');
+      assert.ok(errors.some(l => /EIO/.test(l)), errors.join('\n'));
+    });
+
+    it('a failure re-reading the retained ancestor aborts the prune (does not delete its own ancestor)', async () => {
+      const child = todayId(32);
+      await seedABC(child);
+      const childPath = path.join(tmpDir, child + '_req.json');
+      const origRead = storage.read;
+      let bReads = 0;
+      storage.read = async function (id, suffix) {
+        if (id === B && suffix === '_req.json') {
+          bReads++;
+          if (bReads === 1) fs.appendFileSync(childPath, ' ');                 // C's re-anchor fails (CAS) -> B retained
+          else throw Object.assign(new Error('EIO: i/o error'), { code: 'EIO' }); // then the follow-up read of B fails
+        }
+        return origRead.call(this, id, suffix);
+      };
+      let errors;
+      try { errors = await quietErrors(() => pruneLogs({ retentionDays: 14 })); } finally { storage.read = origRead; }
+      assert.ok(bReads >= 2, 'the follow-up read happened');
+      assert.equal(exists(B), true, 'retained ancestor stays');
+      assert.equal(exists(A), true, 'its own ancestor is NOT deleted while it still references it');
+      assert.ok(errors.some(l => /re-read kept ancestor/.test(l)), errors.join('\n'));
+    });
+
+    it('a directory-fsync failure (EIO) keeps the ancestor; unsupported codes are swallowed', async () => {
+      const child = todayId(33);
+      await seedABC(child);
+      const realFsync = fs.fsyncSync, realOpen = fs.openSync;
+      const dirFds = new Set();
+      fs.openSync = function (p, ...rest) { const fd = realOpen.call(this, p, ...rest); if (p === tmpDir) dirFds.add(fd); return fd; };
+      fs.fsyncSync = function (fd) {
+        if (dirFds.has(fd)) throw Object.assign(new Error('EIO: i/o error'), { code: 'EIO' });
+        return realFsync.call(this, fd);
+      };
+      let errors;
+      try { errors = await quietErrors(() => pruneLogs({ retentionDays: 14 })); } finally { fs.fsyncSync = realFsync; fs.openSync = realOpen; }
+      assert.equal(exists(B), true, 'ancestor kept: the replacement was not durable');
+      assert.ok(errors.some(l => /could not re-anchor/.test(l) && /EIO/.test(l)), errors.join('\n'));
+
+      for (const code of ['EINVAL', 'ENOTSUP', 'EISDIR', 'EPERM']) {
+        fs.fsyncSync = () => { throw Object.assign(new Error(code), { code }); };
+        try { fsyncDir(tmpDir); } finally { fs.fsyncSync = realFsync; }
+      }
+      fs.fsyncSync = () => { throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); };
+      try { assert.throws(() => fsyncDir(tmpDir), /EACCES/); } finally { fs.fsyncSync = realFsync; }
+    });
+
+    it('writerRetentionDays: the shorter enrolled retention wins; cached for an hour', () => {
+      _resetWriterRetentionCache();
+      const NOW = 1_700_000_000_000;
+      let reads = 0;
+      const enrolled = (days) => () => { reads++; return { state: 'enrolled', retentionDays: days }; };
+      assert.equal(writerRetentionDays(14, { now: NOW, home: 'h1', readEnrollment: enrolled(4) }), 4);
+      assert.equal(writerRetentionDays(14, { now: NOW + 59 * 60000, home: 'h1', readEnrollment: enrolled(2) }), 4, 'cached within the hour');
+      assert.equal(reads, 1);
+      assert.equal(writerRetentionDays(14, { now: NOW + 61 * 60000, home: 'h1', readEnrollment: enrolled(2) }), 2, 're-read after the hour');
+      _resetWriterRetentionCache();
+      assert.equal(writerRetentionDays(14, { now: NOW, home: 'h2', readEnrollment: enrolled(30) }), 14, 'longer enrollment does not raise it');
+      _resetWriterRetentionCache();
+      assert.equal(writerRetentionDays(0, { now: NOW, home: 'h3', readEnrollment: enrolled(4) }), 4, 'enrolled prune still applies when env retention is off');
+      for (const e of [null, { state: 'removed', retentionDays: 2 }, { state: 'invalid' }, { state: 'enrolled', retentionDays: 0 }]) {
+        _resetWriterRetentionCache();
+        assert.equal(writerRetentionDays(14, { now: NOW, home: 'h4', readEnrollment: () => e }), 14);
+      }
+      _resetWriterRetentionCache();
+      assert.equal(writerRetentionDays(14, { now: NOW, home: 'h5', readEnrollment: () => { throw new Error('boom'); } }), 14);
+      _resetWriterRetentionCache();
+    });
+
+    it('with a real enrollment file shorter than config, the writer forces full where config alone would not', () => {
+      _resetWriterRetentionCache();
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-enroll-774-'));
+      try {
+        fs.writeFileSync(path.join(home, 'export-enrollment.json'), JSON.stringify({ state: 'enrolled', enrolledAt: '2026-01-01T00:00:00Z', retentionDays: 4 }));
+        const NOW = new Date('2026-11-20T12:00:00+08:00');
+        const prevId = new Date(NOW.getTime() - 5 * 86400000).toISOString().slice(0, 10) + 'T10-00-00-000'; // 5 days old
+        assert.equal(shouldForceFullRecord({ id: prevId, deltaCount: 1 }, { retentionDays: 14, now: NOW }), false, 'config alone: window is 7 days');
+        const effective = writerRetentionDays(14, { now: NOW.getTime(), home });
+        assert.equal(effective, 4);
+        assert.equal(shouldForceFullRecord({ id: prevId, deltaCount: 1 }, { retentionDays: effective, now: NOW }), true, 'enrolled 4d: window is 2 days');
+      } finally { _resetWriterRetentionCache(); fs.rmSync(home, { recursive: true, force: true }); }
+    });
+
+    it('rebuild-index rejects a leaf whose own offset leaves a gap or is corrupt', async () => {
+      await writeReq('rb-0', rec({ messages: ANCHOR }));
+      await writeReq('rb-ok', rec({ prevId: 'rb-0', msgOffset: 3, messages: D1 }));
+      await writeReq('rb-gap', rec({ prevId: 'rb-0', msgOffset: 10, messages: D1 }));
+      await writeReq('rb-bad', rec({ prevId: 'rb-0', msgOffset: -1, messages: D1 }));
+      assert.equal((await reconstructReq('rb-ok', storage, new Map())).parsedBody.messages.length, 5, 'control: contiguous leaf rebuilds');
+      assert.equal(await reconstructReq('rb-gap', storage, new Map()), null);
+      assert.equal(await reconstructReq('rb-bad', storage, new Map()), null);
+    });
+
+    it('corrupt alignment is persisted as unknown (msgOffset null) and descendants do not build on it', async () => {
+      const child = todayId(34), next = todayId(35);
+      await writeReq(A, rec({ messages: ANCHOR }));
+      await writeReq(child, rec({ prevId: A, msgOffset: '3', messages: D1 })); // corrupt offset
+      await writeReq(next, rec({ prevId: child, msgOffset: 5, messages: D2 }));
+      writeIndex([A, child, next]);
+      await quietErrors(() => pruneLogs({ retentionDays: 14 }));
+
+      assert.equal(exists(A), false, 'ancestor deleted once the unknown alignment is persisted');
+      const onDisk = readJson(child);
+      assert.deepEqual(onDisk.incomplete, { reason: 'missing-ancestor', prevId: A, msgOffset: null, persisted: true });
+      const c = coldEntry(child);
+      await loadEntryReqRes(c);
+      assert.equal(c.req.incomplete.msgOffset, null);
+      assert.deepEqual(c.req.messages, D1);
+
+      // next is valid (offset 5) but its parent has no known alignment: only its own
+      // messages are trusted and the count comes from ITS offset, not a fabricated base.
+      const d = coldEntry(next);
+      await loadEntryReqRes(d);
+      assert.deepEqual(d.req.messages, D2);
+      assert.deepEqual(d.req.incomplete, { reason: 'missing-ancestor', prevId: child, msgOffset: 5 });
     });
   });
 });

@@ -98,8 +98,13 @@ function isDeltaRecord(rec) {
 // misalign every delta that chains to it.
 function anchorState(rec) {
   const inc = rec.incomplete;
-  if (inc && inc.persisted && Number.isInteger(inc.msgOffset) && inc.msgOffset >= 0) {
-    return { messages: rec.messages, base: inc.msgOffset, missing: { prevId: inc.prevId, msgOffset: inc.msgOffset } };
+  if (inc && inc.persisted) {
+    if (Number.isInteger(inc.msgOffset) && inc.msgOffset >= 0) {
+      return { messages: rec.messages, base: inc.msgOffset, missing: { prevId: inc.prevId, msgOffset: inc.msgOffset } };
+    }
+    // Persisted from a corrupt offset: alignment is UNKNOWN (msgOffset null) and
+    // stays unknown — descendants must not invent a base for it.
+    return { messages: rec.messages, base: null, missing: { prevId: inc.prevId, msgOffset: null } };
   }
   return { messages: rec.messages, base: 0, missing: null };
 }
@@ -115,22 +120,42 @@ function anchorState(rec) {
 function spliceDelta(parent, rec) {
   const own = Array.isArray(rec.messages) ? rec.messages : [];
   const off = rec.msgOffset;
-  const valid = Number.isInteger(off) && off >= 0;
-  const missing = { prevId: rec.prevId, msgOffset: valid ? off : 0 };
-  if (!valid) return { messages: own, base: 0, missing };
-  if (!parent || off < parent.base || off > parent.base + parent.messages.length) {
+  // A corrupt offset leaves the alignment UNKNOWN (base/msgOffset null): the UI
+  // says "earlier messages unavailable" without a count, and a descendant never
+  // builds on a base that was never known.
+  if (!(Number.isInteger(off) && off >= 0)) {
+    return { messages: own, base: null, missing: { prevId: rec.prevId, msgOffset: null } };
+  }
+  const missing = { prevId: rec.prevId, msgOffset: off };
+  const pb = parent && Number.isInteger(parent.base) ? parent.base : null;
+  if (pb === null || off < pb || off > pb + parent.messages.length) {
     return { messages: own, base: off, missing };
   }
-  return { messages: [...parent.messages.slice(0, off - parent.base), ...own], base: parent.base, missing: parent.missing };
+  return { messages: [...parent.messages.slice(0, off - pb), ...own], base: pb, missing: parent.missing };
+}
+
+// A chain read that failed for a reason OTHER than "the file is not there".
+// Thrown only by the strict resolver (prune); see resolveChainMessages.
+class ChainReadError extends Error {
+  constructor(id, cause) {
+    super(`${id}: ${cause}`);
+    this.name = 'ChainReadError';
+    this.id = id;
+  }
 }
 
 // Resolve `id` from storage. Returns a state, or null when `id` itself is
 // unreadable (missing/corrupt/no messages array, cycle, depth limit).
+// `strict` (prune's re-anchor) separates "confirmed absent" from "could not
+// read": only ENOENT yields a missing link; any other read error, unparseable
+// JSON, a record without a messages array, a cycle or the depth limit throws
+// ChainReadError, so a transient failure can never be persisted as a truncation
+// and then used to delete a recoverable ancestor. Lazy load stays non-strict.
 // `cache` (optional Map id → state | null) memoizes across calls and ends the
 // walk at an already-resolved ancestor; states carry messages only (never
 // system/tools) so a run over many ids stays bounded. Iterative: a long chain
 // must not blow the JS stack.
-async function resolveChainMessages(storage, id, { cache, maxDepth = DELTA_CHAIN_MAX_DEPTH } = {}) {
+async function resolveChainMessages(storage, id, { cache, maxDepth = DELTA_CHAIN_MAX_DEPTH, strict = false } = {}) {
   if (cache && cache.has(id)) return cache.get(id);
   const hops = []; // delta records, newest → oldest
   const seen = new Set();
@@ -138,12 +163,24 @@ async function resolveChainMessages(storage, id, { cache, maxDepth = DELTA_CHAIN
   let cur = id;
   while (true) {
     if (cache && cache.has(cur)) { state = cache.get(cur); break; }
-    let rec = null;
-    let unreadable = false;
-    if (seen.has(cur) || seen.size >= maxDepth) break; // cycle / depth: broken, but `cur` itself may be fine
+    if (seen.has(cur) || seen.size >= maxDepth) {
+      if (strict) throw new ChainReadError(cur, seen.has(cur) ? 'prevId cycle' : 'chain too deep');
+      break; // cycle / depth: broken, but `cur` itself may be fine
+    }
     seen.add(cur);
-    try { rec = JSON.parse(await storage.read(cur, '_req.json')); } catch { unreadable = true; }
-    if (unreadable || !rec || !Array.isArray(rec.messages)) { if (cache) cache.set(cur, null); break; }
+    let rec = null;
+    let absent = false;
+    try {
+      rec = JSON.parse(await storage.read(cur, '_req.json'));
+    } catch (err) {
+      if (strict && !(err && err.code === 'ENOENT')) throw new ChainReadError(cur, (err && err.message) || 'unreadable');
+      absent = true;
+    }
+    if (absent || !rec || !Array.isArray(rec.messages)) {
+      if (strict && !absent) throw new ChainReadError(cur, 'record has no messages array');
+      if (cache) cache.set(cur, null);
+      break;
+    }
     if (!isDeltaRecord(rec)) {
       state = anchorState(rec);
       if (cache) cache.set(cur, state);
@@ -158,6 +195,34 @@ async function resolveChainMessages(storage, id, { cache, maxDepth = DELTA_CHAIN
   }
   return state;
 }
+
+// ── Effective retention for the writer rule ──────────────────────────
+//
+// INVARIANT(#774): the writer's force-full threshold must use the SMALLEST
+// retention that can prune this data root: min(config.LOG_RETENTION_DAYS, the
+// retention fixed in an enrolled export home's enrollment file). export-sync's
+// pruneDecision prunes with the enrollment's retentionDays when enrolled, which
+// can be shorter than this process's env. Read through export-sync's own
+// readEnrollment (same validity rules) and cached — one file read per hour.
+const WRITER_RETENTION_TTL_MS = 3600000;
+let _writerRetention = null; // { key, at, days }
+
+function writerRetentionDays(configDays, { now = Date.now(), home, readEnrollment, ttlMs = WRITER_RETENTION_TTL_MS } = {}) {
+  const key = `${configDays}|${home || ''}`;
+  if (_writerRetention && _writerRetention.key === key && now - _writerRetention.at < ttlMs) return _writerRetention.days;
+  let days = configDays;
+  try {
+    const read = readEnrollment || require('./export-sync').readEnrollment;
+    const enrollment = read(home || require('./paths').resolveCcxrayHome());
+    if (enrollment && enrollment.state === 'enrolled' && enrollment.retentionDays > 0) {
+      days = configDays > 0 ? Math.min(configDays, enrollment.retentionDays) : enrollment.retentionDays;
+    }
+  } catch { /* unreadable enrollment: pruneDecision falls back to config too */ }
+  _writerRetention = { key, at: now, days };
+  return days;
+}
+
+function _resetWriterRetentionCache() { _writerRetention = null; }
 
 // ── Writer rule: a new delta must not chain to an ancestor prune could reach (#774) ──
 //
@@ -187,6 +252,13 @@ function shouldForceFullRecord(prev, { snapshotN = 0, retentionDays, now } = {})
 
 // ── Head classification for the prune re-anchor scan (#774) ──────────
 //
+// INVARIANT(#774): relies on the writer's key order — prevId/msgOffset are emitted
+// BEFORE messages, and the writer's extraParams never contain a top-level
+// "messages" (server/index.js; every ccxray writer since 1.8.0 and
+// scripts/migrate-to-delta.js do the same). A record with messages first is
+// therefore never a delta WE wrote. Pinned by test/delta-writer-order.e2e.test.js,
+// which builds a delta through the real writer. Do not reorder the writer's
+// keys, or change this classification, without changing both.
 // Minimal top-level key scanner over the first bytes of a `_req.json`. Only
 // depth-1 keys count (a nested "messages"/"prevId" inside an extra parameter
 // must not be mistaken for the record's own). The delta writer emits prevId
@@ -229,5 +301,6 @@ function classifyReqHead(head) {
 module.exports = {
   msgNorm, findSharedPrefix, findSharedPrefixFromLast, buildEditedReqRecord,
   DELTA_CHAIN_MAX_DEPTH, isDeltaRecord, anchorState, spliceDelta, resolveChainMessages,
+  ChainReadError, writerRetentionDays, _resetWriterRetentionCache,
   deltaAncestorTooOld, shouldForceFullRecord, classifyReqHead,
 };
