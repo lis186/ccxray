@@ -138,7 +138,13 @@ describe('migrate-to-delta: probeChainDepth', () => {
 // ── End-to-end migration on a synthetic logs dir ─────────────────────
 
 describe('migrate-to-delta: end-to-end on synthetic logs', () => {
-  const tmpDir = path.join(os.tmpdir(), 'ccxray-migrate-e2e-' + Date.now());
+  // #774: the script now follows the live writer's retention guard and takes the
+  // maintenance lock. These fixtures use fixed 2026-01-01 ids, so they run with
+  // retention off and the logs dir at <home>/logs (not a shared root), and skip the
+  // just-written-index recency check; the guard itself is covered by
+  // test/migrate-to-delta-guard.e2e.test.js.
+  const home = path.join(os.tmpdir(), 'ccxray-migrate-e2e-' + Date.now());
+  const tmpDir = path.join(home, 'logs');
   const scriptPath = path.join(__dirname, '..', 'scripts', 'migrate-to-delta.js');
 
   before(async () => {
@@ -146,7 +152,7 @@ describe('migrate-to-delta: end-to-end on synthetic logs', () => {
   });
 
   after(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true });
   });
 
   // Run the script as a subprocess with a custom --logs-dir, capture stdout.
@@ -154,7 +160,7 @@ describe('migrate-to-delta: end-to-end on synthetic logs', () => {
     const { spawn } = require('child_process');
     return new Promise((resolve, reject) => {
       const child = spawn(process.execPath, [scriptPath, '--logs-dir', tmpDir, ...extraArgs], {
-        env: { ...process.env, CCXRAY_DELTA_SNAPSHOT_N: '0' },
+        env: { ...process.env, CCXRAY_DELTA_SNAPSHOT_N: '0', CCXRAY_HOME: home, LOG_RETENTION_DAYS: '0', CCXRAY_SKIP_RECENCY_CHECK: '1' },
       });
       let stdout = '', stderr = '';
       child.stdout.on('data', d => { stdout += d; });

@@ -644,6 +644,7 @@
   .detail-input-details { margin-bottom: 6px; padding: 6px 8px; background: var(--bg); border-radius: 4px; }
 
   /* Intercept-edited request banner (server-authoritative; see renderEditedBanner) */
+  .ch-incomplete { margin-top: 2px; color: var(--yellow); font-size: 10px; }
   .edit-banner { margin-bottom: 8px; padding: 6px 8px; background: var(--bg); border: 1px solid var(--border); border-left: 3px solid var(--yellow); border-radius: 4px; }
   .edit-badge { display: inline-block; font-size: 10px; font-weight: 600; letter-spacing: 0.04em; color: var(--bg); background: var(--yellow); padding: 1px 6px; border-radius: 3px; }
   .edit-summary { margin-top: 4px; }

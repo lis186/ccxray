@@ -16,6 +16,7 @@ const { broadcastEntryUpdate } = require('./sse-broadcast');
 const sessionIdx = require('./session-index');
 const { assessWeather } = require('../public/weather');
 const { retentionCutoffDate } = require('./retention');
+const { isDeltaRecord, spliceDelta, resolveChainMessages, scanReqHead, ChainReadError } = require('./delta-helpers');
 
 
 // #211: model marker ("The exact model ID is ...") from the persisted system
@@ -62,23 +63,36 @@ function loadEntryReqRes(entry) {
           ? await config.storage.readShared(`tools_${stripped.toolsHash}.json`).then(JSON.parse).catch(() => null)
           : null;
 
-        // Delta format: reconstruct full messages by following prevId chain.
-        // Each hop loads the previous entry (itself potentially a delta) via the
-        // same lazy-load mechanism, so the chain is resolved depth-first with
-        // per-entry promise deduplication. Missing prev entries (pruned) degrade
-        // gracefully — the delta portion is returned as-is.
+        // Delta format: reconstruct full messages by following the prevId chain.
+        // An ancestor still in memory is loaded through this same lazy-load
+        // (depth-first, per-entry promise dedup); one that is not (cold session
+        // beyond RESTORE_DAYS / SESSION_ENTRY_CAP, or evicted) is resolved from
+        // disk by the shared resolver. A chain that cannot be completed returns
+        // the surviving suffix MARKED with req.incomplete — never silently as if
+        // it were the whole conversation (#774).
         let messages = stripped.messages || [];
-        if (stripped.prevId != null && stripped.msgOffset != null) {
+        let incomplete = null;
+        if (isDeltaRecord(stripped)) {
+          // Reuse an ancestor that is ALREADY loaded in memory; everything else
+          // goes through the guarded iterative resolver. Never await another
+          // entry's lazy load here: A.prevId=B / B.prevId=A would each wait on the
+          // other's _loadingPromise forever, bypassing the resolver's cycle guard.
+          let parent = null;
           const prevEntry = store.getEntryById(stripped.prevId);
-          if (prevEntry) {
-            await loadEntryReqRes(prevEntry);
-            if (Array.isArray(prevEntry.req?.messages)) {
-              messages = [...prevEntry.req.messages.slice(0, stripped.msgOffset), ...messages];
-            }
+          if (prevEntry && prevEntry._loaded && Array.isArray(prevEntry.req?.messages)) {
+            const inc = prevEntry.req.incomplete;
+            parent = { messages: prevEntry.req.messages, base: inc ? inc.msgOffset : 0, missing: inc || null };
+          } else if (prevEntry?._writePromise) {
+            await prevEntry._writePromise.catch(() => {}); // file not on disk until the write settles
           }
+          if (!parent) parent = await resolveChainMessages(config.storage, stripped.prevId);
+          const state = spliceDelta(parent, stripped);
+          messages = state.messages;
+          if (state.missing) incomplete = { reason: 'missing-ancestor', prevId: state.missing.prevId, msgOffset: state.missing.msgOffset };
         }
 
         entry.req = { ...stripped, system: sys, tools, messages };
+        if (incomplete) entry.req.incomplete = incomplete;
         delete entry.req.sysHash;
         delete entry.req.toolsHash;
         delete entry.req.prevId;
@@ -631,6 +645,9 @@ function pruneIndexLines(indexContent, { survivingReqIds, survivingResIds = new 
   return { keptLines, dropped };
 }
 
+const REANCHOR_TMP_RE = /^\d{4}-\d{2}-\d{2}T.*_req\.json\.reanchor-\d+-[a-f0-9]{16}\.tmp$/;
+const REANCHOR_TMP_STALE_MS = 5 * 60 * 1000;
+
 function sweepOrphanedPruneTmpFiles(logsDir, kill = process.kill) {
   if (!logsDir) return;
 
@@ -638,6 +655,16 @@ function sweepOrphanedPruneTmpFiles(logsDir, kill = process.kill) {
   try { files = fs.readdirSync(logsDir); } catch { return; }
 
   for (const filename of files) {
+    // #774: a re-anchor rewrite killed between tmp write and rename. The tmp
+    // is never read by anything, so removal is safe; the age floor keeps an
+    // in-flight rewrite (this or another process) from being raced.
+    if (REANCHOR_TMP_RE.test(filename)) {
+      try {
+        const file = path.join(logsDir, filename);
+        if (Date.now() - fs.statSync(file).mtimeMs > REANCHOR_TMP_STALE_MS) fs.unlinkSync(file);
+      } catch {}
+      continue;
+    }
     const match = /^index\.ndjson\.prune-(\d+)(?:-[a-f0-9]{16})?\.tmp$/.exec(filename);
     if (!match) continue;
 
@@ -667,6 +694,234 @@ function sweepOrphanedPruneTmpFiles(logsDir, kill = process.kill) {
 // Files belonging to entries currently restored in memory are never pruned —
 // otherwise lazy-load (loadEntryReqRes) would return null after restart.
 
+// Bytes read to classify a `_req.json` without parsing it (see classifyReqHead).
+const REANCHOR_HEAD_BYTES = 4096;
+
+// #774: kept delta records whose chain head is in `doomedIds`.
+// Returns { children: [{ id, text, rec }], failed: string|null }.
+// Scans EVERY non-doomed `_req.json` — no id/date ordering is trusted (clock
+// rollback, reordered or imported data can put a child before its ancestor).
+// Each file is classified from its head by a depth-aware key scanner: 'full'
+// is skipped without a full read; 'delta' and 'unknown' (neither key within the
+// head) are read and parsed. `failed` is set when ANY candidate cannot be read
+// or parsed — the caller must then delete no ancestor this prune. Only ENOENT
+// (the file vanished) and an empty file (an interrupted write; it holds no
+// chain head) are treated as nothing-to-protect. Adapters without readHead read
+// whole files.
+async function findChainChildren(files, doomedIds) {
+  const children = [];
+  let failed = null;
+  for (const filename of files) {
+    if (!filename.endsWith('_req.json') || filename.endsWith('_req.received.json')) continue;
+    const id = filename.slice(0, -'_req.json'.length);
+    if (doomedIds.has(id)) continue;
+    try {
+      if (config.storage.readHead) {
+        const head = await config.storage.readHead(id, '_req.json', REANCHOR_HEAD_BYTES);
+        if (head.length === 0) continue;
+        if (scanReqHead(head).kind === 'full') continue;
+      }
+      const text = await config.storage.read(id, '_req.json');
+      if (text.length === 0) continue;
+      const rec = JSON.parse(text);
+      if (isDeltaRecord(rec) && doomedIds.has(rec.prevId)) children.push({ id, text, rec });
+    } catch (err) {
+      if (err && err.code === 'ENOENT') continue;
+      failed = failed || `${id}: ${err && err.message}`;
+    }
+  }
+  return { children, failed };
+}
+
+// #774 re-anchor. `doomedIds` = ids prune is about to delete. Every kept
+// delta `_req.json` whose chain head (prevId) is doomed is rewritten as a FULL
+// record — write tmp (fsynced) → decode-verify against the resolved chain →
+// rename → fsync dir — so the ancestor can go without truncating it. A
+// re-anchor that cannot be verified keeps the ancestor (logged), and an
+// ancestor kept this way may itself be a delta whose own head is doomed, so
+// the loop runs to a fixpoint. If the scan itself could not classify some file,
+// NOTHING doomed is deleted this prune (retried next startup).
+// Returns the Set of doomed ids that must be KEPT. Local backend only: it
+// rewrites files in place (the only supported backend; s3 fails fast).
+async function reanchorBeforePrune(files, doomedIds) {
+  const keep = new Set();
+  const location = config.storage.location;
+  if (!location || doomedIds.size === 0) return keep;
+
+  const { children: pending, failed } = await findChainChildren(files, doomedIds);
+  if (failed) {
+    console.error(`[ccxray] prune: could not classify ${failed} — keeping all expired logs this run (will retry next startup)`);
+    return new Set(doomedIds);
+  }
+  if (pending.length === 0) return keep;
+
+  const cache = new Map();
+  let reanchored = 0;
+  // Abort = stop re-anchoring and retain EVERY remaining doomed id (and those
+  // already kept): a failure that is not a confirmed absence must never lead to a
+  // deletion. Children already rewritten stay valid full records.
+  const abort = (why) => {
+    console.error(`[ccxray] prune: ${why} — keeping all expired logs this run (will retry next startup)`);
+    return new Set([...keep, ...doomedIds]);
+  };
+  while (pending.length) {
+    const child = pending.shift();
+    if (!doomedIds.has(child.rec.prevId)) continue; // its head was kept meanwhile
+    let why;
+    try { why = await reanchorDelta(location, child, cache); } catch (err) {
+      if (err instanceof ChainReadError) return abort(`could not read the chain of ${child.id} (${err.message})`);
+      throw err;
+    }
+    if (!why) { reanchored++; continue; }
+    const head = child.rec.prevId;
+    console.error(`[ccxray] prune: kept ${head} — could not re-anchor ${child.id}: ${why}`);
+    doomedIds.delete(head);
+    keep.add(head);
+    // The kept ancestor is now itself a kept delta; if ITS head is doomed it needs the same treatment.
+    let text, rec;
+    try {
+      text = await config.storage.read(head, '_req.json');
+      rec = JSON.parse(text);
+    } catch (err) {
+      if (err && err.code === 'ENOENT') continue; // gone: nothing chains through it
+      return abort(`could not re-read kept ancestor ${head} (${err && err.message})`);
+    }
+    if (isDeltaRecord(rec) && doomedIds.has(rec.prevId)) pending.push({ id: head, text, rec });
+  }
+  if (reanchored > 0) console.log(`\x1b[90m   Re-anchored ${reanchored} delta record(s) to full before pruning their ancestors\x1b[0m`);
+  return keep;
+}
+
+// Directory fsync. Only an explicitly-unsupported platform/filesystem answer is
+// swallowed; any other error propagates, which makes the re-anchor fail and
+// retains the ancestor (the replacement must be durable before it is deleted).
+const FSYNC_DIR_UNSUPPORTED = new Set(['EINVAL', 'ENOTSUP', 'EISDIR', 'EPERM']);
+function fsyncDir(dir) {
+  let fd;
+  try {
+    fd = fs.openSync(dir, 'r');
+    fs.fsyncSync(fd);
+  } catch (err) {
+    if (!FSYNC_DIR_UNSUPPORTED.has(err && err.code)) throw err;
+  } finally {
+    if (fd !== undefined) try { fs.closeSync(fd); } catch {}
+  }
+}
+
+// Rewrite one delta record as a full record. Returns null on success, else the
+// reason it was left untouched. When the chain is ALREADY incomplete, the record
+// becomes a full record of exactly what is resolvable and carries
+// `incomplete: { reason, prevId, msgOffset, persisted: true }`, so the
+// truncation stays marked and the ancestor no longer has to be kept forever.
+async function reanchorDelta(location, child, cache) {
+  const state = await resolveChainMessages(config.storage, child.id, { cache, strict: true });
+  if (!state) return 'chain unreadable';
+  const full = { ...child.rec };
+  delete full.prevId;
+  delete full.msgOffset;
+  full.messages = state.messages;
+  if (state.missing) {
+    full.incomplete = { reason: 'missing-ancestor', prevId: state.missing.prevId, msgOffset: state.missing.msgOffset, persisted: true };
+  }
+  const finalPath = path.join(location, `${child.id}_req.json`);
+  const tmpPath = `${finalPath}.reanchor-${process.pid}-${randomBytes(8).toString('hex')}.tmp`;
+  try {
+    const fd = fs.openSync(tmpPath, 'w', 0o600);
+    try {
+      fs.writeSync(fd, JSON.stringify(full));
+      fs.fsyncSync(fd); // the bytes must be durable BEFORE the rename can make them the record
+    } finally {
+      fs.closeSync(fd);
+    }
+    // Decode-verify: what is on disk must parse to a chainless record whose
+    // messages are exactly the resolved chain.
+    const back = JSON.parse(fs.readFileSync(tmpPath, 'utf8'));
+    if (isDeltaRecord(back) || JSON.stringify(back.messages) !== JSON.stringify(state.messages)
+        || JSON.stringify(back.incomplete) !== JSON.stringify(full.incomplete)) {
+      return 'verification failed';
+    }
+    // CAS: the source must still be the bytes we resolved from (sync, no await before rename).
+    if (fs.readFileSync(finalPath, 'utf8') !== child.text) return 'source changed during re-anchor';
+    fs.renameSync(tmpPath, finalPath);
+    fsyncDir(location); // …and the rename durable before any ancestor is deleted
+    return null;
+  } catch (err) {
+    return err.message;
+  } finally {
+    try { fs.unlinkSync(tmpPath); } catch {} // gone after a successful rename
+  }
+}
+
+// Parent (prevId) of each doomed id that has a `_req.json`, restricted to ids in
+// the same doomed set. Head-only where the head holds prevId whole; a file whose
+// parent cannot be learned simply has no parent link (its deletion order falls
+// back to depth 0).
+async function doomedParents(reqIds) {
+  const parentOf = new Map();
+  for (const id of reqIds) {
+    let prevId;
+    try {
+      let scan = { kind: 'unknown' };
+      if (config.storage.readHead) scan = scanReqHead(await config.storage.readHead(id, '_req.json', REANCHOR_HEAD_BYTES));
+      if (scan.kind === 'full') continue;
+      prevId = scan.prevId;
+      if (prevId === undefined) prevId = JSON.parse(await config.storage.read(id, '_req.json')).prevId;
+    } catch { continue; }
+    if (typeof prevId === 'string' && reqIds.has(prevId)) parentOf.set(id, prevId);
+  }
+  return parentOf;
+}
+
+// #774: delete expired logs DESCENDANT-FIRST. A kept ancestor with a deleted
+// descendant is harmless; the reverse (ancestor gone, descendant left behind by a
+// failed unlink) is a permanent truncation. Within each id the `_req.json` goes
+// first; if it cannot be deleted the id keeps all its files and so do all of its
+// ancestors for this prune.
+async function deleteDescendantsFirst(doomed) {
+  const byId = new Map();
+  for (const { filename, id } of doomed) {
+    if (!byId.has(id)) byId.set(id, []);
+    byId.get(id).push(filename);
+  }
+  const isReq = (f) => f.endsWith('_req.json') && !f.endsWith('_req.received.json');
+  const reqIds = new Set([...byId].filter(([, names]) => names.some(isReq)).map(([id]) => id));
+  const parentOf = await doomedParents(reqIds);
+  const depth = (id) => {
+    const seen = new Set([id]);
+    let d = 0;
+    for (let p = parentOf.get(id); p !== undefined && !seen.has(p); p = parentOf.get(p)) { seen.add(p); d++; }
+    return d;
+  };
+  const order = [...byId.keys()].sort((a, b) => depth(b) - depth(a) || (a < b ? 1 : a > b ? -1 : 0));
+  const blocked = new Set();
+  let deleted = 0, kept = 0;
+  for (const id of order) {
+    const names = byId.get(id);
+    if (blocked.has(id)) { kept += names.length; continue; }
+    const req = names.find(isReq);
+    if (req) {
+      try { await config.storage.deleteFile(req); deleted++; } catch (err) {
+        console.error(`[ccxray] prune: could not delete ${req} (${err && err.message}) — keeping its ancestors this run`);
+        for (let p = parentOf.get(id); p !== undefined && !blocked.has(p); p = parentOf.get(p)) blocked.add(p);
+        kept += names.length;
+        continue;
+      }
+    }
+    for (const name of names) {
+      if (name === req) continue;
+      try { await config.storage.deleteFile(name); deleted++; } catch {}
+    }
+  }
+  return { deleted, kept };
+}
+
+// INVARIANT(#774): pruneLogs never deletes an ancestor a kept delta still chains
+// to (re-anchor first). The one case it cannot see — a process writing a NEW
+// delta onto an ancestor mid-prune — is closed at the writer instead: server/index.js
+// forces a FULL record when the previous record is older than floor(retention/2)
+// days (delta-helpers deltaAncestorTooOld). Caveat: the writer reads
+// config.LOG_RETENTION_DAYS, so a prune running with a SMALLER retention (an
+// enrolled export home) than the writer's is outside that margin.
 // `retentionDays` overrides config for an enrolled export home, whose retention was
 // fixed at enrollment and must not shrink just because this process lacks that env.
 async function pruneLogs({ retentionDays = config.LOG_RETENTION_DAYS } = {}) {
@@ -722,16 +977,22 @@ async function pruneLogs({ retentionDays = config.LOG_RETENTION_DAYS } = {}) {
   try { files = await config.storage.list(); } catch { return; }
 
   let deleted = 0, kept = 0;
+  const doomed = []; // { filename, id } — old and unprotected
   for (const filename of files) {
     const m = filename.match(/^(\d{4}-\d{2}-\d{2}T.*?)_(req\.received|req|res)\.json$/);
     if (!m) continue;
     if (filename.slice(0, 10) >= cutoffStr) continue;
     if (protectedIds.has(m[1])) { kept++; continue; }
-    try {
-      await config.storage.deleteFile(filename);
-      deleted++;
-    } catch {}
+    doomed.push({ filename, id: m[1] });
   }
+
+  // INVARIANT(#774): an ancestor is never deleted while a kept delta still
+  // chains to it — the child is re-anchored (rewritten FULL) first, or the
+  // ancestor is kept. Retention semantics stay intact for everything else.
+  const chainKept = await reanchorBeforePrune(files, new Set(doomed.map(d => d.id)));
+  const del = await deleteDescendantsFirst(doomed.filter(d => !chainKept.has(d.id)));
+  deleted += del.deleted;
+  kept += del.kept + doomed.filter(d => chainKept.has(d.id)).length;
 
   if (deleted > 0 || kept > 0) {
     const keptMsg = kept > 0 ? `, kept ${kept} referenced by restored entries` : '';
@@ -861,4 +1122,4 @@ async function pruneLogs({ retentionDays = config.LOG_RETENTION_DAYS } = {}) {
   }
 }
 
-module.exports = { loadEntryReqRes, restoreFromLogs, pruneLogs, pruneIndexLines, boundedIndexLines, sweepOrphanedPruneTmpFiles };
+module.exports = { findChainChildren, fsyncDir, loadEntryReqRes, restoreFromLogs, pruneLogs, pruneIndexLines, boundedIndexLines, sweepOrphanedPruneTmpFiles };
