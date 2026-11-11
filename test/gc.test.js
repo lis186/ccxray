@@ -261,6 +261,25 @@ describe('ccxray gc (#775)', () => {
       assert.ok(r.purged.length === 1);
     });
 
+    it('purge re-scans roots appended after collection, right before deleting (integration review)', async () => {
+      oldTrash('2020-01-01T00-00-00-000Z', ['sys_lateroot0001.json', 'sys_stillgone001.json']);
+      await runPurge({ onCollected: async () => { indexLine({ id: 'late', sysHash: 'lateroot0001' }); } });
+      assert.ok(fs.existsSync(sharedPath('sys_lateroot0001.json')), 'a hash rooted after collection is restored, not deleted');
+      assert.ok(!fs.existsSync(sharedPath('sys_stillgone001.json')));
+    });
+
+    it('purge deletes a rooted corrupt final that has no valid quarantine copy, so the next write can recreate it', async () => {
+      oldTrash('2020-01-01T00-00-00-000Z', ['sys_corruptonly01.json']);
+      fs.writeFileSync(path.join(logsDir, 'shared', '.gc-trash-2020-01-01T00-00-00-000Z', 'sys_corruptonly01.json'), '{"torn":');
+      indexLine({ id: 'r', sysHash: 'corruptonly01' });
+      fs.writeFileSync(sharedPath('sys_corruptonly01.json'), '{"also":');
+      const r = await runPurge();
+      assert.equal(r.corruptDeleted, 1);
+      assert.ok(!fs.existsSync(sharedPath('sys_corruptonly01.json')), 'corrupt final removed');
+      await createLocalStorage(logsDir).writeSharedIfAbsent('sys_corruptonly01.json', '{"fresh":1}');
+      assert.equal(readLogText(sharedPath('sys_corruptonly01.json')), '{"fresh":1}');
+    });
+
     it('purge of a rooted file whose final already exists (writer won) keeps the writer content and drops the stale trash copy', async () => {
       const d = oldTrash('2020-01-01T00-00-00-000Z', ['sys_idxrootedidx.json']);
       indexLine({ id: 'later', sysHash: 'idxrootedidx' });

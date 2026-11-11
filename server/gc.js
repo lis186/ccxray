@@ -309,8 +309,15 @@ async function purgeTrash({ dryRun = false, storage = config.storage, log = cons
     log(`${dryRun ? 'gc --purge --dry-run' : 'gc --purge'}: ${trash.length} quarantine dir(s)`);
     for (const t of keep) log(`  keep  ${t.dir}  ${t.files} files (${fmtBytes(t.bytes)}) — under ${graceDays(graceMs)}d old`);
 
+    // Pin the index size/time BEFORE collecting, then re-scan whatever was appended
+    // right before deleting (integration review): a writer the port probe cannot
+    // see (another home/port sharing this logs root) narrows to that final window.
+    const scanStart = Date.now();
+    let indexOffset = 0;
+    try { indexOffset = fs.statSync(path.join(storage.location, 'index.ndjson')).size; } catch (e) { if (e.code !== 'ENOENT') throw e; }
     const roots = old.length ? await collectRoots(storage) : null;
     if (onCollected) await onCollected(); // test seam: a restore/writer lands after the scan
+    if (roots) await rescanRoots(storage, roots, { offset: indexOffset, since: scanStart });
 
     // Group by filename across ALL quarantine generations (a name can sit in
     // several dirs, and openai_prompt_meta_<h> copies can legitimately differ).
@@ -353,6 +360,11 @@ async function purgeTrash({ dryRun = false, storage = config.storage, log = cons
               if (state === 'corrupt') await fs.promises.unlink(path.join(sharedDir, name)); // offline + locked
               await restoreFile(sharedDir, from, name);
             }
+          } else if (state === 'corrupt') {
+            // Same policy as `gc --apply`: an unrecoverable corrupt final holds
+            // nothing, and leaving it would block the write-once path forever.
+            totals.corruptDeleted = (totals.corruptDeleted || 0) + 1;
+            if (!dryRun) await fs.promises.unlink(path.join(sharedDir, name)).catch(e => { if (e.code !== 'ENOENT') throw e; });
           }
         }
       }
