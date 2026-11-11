@@ -26,6 +26,7 @@ Commands:
   import              Import transcripts (--once or --target-transcript)
   rebuild-index       Rebuild index.ndjson from log files
   migrate-logs        Gzip existing log files, one-way (--dry-run | --apply)
+  gc                  Reclaim unreferenced shared/ files (--dry-run | --apply | --purge)
   setup               Install the Claude shell wrapper (export opt-in: --export)
   setup-statusline    Configure Claude Code status line
   hud on|off|status   Turn the Context HUD on or off, or show it (off by default)
@@ -220,6 +221,7 @@ const unknownCommand = cliCommand
   && cliCommand !== 'secret'
   && cliCommand !== 'rebuild-index'
   && cliCommand !== 'migrate-logs'
+  && cliCommand !== 'gc'
   && cliCommand !== 'import'
   && cliCommand !== 'setup'
   && cliCommand !== 'setup-statusline'
@@ -364,6 +366,23 @@ if (process.argv[2] === 'migrate-logs') {
   require('./migrate-logs').migrateLogs({ apply })
     .then(r => process.exit(r && (r.refused || r.paused || r.failed) ? 1 : 0))
     .catch(err => { console.error(`migrate-logs failed: ${err.message}`); process.exit(1); });
+}
+
+// ── "gc --dry-run | --apply | --purge [--dry-run]" — early exit, no server/hub boot (#775) ──
+// --apply quarantines unreferenced shared/ files (reversible); --purge deletes
+// quarantine older than 7 days. No default action.
+if (process.argv[2] === 'gc') {
+  const has = f => process.argv.includes(f);
+  const apply = has('--apply'), purge = has('--purge'), dryRun = has('--dry-run');
+  const valid = (dryRun && !apply && !purge) || (apply && !purge && !dryRun) || (purge && !apply);
+  if (!valid) {
+    console.error('Usage: ccxray gc --dry-run | --apply | --purge [--dry-run] [--verbose]\n  --dry-run  report what --apply would quarantine (read-only)\n  --apply    move unreferenced shared/ files to shared/.gc-trash-<ts>/ (reversible; frees no space yet; refuses while a server is running)\n  --purge    permanently delete quarantine older than 7 days (irreversible; refuses while a server is running; add --dry-run to preview)\n  --verbose  list every file');
+    process.exit(1);
+  }
+  const gc = require('./gc');
+  (purge ? gc.purgeTrash({ dryRun }) : gc.gcShared({ apply, verbose: has('--verbose') }))
+    .then(r => process.exit(r && r.refused ? 1 : 0))
+    .catch(err => { console.error(`gc failed: ${err.message}`); process.exit(1); });
   return;
 }
 

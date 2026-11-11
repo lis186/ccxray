@@ -4687,6 +4687,72 @@ describe('Herdr plugin commands', () => {
     assert.match(result.stdout, /GREEN w1:p5 claude · working/);
   });
 
+  it('capabilityPortfolio restores a tools file that `ccxray gc --apply` quarantined instead of caching a miss (#775)', () => {
+    const { capabilityPortfolio } = require('../plugins/herdr/bin/lib/ccxray');
+    const hash = 'abc123def456';
+    const home = tempDir('ccxray-herdr-gc-trash-');
+    const trash = path.join(home, 'logs', 'shared', '.gc-trash-2026-11-01T00-00-00-000Z');
+    fs.mkdirSync(trash, { recursive: true });
+    fs.writeFileSync(path.join(trash, `tools_${hash}.json`), JSON.stringify([{ name: 'Bash', description: 'Run', input_schema: { type: 'object' } }]));
+    const turns = [{ ...sampleEntry, id: 'q1', sessionId: 'q', toolsHash: hash, turnToolCalls: { Bash: 1 } }];
+    const cache = new Map();
+    const portfolio = capabilityPortfolio(turns, { env: { CCXRAY_HOME: home }, cache });
+    assert.equal(portfolio && portfolio.exposedTools, 1, 'tool definitions found via quarantine');
+    assert.ok(fs.existsSync(path.join(home, 'logs', 'shared', `tools_${hash}.json`)), 'moved back to shared/');
+    assert.ok(!fs.existsSync(path.join(trash, `tools_${hash}.json`)), 'trash copy removed');
+    // a writer's fresh file wins over older quarantined data (no-replace)
+    const hash2 = 'def456abc123';
+    fs.writeFileSync(path.join(trash, `tools_${hash2}.json`), JSON.stringify([{ name: 'Old', description: 'x', input_schema: {} }]));
+    fs.writeFileSync(path.join(home, 'logs', 'shared', `tools_${hash2}.json`), JSON.stringify([{ name: 'New', description: 'x', input_schema: {} }]));
+    assert.equal(capabilityPortfolio([{ ...sampleEntry, id: 'q2', sessionId: 'q', toolsHash: hash2, turnToolCalls: {} }], { env: { CCXRAY_HOME: home } }).exposedTools, 1);
+    assert.match(fs.readFileSync(path.join(home, 'logs', 'shared', `tools_${hash2}.json`), 'utf8'), /New/);
+  });
+
+  it('treats a corrupt final as missing and uses the newest VALID quarantine copy (#775 review r4)', () => {
+    const { capabilityPortfolio } = require('../plugins/herdr/bin/lib/ccxray');
+    const home = tempDir('ccxray-herdr-gc-corrupt-');
+    const shared = path.join(home, 'logs', 'shared');
+    const older = path.join(shared, '.gc-trash-2026-10-01T00-00-00-000Z');
+    const newer = path.join(shared, '.gc-trash-2026-11-01T00-00-00-000Z');
+    fs.mkdirSync(older, { recursive: true });
+    fs.mkdirSync(newer, { recursive: true });
+    const tool = (n) => JSON.stringify([{ name: n, description: 'x', input_schema: { type: 'object' } }]);
+    // 1) corrupt final + valid quarantine copy: served from quarantine, final left untouched
+    const h1 = 'aaaa1111bbbb';
+    fs.writeFileSync(path.join(shared, `tools_${h1}.json`), '[{"name":"Tor');
+    fs.writeFileSync(path.join(newer, `tools_${h1}.json`), tool('Valid'));
+    const p1 = capabilityPortfolio([{ ...sampleEntry, id: 'c1', sessionId: 'c', toolsHash: h1, turnToolCalls: {} }], { env: { CCXRAY_HOME: home }, cache: new Map() });
+    assert.equal(p1 && p1.exposedTools, 1, 'corrupt final does not hide the valid quarantine copy');
+    assert.equal(fs.readFileSync(path.join(shared, `tools_${h1}.json`), 'utf8'), '[{"name":"Tor', 'corrupt final is not overwritten on the read path');
+    // 2) final absent, newest generation corrupt, older generation valid: the older valid copy is restored
+    const h2 = 'cccc2222dddd';
+    fs.writeFileSync(path.join(newer, `tools_${h2}.json`), '');
+    fs.writeFileSync(path.join(older, `tools_${h2}.json`), tool('OlderValid'));
+    const p2 = capabilityPortfolio([{ ...sampleEntry, id: 'c2', sessionId: 'c', toolsHash: h2, turnToolCalls: {} }], { env: { CCXRAY_HOME: home }, cache: new Map() });
+    assert.equal(p2 && p2.exposedTools, 1, 'older valid generation used');
+    assert.match(fs.readFileSync(path.join(shared, `tools_${h2}.json`), 'utf8'), /OlderValid/, 'the VALID copy is the one restored');
+  });
+
+  it('without hard links the plugin restores a quarantined tools file by atomic rename, never a copy (#775)', () => {
+    const { capabilityPortfolio } = require('../plugins/herdr/bin/lib/ccxray');
+    const hash = 'fedcba654321';
+    const home = tempDir('ccxray-herdr-gc-nolink-');
+    const trash = path.join(home, 'logs', 'shared', '.gc-trash-2026-11-01T00-00-00-000Z');
+    fs.mkdirSync(trash, { recursive: true });
+    fs.writeFileSync(path.join(trash, `tools_${hash}.json`), JSON.stringify([{ name: 'Bash', description: 'Run', input_schema: { type: 'object' } }]));
+    const realLink = fs.linkSync, realCopy = fs.copyFileSync;
+    let copied = false;
+    fs.linkSync = () => { const e = new Error('no links'); e.code = 'EPERM'; throw e; };
+    fs.copyFileSync = (...a) => { copied = true; return realCopy(...a); };
+    try {
+      const portfolio = capabilityPortfolio([{ ...sampleEntry, id: 'q3', sessionId: 'q', toolsHash: hash, turnToolCalls: {} }], { env: { CCXRAY_HOME: home } });
+      assert.equal(portfolio && portfolio.exposedTools, 1);
+    } finally { fs.linkSync = realLink; fs.copyFileSync = realCopy; }
+    assert.equal(copied, false, 'no copy into the final pathname');
+    assert.ok(fs.existsSync(path.join(home, 'logs', 'shared', `tools_${hash}.json`)));
+    assert.ok(!fs.existsSync(path.join(trash, `tools_${hash}.json`)), 'moved, not copied');
+  });
+
   it('mission-control reports observed tool and MCP utilization without charging deferred tools', () => {
     const hash = 'abc123def456';
     const now = Date.now();

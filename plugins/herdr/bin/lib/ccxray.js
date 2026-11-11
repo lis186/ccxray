@@ -1949,6 +1949,37 @@ function readSharedText(file) {
   return buf.toString('utf8');
 }
 
+// `ccxray gc --apply` quarantines unreferenced shared/ files under
+// shared/.gc-trash-<ts>/ (#775). Contract (same as server/storage/local.js
+// readShared): a corrupt final counts as missing; the NEWEST VALID quarantine
+// copy is used; it is moved back only when the final is absent (no-replace link,
+// atomic rename where hard links are unsupported — never a partial copy).
+// Standalone: node built-ins only; keep in step with server/shared-trash.js.
+function quarantineDirs(sharedDir) {
+  try { return fs.readdirSync(sharedDir).filter(n => n.startsWith('.gc-trash-')).sort().reverse(); } catch { return []; }
+}
+
+function restoreNoReplace(src, dst) {
+  try {
+    try { fs.linkSync(src, dst); } catch (e) {
+      if (e.code === 'EEXIST' || e.code === 'ENOENT') return;
+      if (fs.existsSync(dst)) return; // no hard links on this filesystem
+      fs.renameSync(src, dst);
+      return;
+    }
+    try { fs.unlinkSync(src); } catch {}
+  } catch {}
+}
+
+// Parsed tools array, or null when absent / oversized / torn / not an array.
+function readToolsArray(file) {
+  try {
+    if (fs.statSync(file).size > 32 * 1024 * 1024) return null;
+    const parsed = JSON.parse(readSharedText(file));
+    return Array.isArray(parsed) ? parsed : null;
+  } catch { return null; }
+}
+
 function readToolDefinitions(turns, opts = {}) {
   const latestWithHash = turns.slice().reverse().find(turn => turn.toolsHash);
   const hash = latestWithHash?.toolsHash;
@@ -1963,15 +1994,22 @@ function readToolDefinitions(turns, opts = {}) {
     : ['tools_', 'openai_tools_'];
   let tools = null;
   for (const prefix of prefixes) {
-    const file = path.join(sharedDir, `${prefix}${hash}.json`);
-    try {
-      if (fs.statSync(file).size > 32 * 1024 * 1024) continue;
-      const parsed = JSON.parse(readSharedText(file));
-      if (Array.isArray(parsed)) {
-        tools = parsed;
+    const name = `${prefix}${hash}.json`;
+    const file = path.join(sharedDir, name);
+    let parsed = readToolsArray(file);
+    if (!parsed) {
+      for (const dir of quarantineDirs(sharedDir)) {
+        const copy = path.join(sharedDir, dir, name);
+        parsed = readToolsArray(copy);
+        if (!parsed) continue; // corrupt or absent generation: try an older one
+        if (!fs.existsSync(file)) restoreNoReplace(copy, file);
         break;
       }
-    } catch {}
+    }
+    if (parsed) {
+      tools = parsed;
+      break;
+    }
   }
   if (cache) cache.set(cacheKey, tools);
   return tools;
