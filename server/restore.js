@@ -16,6 +16,7 @@ const { broadcastEntryUpdate } = require('./sse-broadcast');
 const sessionIdx = require('./session-index');
 const { assessWeather } = require('../public/weather');
 const { retentionCutoffDate } = require('./retention');
+const { isDeltaRecord, spliceDelta, resolveChainMessages } = require('./delta-helpers');
 
 
 // #211: model marker ("The exact model ID is ...") from the persisted system
@@ -62,23 +63,33 @@ function loadEntryReqRes(entry) {
           ? await config.storage.readShared(`tools_${stripped.toolsHash}.json`).then(JSON.parse).catch(() => null)
           : null;
 
-        // Delta format: reconstruct full messages by following prevId chain.
-        // Each hop loads the previous entry (itself potentially a delta) via the
-        // same lazy-load mechanism, so the chain is resolved depth-first with
-        // per-entry promise deduplication. Missing prev entries (pruned) degrade
-        // gracefully — the delta portion is returned as-is.
+        // Delta format: reconstruct full messages by following the prevId chain.
+        // An ancestor still in memory is loaded through this same lazy-load
+        // (depth-first, per-entry promise dedup); one that is not (cold session
+        // beyond RESTORE_DAYS / SESSION_ENTRY_CAP, or evicted) is resolved from
+        // disk by the shared resolver. A chain that cannot be completed returns
+        // the surviving suffix MARKED with req.incomplete — never silently as if
+        // it were the whole conversation (#774).
         let messages = stripped.messages || [];
-        if (stripped.prevId != null && stripped.msgOffset != null) {
+        let incomplete = null;
+        if (isDeltaRecord(stripped)) {
+          let parent = null;
           const prevEntry = store.getEntryById(stripped.prevId);
           if (prevEntry) {
             await loadEntryReqRes(prevEntry);
             if (Array.isArray(prevEntry.req?.messages)) {
-              messages = [...prevEntry.req.messages.slice(0, stripped.msgOffset), ...messages];
+              const inc = prevEntry.req.incomplete;
+              parent = { messages: prevEntry.req.messages, base: inc ? inc.msgOffset : 0, missing: inc || null };
             }
           }
+          if (!parent) parent = await resolveChainMessages(config.storage, stripped.prevId);
+          const state = spliceDelta(parent, stripped);
+          messages = state.messages;
+          if (state.missing) incomplete = { reason: 'missing-ancestor', prevId: state.missing.prevId, msgOffset: state.missing.msgOffset };
         }
 
         entry.req = { ...stripped, system: sys, tools, messages };
+        if (incomplete) entry.req.incomplete = incomplete;
         delete entry.req.sysHash;
         delete entry.req.toolsHash;
         delete entry.req.prevId;
@@ -667,6 +678,91 @@ function sweepOrphanedPruneTmpFiles(logsDir, kill = process.kill) {
 // Files belonging to entries currently restored in memory are never pruned —
 // otherwise lazy-load (loadEntryReqRes) would return null after restart.
 
+// #774 re-anchor. `doomedIds` = ids prune is about to delete. Every kept
+// delta `_req.json` whose chain head (prevId) is doomed is rewritten as a FULL
+// record — write tmp → decode-verify against the resolved chain → rename — so
+// the ancestor can go without truncating it. A re-anchor that cannot be
+// verified keeps the ancestor (logged), and an ancestor kept this way may itself
+// be a delta whose own head is doomed, so the loop runs to a fixpoint.
+// Returns the Set of doomed ids that must be KEPT. Local backend only: it
+// rewrites files in place (the only supported backend; s3 fails fast).
+async function reanchorBeforePrune(files, doomedIds) {
+  const keep = new Set();
+  const location = config.storage.location;
+  if (!location || doomedIds.size === 0) return keep;
+
+  // A child is always newer than its ancestor, so nothing at or before the
+  // oldest doomed id can chain to a doomed one.
+  let oldestDoomed = null;
+  for (const id of doomedIds) if (oldestDoomed === null || id < oldestDoomed) oldestDoomed = id;
+
+  const pending = []; // { id, text, rec } kept deltas whose prevId is doomed
+  for (const filename of files) {
+    if (!filename.endsWith('_req.json') || filename.endsWith('_req.received.json')) continue;
+    const id = filename.slice(0, -'_req.json'.length);
+    if (id <= oldestDoomed || doomedIds.has(id)) continue;
+    let text;
+    try { text = await config.storage.read(id, '_req.json'); } catch { continue; }
+    if (!text.includes('"prevId"')) continue; // cheap pre-filter: full records have no chain head
+    let rec;
+    try { rec = JSON.parse(text); } catch { continue; }
+    if (isDeltaRecord(rec) && doomedIds.has(rec.prevId)) pending.push({ id, text, rec });
+  }
+  if (pending.length === 0) return keep;
+
+  const cache = new Map();
+  let reanchored = 0;
+  while (pending.length) {
+    const child = pending.shift();
+    if (!doomedIds.has(child.rec.prevId)) continue; // its head was kept meanwhile
+    const why = await reanchorDelta(location, child, cache);
+    if (!why) { reanchored++; continue; }
+    const head = child.rec.prevId;
+    console.error(`[ccxray] prune: kept ${head} — could not re-anchor ${child.id}: ${why}`);
+    doomedIds.delete(head);
+    keep.add(head);
+    // The kept ancestor is now itself a kept delta; if ITS head is doomed it needs the same treatment.
+    try {
+      const text = await config.storage.read(head, '_req.json');
+      const rec = JSON.parse(text);
+      if (isDeltaRecord(rec) && doomedIds.has(rec.prevId)) pending.push({ id: head, text, rec });
+    } catch { /* unreadable head: nothing chains through it */ }
+  }
+  if (reanchored > 0) console.log(`\x1b[90m   Re-anchored ${reanchored} delta record(s) to full before pruning their ancestors\x1b[0m`);
+  return keep;
+}
+
+// Rewrite one delta record as a full record. Returns null on success, else the
+// reason it was left untouched.
+async function reanchorDelta(location, child, cache) {
+  const state = await resolveChainMessages(config.storage, child.id, { cache });
+  if (!state) return 'chain unreadable';
+  if (state.missing) return `chain already incomplete (missing ${state.missing.prevId})`;
+  const full = { ...child.rec };
+  delete full.prevId;
+  delete full.msgOffset;
+  full.messages = state.messages;
+  const finalPath = path.join(location, `${child.id}_req.json`);
+  const tmpPath = `${finalPath}.reanchor-${process.pid}-${randomBytes(8).toString('hex')}.tmp`;
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(full), { mode: 0o600 });
+    // Decode-verify: what is on disk must parse to a chainless record whose
+    // messages are exactly the resolved chain.
+    const back = JSON.parse(fs.readFileSync(tmpPath, 'utf8'));
+    if (isDeltaRecord(back) || JSON.stringify(back.messages) !== JSON.stringify(state.messages)) {
+      return 'verification failed';
+    }
+    // CAS: the source must still be the bytes we resolved from (sync, no await before rename).
+    if (fs.readFileSync(finalPath, 'utf8') !== child.text) return 'source changed during re-anchor';
+    fs.renameSync(tmpPath, finalPath);
+    return null;
+  } catch (err) {
+    return err.message;
+  } finally {
+    try { fs.unlinkSync(tmpPath); } catch {} // gone after a successful rename
+  }
+}
+
 // `retentionDays` overrides config for an enrolled export home, whose retention was
 // fixed at enrollment and must not shrink just because this process lacks that env.
 async function pruneLogs({ retentionDays = config.LOG_RETENTION_DAYS } = {}) {
@@ -722,11 +818,21 @@ async function pruneLogs({ retentionDays = config.LOG_RETENTION_DAYS } = {}) {
   try { files = await config.storage.list(); } catch { return; }
 
   let deleted = 0, kept = 0;
+  const doomed = []; // { filename, id } — old and unprotected
   for (const filename of files) {
     const m = filename.match(/^(\d{4}-\d{2}-\d{2}T.*?)_(req\.received|req|res)\.json$/);
     if (!m) continue;
     if (filename.slice(0, 10) >= cutoffStr) continue;
     if (protectedIds.has(m[1])) { kept++; continue; }
+    doomed.push({ filename, id: m[1] });
+  }
+
+  // INVARIANT(#774): an ancestor is never deleted while a kept delta still
+  // chains to it — the child is re-anchored (rewritten FULL) first, or the
+  // ancestor is kept. Retention semantics stay intact for everything else.
+  const chainKept = await reanchorBeforePrune(files, new Set(doomed.map(d => d.id)));
+  for (const { filename, id } of doomed) {
+    if (chainKept.has(id)) { kept++; continue; }
     try {
       await config.storage.deleteFile(filename);
       deleted++;

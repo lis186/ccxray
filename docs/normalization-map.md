@@ -261,7 +261,7 @@ Usage and model are extracted from envelope events **before** the skip filter (`
 ### Anthropic path
 
 1. Read `_req.json` (may be delta format)
-2. If `prevId` + `msgOffset`: follow chain recursively, splice `prevMessages[0..offset]` + delta
+2. If `prevId` + `msgOffset`: follow the chain (an in-memory ancestor through the same lazy-load, otherwise `resolveChainMessages` in `server/delta-helpers.js` from disk), splice `prevMessages[0..offset]` + delta. If an ancestor is missing the surviving suffix is returned with `req.incomplete = { reason: 'missing-ancestor', prevId, msgOffset }` (`msgOffset` = number of leading messages unavailable); the turn column header shows "history truncated" (#774). `pruneLogs` rewrites a kept delta as a full record before deleting its ancestor, and keeps the ancestor (logged) when that rewrite cannot be verified
 3. Rehydrate `sys_${hash}.json` → `entry.req.system`, `tools_${hash}.json` → `entry.req.tools`
 4. Read `_res.json` → event array → `entry.res`
 
