@@ -5,6 +5,7 @@ const fsp = fs.promises;
 const path = require('path');
 const crypto = require('crypto');
 const readline = require('readline');
+const { TRASH_PREFIX, linkNoReplace, restoreFile } = require('../shared-trash');
 
 /**
  * Local filesystem storage adapter.
@@ -59,12 +60,12 @@ function createLocalStorage(logsDir, opts = {}) {
   // `ccxray gc --apply` quarantines instead of deleting (#775): unreferenced
   // files move to shared/.gc-trash-<UTC ts>/ and are only removed by `gc
   // --purge` after 7 days. A read of a missing name therefore looks there first
-  // (newest dir first) and moves the file back, so a hash that turns out to be
-  // referenced after all is restored transparently. The trash-dir list is cached
-  // against shared/'s mtime: a miss costs one stat, and the (large) readdir is
-  // redone only when shared/ changed — restore probes sys_ then openai_ names,
-  // so misses are routine.
-  const TRASH_PREFIX = '.gc-trash-';
+  // (newest dir first) and moves the file back with a no-replace link, so a hash
+  // that turns out to be referenced after all is restored transparently and a
+  // writer's fresh file is never overwritten by older quarantined data. The
+  // trash-dir list is cached against shared/'s mtime: a miss costs one stat, and
+  // the (large) readdir is redone only when shared/ changed — restore probes
+  // sys_ then openai_ names, so misses are routine.
   let trashCache = { mtimeMs: -1, dirs: [] };
   async function trashDirs() {
     let st;
@@ -80,42 +81,45 @@ function createLocalStorage(logsDir, opts = {}) {
   async function restoreFromTrash(filename) {
     const p = safeJoin(sharedDir, filename);
     for (const dir of await trashDirs()) {
-      try {
-        await fsp.rename(path.join(sharedDir, dir, filename), p);
-        return true;
-      } catch (e) {
-        if (e.code !== 'ENOENT') throw e;
-        // not in this dir — or another process already restored it
-        try { await fsp.access(p); return true; } catch {}
-      }
+      const r = await restoreFile(sharedDir, dir, filename);
+      if (r === 'restored' || r === 'exists') return true;
+      // 'missing': not in this dir — or another process already restored it
+      try { await fsp.access(p); return true; } catch {}
     }
     return false;
   }
 
+  // Commit `tmp` as shared/<filename> without ever replacing a valid file.
+  // Missing final → no-replace link. Existing final → keep it if it parses;
+  // otherwise REPAIR: rename the corrupt file aside (only one process wins that
+  // rename; the loser gets ENOENT and retries), then link again. The aside file
+  // is re-checked — if the winner of an earlier repair slipped in a valid file
+  // between our check and our rename, we put it back instead of discarding it.
   async function commitShared(filename, data) {
     const p = safeJoin(sharedDir, filename);
     if (await sharedFileIsValid(filename)) { verifiedShared.add(filename); return; }
     // 12-hex nonce: `ccxray gc` recognizes exactly this shape as its own debris.
-    const tmp = path.join(sharedDir, `.tmp-${process.pid}-${crypto.randomBytes(6).toString('hex')}-${path.basename(filename)}`);
+    const nonce = () => `${process.pid}-${crypto.randomBytes(6).toString('hex')}-${path.basename(filename)}`;
+    const tmp = path.join(sharedDir, `.tmp-${nonce()}`);
     try {
       await fsp.writeFile(tmp, data, { flag: 'wx', mode: 0o600 });
-      try {
-        await fsp.link(tmp, p); // atomic no-replace commit of a missing file
-      } catch (e) {
-        if (e.code === 'EEXIST') {
-          // Someone else got there first. Keep a valid file; replace a corrupt
-          // one, re-validating right before the rename.
-          if (!(await sharedFileIsValid(filename))) await fsp.rename(tmp, p);
-        } else if (['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV'].includes(e.code)) {
-          // Filesystem without hard links: fall back to rename, still guarded
-          // by a last-moment validity check (narrow race, content-addressed).
-          if (!(await sharedFileIsValid(filename))) await fsp.rename(tmp, p);
-        } else {
+      for (let attempt = 0; ; attempt++) {
+        if (attempt >= 5) throw new Error(`shared commit contention: ${filename}`);
+        if (await linkNoReplace(tmp, p)) break;
+        if (await sharedFileIsValid(filename)) break; // another writer won
+        const aside = path.join(sharedDir, `.corrupt-${nonce()}`);
+        try { await fsp.rename(p, aside); } catch (e) {
+          if (e.code === 'ENOENT') continue; // someone else moved it aside first
           throw e;
         }
+        let grabbedValid = false;
+        try { JSON.parse(await storage.readShared(path.basename(aside))); grabbedValid = true; } catch {}
+        if (grabbedValid) await linkNoReplace(aside, p); // restore the repair we displaced
+        await fsp.unlink(aside).catch(() => {});
+        if (grabbedValid) break;
       }
     } finally {
-      await fsp.unlink(tmp).catch(() => {}); // already gone after a rename
+      await fsp.unlink(tmp).catch(() => {}); // the link kept the final inode
     }
     verifiedShared.add(filename);
   }

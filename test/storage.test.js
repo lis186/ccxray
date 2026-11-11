@@ -1,6 +1,6 @@
 'use strict';
 
-const { describe, it, before, after } = require('node:test');
+const { describe, it, before, after, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
@@ -162,21 +162,23 @@ describe('storage/local', () => {
     // already passed their "is it valid?" check, then released one at a time.
     describe('concurrent writers', () => {
       const realWriteFile = fs.promises.writeFile;
-      let arrived, gates;
+      let arrived, gates, releaseByData;
       function installBarrier() {
-        arrived = []; gates = [];
+        arrived = []; gates = []; releaseByData = new Map();
         fs.promises.writeFile = async function (p, ...rest) {
           if (path.basename(String(p)).startsWith('.tmp-')) {
             let release;
             gates.push(new Promise(r => { release = r; }));
             arrived.push(release);
+            releaseByData.set(String(rest[0]), release); // arrival order is not guaranteed: key by writer
             await gates[gates.length - 1];
           }
           return realWriteFile.call(this, p, ...rest);
         };
       }
-      const waitArrived = async n => { for (let i = 0; i < 500 && arrived.length < n; i++) await new Promise(r => setTimeout(r, 5)); assert.equal(arrived.length, n); };
-      const afterEach_ = () => { fs.promises.writeFile = realWriteFile; };
+      const waitArrived = async n => { for (let i = 0; i < 4000 && arrived.length < n; i++) await new Promise(r => setTimeout(r, 5)); assert.equal(arrived.length, n); };
+      // Release anything still parked so a failed assertion cannot leave a pending promise behind.
+      const afterEach_ = () => { fs.promises.writeFile = realWriteFile; arrived.forEach(r => r()); };
 
       it('two writers on a MISSING file: the first valid file is never clobbered', async () => {
         installBarrier();
@@ -186,10 +188,10 @@ describe('storage/local', () => {
           const pa = a.writeSharedIfAbsent(name, '{"w":"A"}');
           const pb = b.writeSharedIfAbsent(name, '{"w":"B"}');
           await waitArrived(2); // both saw "missing"
-          arrived[0](); await pa;
+          releaseByData.get('{"w":"A"}')(); await pa;
           assert.equal(fs.readFileSync(fp, 'utf8'), '{"w":"A"}');
           const ino = fs.statSync(fp).ino;
-          arrived[1](); await pb;
+          releaseByData.get('{"w":"B"}')(); await pb;
           assert.equal(fs.readFileSync(fp, 'utf8'), '{"w":"A"}', 'late writer must not replace the valid file');
           assert.equal(fs.statSync(fp).ino, ino);
           assert.deepEqual((await a.listShared()).filter(f => f.startsWith('.tmp-')), []);
@@ -205,10 +207,10 @@ describe('storage/local', () => {
           const pa = a.writeSharedIfAbsent(name, '{"w":"A"}');
           const pb = b.writeSharedIfAbsent(name, '{"w":"B"}');
           await waitArrived(2); // both saw "corrupt"
-          arrived[0](); await pa;
+          releaseByData.get('{"w":"A"}')(); await pa;
           assert.equal(fs.readFileSync(fp, 'utf8'), '{"w":"A"}', 'corrupt file repaired');
           const ino = fs.statSync(fp).ino;
-          arrived[1](); await pb;
+          releaseByData.get('{"w":"B"}')(); await pb;
           assert.equal(fs.readFileSync(fp, 'utf8'), '{"w":"A"}', 'valid repair must survive the second writer');
           assert.equal(fs.statSync(fp).ino, ino);
           assert.deepEqual((await a.listShared()).filter(f => f.startsWith('.tmp-')), []);
@@ -228,6 +230,107 @@ describe('storage/local', () => {
           assert.equal(arrived.length, 1, 'a single tmp write');
           assert.equal(await a.readShared(name), '{"w":1}');
         } finally { afterEach_(); }
+      });
+    });
+
+    // #775 round 3: rename-aside repair, no-replace restore, no-hard-link fallback.
+    describe('corrupt repair and quarantine restore races', () => {
+      const fsp = fs.promises;
+      const originals = { rename: fsp.rename, link: fsp.link };
+      let parked = [];
+      afterEach(() => { fsp.rename = originals.rename; fsp.link = originals.link; parked.forEach(r => r()); parked = []; });
+      const shared = n => path.join(tmpDir, 'shared', n);
+      const leftovers = async a => (await a.listShared()).filter(f => f.startsWith('.tmp-') || f.startsWith('.corrupt-'));
+      // Hold every rename whose destination is a `.corrupt-` aside until released.
+      function gateAsideRenames() {
+        const waiting = parked = [];
+        fsp.rename = async function (src, dst, ...rest) {
+          if (path.basename(String(dst)).startsWith('.corrupt-')) await new Promise(r => waiting.push(r));
+          return originals.rename.call(this, src, dst, ...rest);
+        };
+        return {
+          waiting,
+          async arrived(n) { for (let i = 0; i < 4000 && waiting.length < n; i++) await new Promise(r => setTimeout(r, 5)); assert.equal(waiting.length, n, `${n} writers reached the replace step`); },
+        };
+      }
+
+      it('two writers that BOTH validated a corrupt file as corrupt: the first repair survives the second (barrier before either replaces)', async () => {
+        const name = 'sys_repairrace.json';
+        fs.writeFileSync(shared(name), '{"w":');
+        const gate = gateAsideRenames();
+        const a = createLocalStorage(tmpDir), b = createLocalStorage(tmpDir);
+        const pa = a.writeSharedIfAbsent(name, '{"w":"A"}');
+        const pb = b.writeSharedIfAbsent(name, '{"w":"B"}');
+        await gate.arrived(2); // both saw corrupt twice and have not replaced anything yet
+        gate.waiting[0](); // whichever writer reached the step first repairs the file
+        let winner = null;
+        for (let i = 0; i < 4000 && !winner; i++) {
+          try { winner = JSON.parse(fs.readFileSync(shared(name), 'utf8')).w; } catch { await new Promise(r => setTimeout(r, 5)); }
+        }
+        assert.ok(winner === 'A' || winner === 'B', 'first repair landed');
+        const ino = fs.statSync(shared(name)).ino;
+        gate.waiting[1](); // the second renames the first's VALID repair aside — it must put it back
+        await Promise.all([pa, pb]);
+        assert.equal(JSON.parse(fs.readFileSync(shared(name), 'utf8')).w, winner, 'valid repair survives');
+        assert.equal(fs.statSync(shared(name)).ino, ino);
+        assert.deepEqual(await leftovers(a), []);
+      });
+
+      it('released together, exactly one repair wins the rename-aside (the loser gets ENOENT and keeps the winner)', async () => {
+        const name = 'sys_repairsimul.json';
+        fs.writeFileSync(shared(name), '');
+        const gate = gateAsideRenames();
+        const a = createLocalStorage(tmpDir), b = createLocalStorage(tmpDir);
+        const both = Promise.all([a.writeSharedIfAbsent(name, '{"w":"A"}'), b.writeSharedIfAbsent(name, '{"w":"B"}')]);
+        await gate.arrived(2);
+        gate.waiting.forEach(r => r()); await both;
+        const final = fs.readFileSync(shared(name), 'utf8');
+        assert.ok(final === '{"w":"A"}' || final === '{"w":"B"}', final);
+        assert.deepEqual(await leftovers(a), []);
+        const again = await createLocalStorage(tmpDir).readShared(name);
+        assert.equal(again, final, 'stable');
+      });
+
+      it('without hard links (link → EPERM) a missing and a corrupt file are still written, never replacing a valid one', async () => {
+        fsp.link = async () => { const e = new Error('no links'); e.code = 'EPERM'; throw e; };
+        const a = createLocalStorage(tmpDir);
+        await a.writeSharedIfAbsent('sys_nolinkmissing.json', '{"v":1}');
+        assert.equal(await a.readShared('sys_nolinkmissing.json'), '{"v":1}');
+        fs.writeFileSync(shared('sys_nolinkcorrupt.json'), '{"v"');
+        await createLocalStorage(tmpDir).writeSharedIfAbsent('sys_nolinkcorrupt.json', '{"v":2}');
+        assert.equal(fs.readFileSync(shared('sys_nolinkcorrupt.json'), 'utf8'), '{"v":2}');
+        await createLocalStorage(tmpDir).writeSharedIfAbsent('sys_nolinkcorrupt.json', '{"v":3}');
+        assert.equal(fs.readFileSync(shared('sys_nolinkcorrupt.json'), 'utf8'), '{"v":2}', 'valid file kept');
+        assert.deepEqual(await leftovers(a), []);
+      });
+
+      it('quarantine restore is no-replace: a writer that creates the final file between the reader ENOENT and the restore keeps its content', async () => {
+        const name = 'sys_restorerace.json';
+        const trash = path.join(tmpDir, 'shared', '.gc-trash-2026-01-01T00-00-00-000Z');
+        fs.mkdirSync(trash, { recursive: true });
+        fs.writeFileSync(path.join(trash, name), '{"old":"quarantined"}');
+        let injected = false;
+        fsp.link = async function (src, dst, ...rest) {
+          if (!injected && String(src).includes('.gc-trash-')) {
+            injected = true;
+            fs.writeFileSync(String(dst), '{"new":"writer"}'); // the writer wins the race
+          }
+          return originals.link.call(this, src, dst, ...rest);
+        };
+        const reader = createLocalStorage(tmpDir);
+        assert.equal(await reader.readShared(name), '{"new":"writer"}');
+        assert.equal(fs.readFileSync(shared(name), 'utf8'), '{"new":"writer"}', 'not overwritten by older quarantined data');
+        assert.ok(fs.existsSync(path.join(trash, name)), 'trash copy left for purge');
+      });
+
+      it('a normal restore moves the file back and removes the trash copy', async () => {
+        const name = 'sys_restoreok.json';
+        const trash = path.join(tmpDir, 'shared', '.gc-trash-2026-01-02T00-00-00-000Z');
+        fs.mkdirSync(trash, { recursive: true });
+        fs.writeFileSync(path.join(trash, name), '{"q":1}');
+        assert.equal(await createLocalStorage(tmpDir).readShared(name), '{"q":1}');
+        assert.ok(!fs.existsSync(path.join(trash, name)));
+        assert.ok(fs.existsSync(shared(name)));
       });
     });
 
