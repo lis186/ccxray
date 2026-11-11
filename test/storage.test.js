@@ -128,10 +128,41 @@ describe('storage/local', () => {
     });
 
     it('writeSharedIfAbsent is idempotent — does not overwrite', async () => {
-      await storage.writeSharedIfAbsent('sys_idem.json', 'original');
-      await storage.writeSharedIfAbsent('sys_idem.json', 'overwrite');
+      await storage.writeSharedIfAbsent('sys_idem.json', '{"v":"original"}');
+      await storage.writeSharedIfAbsent('sys_idem.json', '{"v":"overwrite"}');
       const content = await storage.readShared('sys_idem.json');
-      assert.equal(content, 'original');
+      assert.equal(content, '{"v":"original"}');
+    });
+
+    // #775: a torn write at the final path used to block every later write
+    // (EEXIST → skip), leaving the corrupt file forever.
+    for (const [label, torn] of [['truncated JSON', '{"v":'], ['zero-byte', '']]) {
+      it(`writeSharedIfAbsent replaces a ${label} file`, async () => {
+        const name = `sys_torn_${label.replace(/\W/g, '')}.json`;
+        fs.writeFileSync(path.join(tmpDir, 'shared', name), torn);
+        // fresh adapter: nothing memoized as verified
+        const fresh = createLocalStorage(tmpDir);
+        await fresh.writeSharedIfAbsent(name, '{"v":"good"}');
+        assert.equal(await fresh.readShared(name), '{"v":"good"}');
+      });
+    }
+
+    it('writeSharedIfAbsent leaves no tmp file behind and a valid file is not rewritten', async () => {
+      const name = 'sys_notmp.json';
+      await storage.writeSharedIfAbsent(name, '{"v":1}');
+      const before = fs.statSync(path.join(tmpDir, 'shared', name)).ino;
+      await createLocalStorage(tmpDir).writeSharedIfAbsent(name, '{"v":2}');
+      assert.equal(fs.statSync(path.join(tmpDir, 'shared', name)).ino, before, 'valid file kept (no rename over it)');
+      assert.equal(await storage.readShared(name), '{"v":1}');
+      assert.deepEqual((await storage.listShared()).filter(f => f.startsWith('.tmp-')), []);
+    });
+
+    it('a failed write never leaves a truncated file at the final path', async () => {
+      const name = 'sys_atomic.json';
+      // data that makes writeFile throw mid-flight (non-string/Buffer)
+      await assert.rejects(() => storage.writeSharedIfAbsent(name, { not: 'a string' }));
+      assert.ok(!fs.existsSync(path.join(tmpDir, 'shared', name)));
+      assert.deepEqual((await storage.listShared()).filter(f => f.startsWith('.tmp-')), []);
     });
 
     it('readShared throws ENOENT for missing file', async () => {

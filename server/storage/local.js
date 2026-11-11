@@ -3,6 +3,7 @@
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
+const crypto = require('crypto');
 const readline = require('readline');
 
 /**
@@ -28,6 +29,8 @@ function createLocalStorage(logsDir, opts = {}) {
   const sharedDir = path.join(logsDir, 'shared');
   const indexPath = path.join(logsDir, 'index.ndjson');
   const legacyDir = opts.legacyDir || null;
+  // Shared filenames this process has confirmed valid (#775); see writeSharedIfAbsent.
+  const verifiedShared = new Set();
 
   // One-time, best-effort migration from the old package-relative logs/
   // location. Errors are logged and swallowed — a failed migration must never
@@ -46,7 +49,13 @@ function createLocalStorage(logsDir, opts = {}) {
     }
   }
 
-  return {
+  // A shared file counts as present only if it parses; missing, empty and
+  // truncated all read as "absent" so the writer replaces them (#775).
+  async function sharedFileIsValid(filename) {
+    try { JSON.parse(await storage.readShared(filename)); return true; } catch { return false; }
+  }
+
+  const storage = {
     supportsDelta: true,
 
     // Human-readable destination for the startup banner.
@@ -128,13 +137,28 @@ function createLocalStorage(logsDir, opts = {}) {
 
     // ── Shared content-addressed storage (shared/) ───────────────────
 
+    // Atomic (#775): the content goes to a unique tmp file in shared/ and is
+    // renamed onto the final name, so a crash or ENOSPC mid-write can never
+    // leave a truncated file at the final path. A final file that already
+    // parses is kept (no-clobber, tmp discarded); an unparseable one is
+    // treated as missing and replaced — before #775 the `wx` write skipped on
+    // EEXIST, so a torn file stayed corrupt forever. Validation goes through
+    // readShared so it follows whatever on-disk encoding that path decodes.
     async writeSharedIfAbsent(filename, data) {
       const p = safeJoin(sharedDir, filename);
+      // Hot path (every request): a hash already verified or written by this
+      // process is not re-read. Safe — content-addressed, and gc is offline.
+      if (verifiedShared.has(filename)) return;
+      if (await sharedFileIsValid(filename)) { verifiedShared.add(filename); return; }
+      const tmp = path.join(sharedDir, `.tmp-${process.pid}-${crypto.randomBytes(6).toString('hex')}-${path.basename(filename)}`);
       try {
-        await fsp.writeFile(p, data, { flag: 'wx', mode: 0o600 });
+        await fsp.writeFile(tmp, data, { flag: 'wx', mode: 0o600 });
+        await fsp.rename(tmp, p);
       } catch (e) {
-        if (e.code !== 'EEXIST') throw e;
+        await fsp.unlink(tmp).catch(() => {});
+        throw e;
       }
+      verifiedShared.add(filename);
     },
 
     async readShared(filename) {
@@ -156,6 +180,7 @@ function createLocalStorage(logsDir, opts = {}) {
       }
     },
   };
+  return storage;
 }
 
 module.exports = { createLocalStorage };

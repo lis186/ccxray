@@ -841,7 +841,11 @@ describe('OpenAI Responses WebSocket proxy', () => {
     assert.match(entry.coreHash, /^[0-9a-f]{12}$/, 'coreHash from prompt registration');
     assert.equal(entry.agentKey, 'default');
     assert.equal(entry.agentLabel, 'Codex Default');
-    assert.ok(fs.existsSync(path.join(testHome, 'logs', 'shared', `openai_instructions_${entry.sysHash}.json`)), 'shared instructions file written');
+    // The shared write is fire-and-forget and atomic (tmp + rename, #775), so it
+    // can land a few ms after the index line.
+    const sharedPath = path.join(testHome, 'logs', 'shared', `openai_instructions_${entry.sysHash}.json`);
+    for (let i = 0; i < 100 && !fs.existsSync(sharedPath); i++) await new Promise(r => setTimeout(r, 20));
+    assert.ok(fs.existsSync(sharedPath), 'shared instructions file written');
 
     const reqLog = JSON.parse(fs.readFileSync(path.join(testHome, 'logs', `${entry.id}_req.json`), 'utf8'));
     assert.equal(reqLog.provider, 'openai');
