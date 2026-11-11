@@ -38,6 +38,7 @@ const net = require('net');
 const readline = require('readline');
 const path = require('path');
 const config = require('./config');
+const { restoreFile } = require('./shared-trash');
 const { liveHubBlocking, acquireMaintenanceLock, releaseMaintenanceLock } = require('./rebuild-index');
 
 const GRACE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -59,9 +60,10 @@ function collectHashes(text, sys, tools) {
   while ((m = HASH_RE.exec(text))) (m[1] === 'sysHash' ? sys : tools).add(m[2]);
 }
 
-// Debris of an interrupted atomic write (local.js commitShared): exactly
-// `.tmp-<pid>-<12 hex>-<recognized shared name>`. Any other `.tmp-*` is not ours.
-const TMP_RE = /^\.tmp-\d+-[0-9a-f]{12}-(.+)$/;
+// Debris of an interrupted atomic write or corrupt-file repair (local.js
+// commitShared): exactly `.tmp-|.corrupt-<pid>-<12 hex>-<recognized shared
+// name>`. Any other `.tmp-*` / `.corrupt-*` is not ours.
+const TMP_RE = /^\.(?:tmp|corrupt)-\d+-[0-9a-f]{12}-(.+)$/;
 
 function classify(name) {
   const tmp = TMP_RE.exec(name);
@@ -264,9 +266,13 @@ async function gcShared({ apply = false, verbose = false, storage = config.stora
   }
 }
 
-// `gc --purge [--dry-run]`: the irreversible step — delete quarantine dirs
-// whose timestamp is older than the grace period.
-async function purgeTrash({ dryRun = false, storage = config.storage, log = console.log, now = Date.now(), graceMs = GRACE_MS, port } = {}) {
+// `gc --purge [--dry-run]`: the irreversible step — delete quarantined files
+// from dirs whose timestamp is older than the grace period. Roots are
+// re-collected immediately before: a quarantined file that is referenced NOW (a
+// writer that had cached it as present kept using it) is restored to shared/
+// with a no-replace link instead of deleted; only unrooted members are removed,
+// unrecognized names are left alone, and a dir is removed only once empty.
+async function purgeTrash({ dryRun = false, storage = config.storage, log = console.log, now = Date.now(), graceMs = GRACE_MS, port, onCollected } = {}) {
   const refusal = await serverGuard({ mutating: !dryRun, log, port });
   if (refusal) return refusal;
   if (!storage.location || !fs.existsSync(storage.location)) {
@@ -280,15 +286,45 @@ async function purgeTrash({ dryRun = false, storage = config.storage, log = cons
     const trash = await listTrash(sharedDir, now, graceMs);
     const old = trash.filter(t => t.purgeable);
     const keep = trash.filter(t => !t.purgeable);
-    const bytes = old.reduce((n, t) => n + t.bytes, 0);
     log(`${dryRun ? 'gc --purge --dry-run' : 'gc --purge'}: ${trash.length} quarantine dir(s)`);
-    for (const t of old) log(`  ${dryRun ? 'would purge' : 'purge'} ${t.dir}  ${t.files} files (${fmtBytes(t.bytes)})`);
     for (const t of keep) log(`  keep  ${t.dir}  ${t.files} files (${fmtBytes(t.bytes)}) — under ${graceDays(graceMs)}d old`);
-    if (!dryRun) for (const t of old) await fs.promises.rm(path.join(sharedDir, t.dir), { recursive: true, force: true });
+
+    const roots = old.length ? await collectRoots(storage) : null;
+    if (onCollected) await onCollected(); // test seam: a restore/writer lands after the scan
+
+    const totals = { deleted: 0, deletedBytes: 0, restored: 0, kept: 0 };
+    const purged = [];
+    for (const t of old) {
+      const dirPath = path.join(sharedDir, t.dir);
+      const mine = { deleted: 0, deletedBytes: 0, restored: 0, kept: 0 };
+      for (const name of await fs.promises.readdir(dirPath)) {
+        const c = classify(name);
+        if (!c) { mine.kept++; continue; } // unknown name: never deleted
+        const rooted = c.hash !== null && roots[PREFIXES.find(p => p.prefix === c.prefix).roots].has(c.hash);
+        let size = 0;
+        try { size = (await fs.promises.stat(path.join(dirPath, name))).size; } catch (e) { if (e.code === 'ENOENT') continue; throw e; }
+        if (rooted) {
+          mine.restored++;
+          if (!dryRun) {
+            const r = await restoreFile(sharedDir, t.dir, name);
+            // 'exists': a writer already has a final file — the old copy is redundant
+            if (r === 'exists') await fs.promises.unlink(path.join(dirPath, name)).catch(() => {});
+          }
+        } else {
+          mine.deleted++; mine.deletedBytes += size;
+          if (!dryRun) await fs.promises.unlink(path.join(dirPath, name)).catch(e => { if (e.code !== 'ENOENT') throw e; });
+        }
+      }
+      for (const k of Object.keys(totals)) totals[k] += mine[k];
+      log(`  ${dryRun ? 'would purge' : 'purge'} ${t.dir}  ${t.files} files (${fmtBytes(t.bytes)}): ${dryRun ? 'would delete' : 'deleted'} ${mine.deleted}, ${dryRun ? 'would restore' : 'restored'} ${mine.restored} still-referenced, kept ${mine.kept} unrecognized`);
+      if (!dryRun) {
+        try { await fs.promises.rmdir(dirPath); purged.push(t.dir); } catch (e) { if (e.code !== 'ENOTEMPTY' && e.code !== 'ENOENT') throw e; if (e.code === 'ENOENT') purged.push(t.dir); }
+      } else purged.push(t.dir);
+    }
     log(dryRun
-      ? `${old.length} dir(s), ${fmtBytes(bytes)} would be permanently deleted. Re-run \`ccxray gc --purge\` to delete.`
-      : `Permanently deleted ${old.length} dir(s), ${fmtBytes(bytes)}.`);
-    return { applied: !dryRun, purged: old.map(t => t.dir), kept: keep.map(t => t.dir), bytes };
+      ? `${totals.deleted} file(s), ${fmtBytes(totals.deletedBytes)} would be permanently deleted; ${totals.restored} still-referenced file(s) would be restored to shared/. Re-run \`ccxray gc --purge\` to do it.`
+      : `Permanently deleted ${totals.deleted} file(s), ${fmtBytes(totals.deletedBytes)}; restored ${totals.restored} still-referenced file(s) to shared/.`);
+    return { applied: !dryRun, purged, kept: keep.map(t => t.dir), bytes: totals.deletedBytes, ...totals };
   } finally {
     releaseMaintenanceLock(lock);
   }

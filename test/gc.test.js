@@ -224,6 +224,57 @@ describe('ccxray gc (#775)', () => {
       assert.ok(!fs.existsSync(path.join(logsDir, '.index-maintenance.lock')));
     });
 
+    it('--purge re-collects roots first: a still-referenced file in OLD quarantine is restored to shared/, not deleted; unrooted members go; unknown names and their dir stay', async () => {
+      const dirA = oldTrash('2020-01-01T00-00-00-000Z', ['sys_idxrootedidx.json', 'tools_reqrootedreq.json', 'sys_unrootedold1.json', 'notes.txt']);
+      const dirB = oldTrash('2020-01-02T00-00-00-000Z', ['sys_unrootedold2.json']);
+      indexLine({ id: 'later', sysHash: 'idxrootedidx' });
+      fs.writeFileSync(path.join(logsDir, '2026-11-11T00-00-00-000_req.received.json'), JSON.stringify({ toolsHash: 'reqrootedreq' }));
+      const r = await runPurge();
+      assert.equal(r.restored, 2);
+      assert.equal(r.deleted, 2);
+      assert.equal(fs.readFileSync(sharedPath('sys_idxrootedidx.json'), 'utf8'), '{"q":1}');
+      assert.ok(fs.existsSync(sharedPath('tools_reqrootedreq.json')));
+      assert.ok(!fs.existsSync(path.join(dirA, 'sys_unrootedold1.json')));
+      assert.ok(fs.existsSync(path.join(dirA, 'notes.txt')), 'unknown name never deleted');
+      assert.ok(fs.existsSync(dirA), 'non-empty dir stays');
+      assert.ok(!fs.existsSync(dirB), 'emptied dir removed');
+      assert.deepEqual(r.purged, ['.gc-trash-2020-01-02T00-00-00-000Z']);
+    });
+
+    it('--purge --dry-run reports the still-referenced files it would restore and changes nothing', async () => {
+      oldTrash('2020-01-01T00-00-00-000Z', ['sys_idxrootedidx.json', 'sys_gone.json']);
+      indexLine({ id: 'later', sysHash: 'idxrootedidx' });
+      const r = await runPurge({ dryRun: true });
+      assert.equal(r.restored, 1); assert.equal(r.deleted, 1);
+      assert.match(logs.join('\n'), /would restore 1 still-referenced/);
+      assert.ok(!fs.existsSync(sharedPath('sys_idxrootedidx.json')));
+      assert.equal(fs.readdirSync(path.join(logsDir, 'shared', '.gc-trash-2020-01-01T00-00-00-000Z')).length, 2);
+    });
+
+    it('purge vs a concurrent readShared restore (barrier between root collection and deletion): the restored file survives and nothing throws', async () => {
+      oldTrash('2020-01-01T00-00-00-000Z', ['sys_racedracedr.json']);
+      const reader = createLocalStorage(logsDir);
+      const r = await runPurge({ onCollected: async () => { assert.equal(await reader.readShared('sys_racedracedr.json'), '{"q":1}'); } });
+      assert.equal(fs.readFileSync(sharedPath('sys_racedracedr.json'), 'utf8'), '{"q":1}', 'reader-restored file is untouched by purge');
+      assert.equal(trashDirs().length, 0);
+      assert.ok(r.purged.length === 1);
+    });
+
+    it('purge of a rooted file whose final already exists (writer won) keeps the writer content and drops the stale trash copy', async () => {
+      const d = oldTrash('2020-01-01T00-00-00-000Z', ['sys_idxrootedidx.json']);
+      indexLine({ id: 'later', sysHash: 'idxrootedidx' });
+      fs.writeFileSync(sharedPath('sys_idxrootedidx.json'), '{"writer":1}');
+      await runPurge();
+      assert.equal(fs.readFileSync(sharedPath('sys_idxrootedidx.json'), 'utf8'), '{"writer":1}');
+      assert.ok(!fs.existsSync(d));
+    });
+
+    it('--apply also collects exact .corrupt-<pid>-<hex>-<name> repair debris (and only that shape)', async () => {
+      shared('.corrupt-123-0123456789ab-sys_x.json'); shared('.corrupt-manual.json'); shared('.corrupt-1-zz-sys_x.json');
+      const r = await run({ apply: true });
+      assert.deepEqual(r.doomed, ['.corrupt-123-0123456789ab-sys_x.json']);
+    });
+
     it('--purge --dry-run lists what it would purge and deletes nothing', async () => {
       oldTrash('2020-01-01T00-00-00-000Z', ['sys_x1.json']);
       const r = await runPurge({ dryRun: true });
