@@ -13,6 +13,10 @@
 //     on a miss, so a hash that is referenced after all (a writer reusing an old
 //     file between our scan and the move, a server on an unprobed port) comes
 //     back transparently instead of being lost.
+//   • --apply also REPAIRS: every rooted shared file that does not parse (torn
+//     write; the request path is write-once and never touches it) is replaced by
+//     the newest valid quarantine copy if there is one, else deleted — it holds
+//     nothing recoverable and the next write recreates it.
 //   • --purge permanently deletes quarantine dirs older than 7 days.
 //   • offline + explicit — `--dry-run` reports, there is no default action.
 //     Never runs from startup prune, and nothing on the request path freshens
@@ -60,10 +64,9 @@ function collectHashes(text, sys, tools) {
   while ((m = HASH_RE.exec(text))) (m[1] === 'sysHash' ? sys : tools).add(m[2]);
 }
 
-// Debris of an interrupted atomic write or corrupt-file repair (local.js
-// commitShared): exactly `.tmp-|.corrupt-<pid>-<12 hex>-<recognized shared
-// name>`. Any other `.tmp-*` / `.corrupt-*` is not ours.
-const TMP_RE = /^\.(?:tmp|corrupt)-\d+-[0-9a-f]{12}-(.+)$/;
+// Debris of an interrupted atomic write (local.js commitShared): exactly
+// `.tmp-<pid>-<12 hex>-<recognized shared name>`. Any other `.tmp-*` is not ours.
+const TMP_RE = /^\.tmp-\d+-[0-9a-f]{12}-(.+)$/;
 
 function classify(name) {
   const tmp = TMP_RE.exec(name);
@@ -207,8 +210,8 @@ async function gcShared({ apply = false, verbose = false, storage = config.stora
     await inBatches(await storage.listShared(), 64, async name => {
       const c = classify(name);
       if (!c) { unknown++; return; }
-      const st = await storage.statShared(name);
-      if (!st) return; // vanished
+      let st; // direct stat: gc must see corrupt files, which storage.statShared treats as missing
+      try { st = await fs.promises.stat(path.join(sharedDir, name)); } catch (e) { if (e.code === 'ENOENT') return; throw e; }
       entries.push({ name, ...c, size: st.size, mtimeMs: st.mtimeMs });
     });
     if (apply) {
@@ -230,6 +233,22 @@ async function gcShared({ apply = false, verbose = false, storage = config.stora
     }
     doomed.sort();
 
+    // Corrupt ROOTED finals (any age): restore the newest valid quarantine copy, else delete.
+    const rooted = entries.filter(e => e.hash !== null && roots[PREFIXES.find(p => p.prefix === e.prefix).roots].has(e.hash));
+    const repair = { corrupt: 0, restored: 0, deleted: 0 };
+    for (const e of rooted) {
+      if ((await storage.checkShared(e.name)) !== 'corrupt') continue;
+      repair.corrupt++;
+      let dir = null;
+      for (const t of [...trash].reverse()) {
+        if ((await storage.checkShared(e.name, { quarantineDir: t.dir })) === 'valid') { dir = t.dir; break; }
+      }
+      if (dir) repair.restored++; else repair.deleted++;
+      if (!apply) continue;
+      await fs.promises.unlink(path.join(sharedDir, e.name));
+      if (dir) await restoreFile(sharedDir, dir, e.name);
+    }
+
     const verb = apply ? 'quarantine' : 'would quarantine';
     log(`${apply ? 'gc --apply' : 'gc --dry-run'}: ${roots.sys.size} sysHash + ${roots.tools.size} toolsHash roots from the index and ${roots.reqFiles} request files`);
     const total = { files: 0, bytes: 0, rooted: 0, young: 0, doomed: 0, doomedBytes: 0 };
@@ -242,6 +261,7 @@ async function gcShared({ apply = false, verbose = false, storage = config.stora
     row('total', total);
     const totalBytes = total.doomedBytes;
     if (unknown) log(`  ${unknown} unrecognized shared/ file(s) left untouched`);
+    if (repair.corrupt) log(`  corrupt rooted file(s): ${repair.corrupt} — ${apply ? 'restored' : 'would restore'} ${repair.restored} from quarantine, ${apply ? 'deleted' : 'would delete'} ${repair.deleted} (the next write recreates them)`);
     if (trash.length) {
       const purgeable = trash.filter(t => t.purgeable);
       log(`  already quarantined: ${trash.length} dir(s), ${trash.reduce((n, t) => n + t.files, 0)} files (${fmtBytes(trash.reduce((n, t) => n + t.bytes, 0))}); ${purgeable.length} older than ${graceDays(graceMs)}d — \`ccxray gc --purge\` frees them`);
@@ -250,7 +270,7 @@ async function gcShared({ apply = false, verbose = false, storage = config.stora
 
     if (!apply) {
       log(`${doomed.length} file(s), ${fmtBytes(totalBytes)} would be quarantined (--apply moves them to shared/${trashName(now)}/; nothing is freed until \`gc --purge\`). --verbose lists each file.`);
-      return { applied: false, doomed, bytes: totalBytes };
+      return { applied: false, doomed, bytes: totalBytes, repair };
     }
     const dir = trashName(now);
     if (doomed.length) {
@@ -260,7 +280,7 @@ async function gcShared({ apply = false, verbose = false, storage = config.stora
       });
     }
     log(`Quarantined ${doomed.length} file(s), ${fmtBytes(totalBytes)}${doomed.length ? ` into shared/${dir}/` : ''}. Nothing is freed yet: \`ccxray gc --purge\` deletes quarantine dirs older than ${graceDays(graceMs)}d; a read of a quarantined file restores it.`);
-    return { applied: true, doomed, bytes: totalBytes, trashDir: doomed.length ? dir : null };
+    return { applied: true, doomed, bytes: totalBytes, trashDir: doomed.length ? dir : null, repair };
   } finally {
     releaseMaintenanceLock(lock);
   }
@@ -292,34 +312,62 @@ async function purgeTrash({ dryRun = false, storage = config.storage, log = cons
     const roots = old.length ? await collectRoots(storage) : null;
     if (onCollected) await onCollected(); // test seam: a restore/writer lands after the scan
 
+    // Group by filename across ALL quarantine generations (a name can sit in
+    // several dirs, and openai_prompt_meta_<h> copies can legitimately differ).
     const totals = { deleted: 0, deletedBytes: 0, restored: 0, kept: 0 };
-    const purged = [];
-    for (const t of old) {
-      const dirPath = path.join(sharedDir, t.dir);
-      const mine = { deleted: 0, deletedBytes: 0, restored: 0, kept: 0 };
-      for (const name of await fs.promises.readdir(dirPath)) {
-        const c = classify(name);
-        if (!c) { mine.kept++; continue; } // unknown name: never deleted
-        const rooted = c.hash !== null && roots[PREFIXES.find(p => p.prefix === c.prefix).roots].has(c.hash);
-        let size = 0;
-        try { size = (await fs.promises.stat(path.join(dirPath, name))).size; } catch (e) { if (e.code === 'ENOENT') continue; throw e; }
-        if (rooted) {
-          mine.restored++;
-          if (!dryRun) {
-            const r = await restoreFile(sharedDir, t.dir, name);
-            // 'exists': a writer already has a final file — the old copy is redundant
-            if (r === 'exists') await fs.promises.unlink(path.join(dirPath, name)).catch(() => {});
+    const perDir = new Map(old.map(t => [t.dir, { deleted: 0, restored: 0, kept: 0 }]));
+    const newestFirst = [...trash].reverse().map(t => t.dir);
+    const purgeable = new Set(old.map(t => t.dir));
+    const copies = new Map(); // known name → purgeable dirs holding it (newest first)
+    for (const dir of newestFirst) {
+      if (!purgeable.has(dir)) continue;
+      for (const name of await fs.promises.readdir(path.join(sharedDir, dir))) {
+        if (!classify(name)) { perDir.get(dir).kept++; totals.kept++; continue; } // unknown: never deleted
+        if (!copies.has(name)) copies.set(name, []);
+        copies.get(name).push(dir);
+      }
+    }
+    const dropCopy = async (dir, name) => {
+      const f = path.join(sharedDir, dir, name);
+      let size = 0;
+      try { size = (await fs.promises.stat(f)).size; } catch (e) { if (e.code === 'ENOENT') return; throw e; }
+      perDir.get(dir).deleted++; totals.deleted++; totals.deletedBytes += size;
+      if (!dryRun) await fs.promises.unlink(f).catch(e => { if (e.code !== 'ENOENT') throw e; });
+    };
+    for (const [name, dirs] of copies) {
+      const c = classify(name);
+      let restoredFrom = null; // dry-run: that copy would be moved, not deleted
+      const isRooted = c.hash !== null && roots[PREFIXES.find(p => p.prefix === c.prefix).roots].has(c.hash);
+      if (isRooted) {
+        // Establish a valid final BEFORE any copy is deleted: if it is absent or
+        // corrupt, restore the newest valid copy from any generation.
+        const state = await storage.checkShared(name);
+        if (state !== 'valid') {
+          let from = null;
+          for (const dir of newestFirst) {
+            if ((await storage.checkShared(name, { quarantineDir: dir })) === 'valid') { from = dir; break; }
           }
-        } else {
-          mine.deleted++; mine.deletedBytes += size;
-          if (!dryRun) await fs.promises.unlink(path.join(dirPath, name)).catch(e => { if (e.code !== 'ENOENT') throw e; });
+          if (from) {
+            totals.restored++; perDir.get(purgeable.has(from) ? from : dirs[0]).restored++; restoredFrom = from;
+            if (!dryRun) {
+              if (state === 'corrupt') await fs.promises.unlink(path.join(sharedDir, name)); // offline + locked
+              await restoreFile(sharedDir, from, name);
+            }
+          }
         }
       }
-      for (const k of Object.keys(totals)) totals[k] += mine[k];
-      log(`  ${dryRun ? 'would purge' : 'purge'} ${t.dir}  ${t.files} files (${fmtBytes(t.bytes)}): ${dryRun ? 'would delete' : 'deleted'} ${mine.deleted}, ${dryRun ? 'would restore' : 'restored'} ${mine.restored} still-referenced, kept ${mine.kept} unrecognized`);
-      if (!dryRun) {
-        try { await fs.promises.rmdir(dirPath); purged.push(t.dir); } catch (e) { if (e.code !== 'ENOTEMPTY' && e.code !== 'ENOENT') throw e; if (e.code === 'ENOENT') purged.push(t.dir); }
-      } else purged.push(t.dir);
+      for (const dir of dirs) if (!(dryRun && dir === restoredFrom)) await dropCopy(dir, name); // restored copy is already gone from its dir (ENOENT → skipped)
+    }
+    for (const t of old) {
+      const m = perDir.get(t.dir);
+      log(`  ${dryRun ? 'would purge' : 'purge'} ${t.dir}  ${t.files} files (${fmtBytes(t.bytes)}): ${dryRun ? 'would delete' : 'deleted'} ${m.deleted}, ${dryRun ? 'would restore' : 'restored'} ${m.restored} still-referenced, kept ${m.kept} unrecognized`);
+    }
+    const purged = [];
+    for (const t of old) {
+      if (dryRun) { purged.push(t.dir); continue; }
+      try { await fs.promises.rmdir(path.join(sharedDir, t.dir)); purged.push(t.dir); } catch (e) {
+        if (e.code === 'ENOENT') purged.push(t.dir); else if (e.code !== 'ENOTEMPTY') throw e;
+      }
     }
     log(dryRun
       ? `${totals.deleted} file(s), ${fmtBytes(totals.deletedBytes)} would be permanently deleted; ${totals.restored} still-referenced file(s) would be restored to shared/. Re-run \`ccxray gc --purge\` to do it.`

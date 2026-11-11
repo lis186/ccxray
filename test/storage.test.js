@@ -134,16 +134,28 @@ describe('storage/local', () => {
       assert.equal(content, '{"v":"original"}');
     });
 
-    // #775: a torn write at the final path used to block every later write
-    // (EEXIST → skip), leaving the corrupt file forever.
+    // #775 (write-once): the request path never touches an existing final file.
+    // A torn file is left alone and warned about once; reads treat it as missing;
+    // `ccxray gc --apply` repairs it offline (test/gc.test.js).
     for (const [label, torn] of [['truncated JSON', '{"v":'], ['zero-byte', '']]) {
-      it(`writeSharedIfAbsent replaces a ${label} file`, async () => {
+      it(`writeSharedIfAbsent leaves a ${label} final untouched, warns once, and readShared treats it as missing`, async () => {
         const name = `sys_torn_${label.replace(/\W/g, '')}.json`;
-        fs.writeFileSync(path.join(tmpDir, 'shared', name), torn);
-        // fresh adapter: nothing memoized as verified
-        const fresh = createLocalStorage(tmpDir);
-        await fresh.writeSharedIfAbsent(name, '{"v":"good"}');
-        assert.equal(await fresh.readShared(name), '{"v":"good"}');
+        const fp = path.join(tmpDir, 'shared', name);
+        fs.writeFileSync(fp, torn);
+        const warnings = [];
+        const realErr = console.error;
+        console.error = (...a) => warnings.push(a.join(' '));
+        try {
+          const fresh = createLocalStorage(tmpDir);
+          await fresh.writeSharedIfAbsent(name, '{"v":"good"}');
+          await createLocalStorage(tmpDir).writeSharedIfAbsent(name, '{"v":"good"}');
+          await fresh.writeSharedIfAbsent(name, '{"v":"good"}'); // same adapter again: no second warning
+        } finally { console.error = realErr; }
+        assert.equal(fs.readFileSync(fp, 'utf8'), torn, 'corrupt final not repaired or replaced on the hot path');
+        assert.equal(warnings.filter(w => w.includes(name)).length, 2, 'one warning per adapter+filename, not per write');
+        assert.deepEqual((await storage.listShared()).filter(f => f.startsWith('.tmp-') || f.startsWith('.corrupt-')), []);
+        await assert.rejects(() => createLocalStorage(tmpDir).readShared(name), { code: 'ENOENT' }, 'corrupt reads as missing');
+        assert.equal(await createLocalStorage(tmpDir).checkShared(name), 'corrupt');
       });
     }
 
@@ -198,25 +210,6 @@ describe('storage/local', () => {
         } finally { afterEach_(); }
       });
 
-      it('two writers on a CORRUPT file: the first repair is never clobbered by the second', async () => {
-        installBarrier();
-        try {
-          const name = 'sys_racecorrupt.json', fp = path.join(tmpDir, 'shared', name);
-          fs.writeFileSync(fp, '{"w":');
-          const a = createLocalStorage(tmpDir), b = createLocalStorage(tmpDir);
-          const pa = a.writeSharedIfAbsent(name, '{"w":"A"}');
-          const pb = b.writeSharedIfAbsent(name, '{"w":"B"}');
-          await waitArrived(2); // both saw "corrupt"
-          releaseByData.get('{"w":"A"}')(); await pa;
-          assert.equal(fs.readFileSync(fp, 'utf8'), '{"w":"A"}', 'corrupt file repaired');
-          const ino = fs.statSync(fp).ino;
-          releaseByData.get('{"w":"B"}')(); await pb;
-          assert.equal(fs.readFileSync(fp, 'utf8'), '{"w":"A"}', 'valid repair must survive the second writer');
-          assert.equal(fs.statSync(fp).ino, ino);
-          assert.deepEqual((await a.listShared()).filter(f => f.startsWith('.tmp-')), []);
-        } finally { afterEach_(); }
-      });
-
       it('same-process writers of one name coalesce into one in-flight write (first data wins)', async () => {
         installBarrier();
         try {
@@ -241,67 +234,64 @@ describe('storage/local', () => {
       afterEach(() => { fsp.rename = originals.rename; fsp.link = originals.link; parked.forEach(r => r()); parked = []; });
       const shared = n => path.join(tmpDir, 'shared', n);
       const leftovers = async a => (await a.listShared()).filter(f => f.startsWith('.tmp-') || f.startsWith('.corrupt-'));
-      // Hold every rename whose destination is a `.corrupt-` aside until released.
-      function gateAsideRenames() {
-        const waiting = parked = [];
-        fsp.rename = async function (src, dst, ...rest) {
-          if (path.basename(String(dst)).startsWith('.corrupt-')) await new Promise(r => waiting.push(r));
-          return originals.rename.call(this, src, dst, ...rest);
-        };
-        return {
-          waiting,
-          async arrived(n) { for (let i = 0; i < 4000 && waiting.length < n; i++) await new Promise(r => setTimeout(r, 5)); assert.equal(waiting.length, n, `${n} writers reached the replace step`); },
-        };
-      }
-
-      it('two writers that BOTH validated a corrupt file as corrupt: the first repair survives the second (barrier before either replaces)', async () => {
-        const name = 'sys_repairrace.json';
-        fs.writeFileSync(shared(name), '{"w":');
-        const gate = gateAsideRenames();
-        const a = createLocalStorage(tmpDir), b = createLocalStorage(tmpDir);
-        const pa = a.writeSharedIfAbsent(name, '{"w":"A"}');
-        const pb = b.writeSharedIfAbsent(name, '{"w":"B"}');
-        await gate.arrived(2); // both saw corrupt twice and have not replaced anything yet
-        gate.waiting[0](); // whichever writer reached the step first repairs the file
-        let winner = null;
-        for (let i = 0; i < 4000 && !winner; i++) {
-          try { winner = JSON.parse(fs.readFileSync(shared(name), 'utf8')).w; } catch { await new Promise(r => setTimeout(r, 5)); }
-        }
-        assert.ok(winner === 'A' || winner === 'B', 'first repair landed');
-        const ino = fs.statSync(shared(name)).ino;
-        gate.waiting[1](); // the second renames the first's VALID repair aside — it must put it back
-        await Promise.all([pa, pb]);
-        assert.equal(JSON.parse(fs.readFileSync(shared(name), 'utf8')).w, winner, 'valid repair survives');
-        assert.equal(fs.statSync(shared(name)).ino, ino);
-        assert.deepEqual(await leftovers(a), []);
-      });
-
-      it('released together, exactly one repair wins the rename-aside (the loser gets ENOENT and keeps the winner)', async () => {
-        const name = 'sys_repairsimul.json';
-        fs.writeFileSync(shared(name), '');
-        const gate = gateAsideRenames();
-        const a = createLocalStorage(tmpDir), b = createLocalStorage(tmpDir);
-        const both = Promise.all([a.writeSharedIfAbsent(name, '{"w":"A"}'), b.writeSharedIfAbsent(name, '{"w":"B"}')]);
-        await gate.arrived(2);
-        gate.waiting.forEach(r => r()); await both;
-        const final = fs.readFileSync(shared(name), 'utf8');
-        assert.ok(final === '{"w":"A"}' || final === '{"w":"B"}', final);
-        assert.deepEqual(await leftovers(a), []);
-        const again = await createLocalStorage(tmpDir).readShared(name);
-        assert.equal(again, final, 'stable');
-      });
-
-      it('without hard links (link → EPERM) a missing and a corrupt file are still written, never replacing a valid one', async () => {
+      it('without hard links (link → EPERM) a missing file is published by atomic rename — never a copy — and a valid or corrupt final is left alone', async () => {
         fsp.link = async () => { const e = new Error('no links'); e.code = 'EPERM'; throw e; };
-        const a = createLocalStorage(tmpDir);
-        await a.writeSharedIfAbsent('sys_nolinkmissing.json', '{"v":1}');
-        assert.equal(await a.readShared('sys_nolinkmissing.json'), '{"v":1}');
-        fs.writeFileSync(shared('sys_nolinkcorrupt.json'), '{"v"');
-        await createLocalStorage(tmpDir).writeSharedIfAbsent('sys_nolinkcorrupt.json', '{"v":2}');
-        assert.equal(fs.readFileSync(shared('sys_nolinkcorrupt.json'), 'utf8'), '{"v":2}');
-        await createLocalStorage(tmpDir).writeSharedIfAbsent('sys_nolinkcorrupt.json', '{"v":3}');
-        assert.equal(fs.readFileSync(shared('sys_nolinkcorrupt.json'), 'utf8'), '{"v":2}', 'valid file kept');
-        assert.deepEqual(await leftovers(a), []);
+        const copies = [];
+        const realCopy = fsp.copyFile;
+        fsp.copyFile = async (...a) => { copies.push(a); return realCopy.apply(fsp, a); };
+        try {
+          const a = createLocalStorage(tmpDir);
+          await a.writeSharedIfAbsent('sys_nolinkmissing.json', '{"v":1}');
+          assert.equal(await a.readShared('sys_nolinkmissing.json'), '{"v":1}');
+          await createLocalStorage(tmpDir).writeSharedIfAbsent('sys_nolinkmissing.json', '{"v":2}');
+          assert.equal(fs.readFileSync(shared('sys_nolinkmissing.json'), 'utf8'), '{"v":1}', 'valid file kept');
+          fs.writeFileSync(shared('sys_nolinkcorrupt.json'), '{"v"');
+          await createLocalStorage(tmpDir).writeSharedIfAbsent('sys_nolinkcorrupt.json', '{"v":3}');
+          assert.equal(fs.readFileSync(shared('sys_nolinkcorrupt.json'), 'utf8'), '{"v"', 'corrupt file left alone');
+          assert.deepEqual(copies, [], 'no copy into a final pathname');
+          assert.deepEqual(await leftovers(a), []);
+        } finally { fsp.copyFile = realCopy; }
+      });
+
+      it('without hard links a quarantined file is restored by atomic rename (never a partial copy)', async () => {
+        const name = 'sys_nolinkrestore.json';
+        const trash = path.join(tmpDir, 'shared', '.gc-trash-2026-03-01T00-00-00-000Z');
+        fs.mkdirSync(trash, { recursive: true });
+        fs.writeFileSync(path.join(trash, name), '{"q":"nolink"}');
+        fsp.link = async () => { const e = new Error('no links'); e.code = 'EPERM'; throw e; };
+        const realCopy = fsp.copyFile; let copied = false;
+        fsp.copyFile = async (...a) => { copied = true; return realCopy.apply(fsp, a); };
+        try {
+          assert.equal(await createLocalStorage(tmpDir).readShared(name), '{"q":"nolink"}');
+        } finally { fsp.copyFile = realCopy; }
+        assert.equal(copied, false);
+        assert.equal(fs.readFileSync(shared(name), 'utf8'), '{"q":"nolink"}');
+        assert.ok(!fs.existsSync(path.join(trash, name)), 'moved, not copied');
+      });
+
+      it('a corrupt final with a valid quarantine copy: readShared/statShared serve the copy and do NOT overwrite the final', async () => {
+        const name = 'sys_corruptfinal.json';
+        const trash = path.join(tmpDir, 'shared', '.gc-trash-2026-03-02T00-00-00-000Z');
+        fs.mkdirSync(trash, { recursive: true });
+        fs.writeFileSync(path.join(trash, name), '{"q":"good"}');
+        fs.writeFileSync(shared(name), '{"q":');
+        const r = createLocalStorage(tmpDir);
+        assert.equal(await r.readShared(name), '{"q":"good"}');
+        assert.equal(fs.readFileSync(shared(name), 'utf8'), '{"q":', 'final untouched');
+        assert.ok(fs.existsSync(path.join(trash, name)), 'quarantine copy stays');
+        assert.ok((await r.statShared(name)).size > 0);
+        assert.equal(fs.readFileSync(shared(name), 'utf8'), '{"q":');
+      });
+
+      it('a corrupt quarantine copy is never served or restored (newest VALID copy wins)', async () => {
+        const name = 'sys_validnewest.json';
+        for (const [ts, body] of [['2026-03-03T00-00-00-000Z', '{"q":"older-valid"}'], ['2026-03-04T00-00-00-000Z', '{"q":']]) {
+          const d = path.join(tmpDir, 'shared', `.gc-trash-${ts}`);
+          fs.mkdirSync(d, { recursive: true });
+          fs.writeFileSync(path.join(d, name), body);
+        }
+        assert.equal(await createLocalStorage(tmpDir).readShared(name), '{"q":"older-valid"}');
+        assert.equal(fs.readFileSync(shared(name), 'utf8'), '{"q":"older-valid"}');
       });
 
       it('quarantine restore is no-replace: a writer that creates the final file between the reader ENOENT and the restore keeps its content', async () => {

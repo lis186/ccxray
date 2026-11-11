@@ -4707,6 +4707,26 @@ describe('Herdr plugin commands', () => {
     assert.match(fs.readFileSync(path.join(home, 'logs', 'shared', `tools_${hash2}.json`), 'utf8'), /New/);
   });
 
+  it('without hard links the plugin restores a quarantined tools file by atomic rename, never a copy (#775)', () => {
+    const { capabilityPortfolio } = require('../plugins/herdr/bin/lib/ccxray');
+    const hash = 'fedcba654321';
+    const home = tempDir('ccxray-herdr-gc-nolink-');
+    const trash = path.join(home, 'logs', 'shared', '.gc-trash-2026-11-01T00-00-00-000Z');
+    fs.mkdirSync(trash, { recursive: true });
+    fs.writeFileSync(path.join(trash, `tools_${hash}.json`), JSON.stringify([{ name: 'Bash', description: 'Run', input_schema: { type: 'object' } }]));
+    const realLink = fs.linkSync, realCopy = fs.copyFileSync;
+    let copied = false;
+    fs.linkSync = () => { const e = new Error('no links'); e.code = 'EPERM'; throw e; };
+    fs.copyFileSync = (...a) => { copied = true; return realCopy(...a); };
+    try {
+      const portfolio = capabilityPortfolio([{ ...sampleEntry, id: 'q3', sessionId: 'q', toolsHash: hash, turnToolCalls: {} }], { env: { CCXRAY_HOME: home } });
+      assert.equal(portfolio && portfolio.exposedTools, 1);
+    } finally { fs.linkSync = realLink; fs.copyFileSync = realCopy; }
+    assert.equal(copied, false, 'no copy into the final pathname');
+    assert.ok(fs.existsSync(path.join(home, 'logs', 'shared', `tools_${hash}.json`)));
+    assert.ok(!fs.existsSync(path.join(trash, `tools_${hash}.json`)), 'moved, not copied');
+  });
+
   it('mission-control reports observed tool and MCP utilization without charging deferred tools', () => {
     const hash = 'abc123def456';
     const now = Date.now();

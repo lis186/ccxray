@@ -269,10 +269,73 @@ describe('ccxray gc (#775)', () => {
       assert.ok(!fs.existsSync(d));
     });
 
-    it('--apply also collects exact .corrupt-<pid>-<hex>-<name> repair debris (and only that shape)', async () => {
-      shared('.corrupt-123-0123456789ab-sys_x.json'); shared('.corrupt-manual.json'); shared('.corrupt-1-zz-sys_x.json');
+    it('--apply repairs corrupt ROOTED finals: restores the newest valid quarantine copy, else deletes; the next write recreates it; unrooted/valid files untouched', async () => {
+      shared('sys_corruptwithcopy.json', { content: '{"torn":' }); shared('sys_corruptnocopy.json', { content: '' });
+      shared('tools_rootedvalid1.json', { content: '{"ok":1}' });
+      oldTrash('2026-01-01T00-00-00-000Z', ['sys_corruptwithcopy.json']); // valid copy ({"q":1})
+      indexLine({ id: 'a', sysHash: 'corruptwithcopy' }); indexLine({ id: 'b', sysHash: 'corruptnocopy', toolsHash: 'rootedvalid1' });
       const r = await run({ apply: true });
-      assert.deepEqual(r.doomed, ['.corrupt-123-0123456789ab-sys_x.json']);
+      assert.deepEqual(r.repair, { corrupt: 2, restored: 1, deleted: 1 });
+      assert.equal(fs.readFileSync(sharedPath('sys_corruptwithcopy.json'), 'utf8'), '{"q":1}');
+      assert.ok(!fs.existsSync(sharedPath('sys_corruptnocopy.json')), 'unrecoverable corrupt final deleted');
+      assert.equal(fs.readFileSync(sharedPath('tools_rootedvalid1.json'), 'utf8'), '{"ok":1}');
+      assert.match(logs.join('\n'), /corrupt rooted file\(s\): 2 — restored 1 from quarantine, deleted 1/);
+      const w = createLocalStorage(logsDir);
+      await w.writeSharedIfAbsent('sys_corruptnocopy.json', '{"fresh":1}');
+      assert.equal(fs.readFileSync(sharedPath('sys_corruptnocopy.json'), 'utf8'), '{"fresh":1}', 'next write recreates it');
+    });
+
+    it('--dry-run reports corrupt rooted finals and changes nothing; an unrooted corrupt file is just quarantined', async () => {
+      shared('sys_corruptwithcopy.json', { content: '{"torn":' }); shared('sys_unrootedtorn1.json', { content: '{"torn":' });
+      indexLine({ id: 'a', sysHash: 'corruptwithcopy' });
+      const r = await run({ apply: false });
+      assert.deepEqual(r.repair, { corrupt: 1, restored: 0, deleted: 1 });
+      assert.equal(fs.readFileSync(sharedPath('sys_corruptwithcopy.json'), 'utf8'), '{"torn":');
+      assert.deepEqual(r.doomed, ['sys_unrootedtorn1.json']);
+      assert.match(logs.join('\n'), /would delete 1 \(the next write/);
+    });
+
+    it('`.corrupt-*` names are no longer ours: left untouched like any unknown name', async () => {
+      shared('.corrupt-123-0123456789ab-sys_x.json');
+      const r = await run({ apply: true });
+      assert.deepEqual(r.doomed, []);
+      assert.ok(fs.existsSync(sharedPath('.corrupt-123-0123456789ab-sys_x.json')));
+    });
+
+    it('--purge with a corrupt (truncated) final restores the NEWEST valid copy before deleting any copy', async () => {
+      const d1 = oldTrash('2020-01-01T00-00-00-000Z', []), d2 = oldTrash('2020-01-02T00-00-00-000Z', []), d3 = oldTrash('2020-01-03T00-00-00-000Z', []);
+      fs.writeFileSync(path.join(d1, 'sys_corruptfinal1.json'), '{"gen":1}');
+      fs.writeFileSync(path.join(d2, 'sys_corruptfinal1.json'), '{"gen":2}');
+      fs.writeFileSync(path.join(d3, 'sys_corruptfinal1.json'), '{"gen":');          // newest copy is itself corrupt
+      fs.writeFileSync(sharedPath('sys_corruptfinal1.json'), '{"tor');
+      indexLine({ id: 'a', sysHash: 'corruptfinal1' });
+      const r = await runPurge();
+      assert.equal(fs.readFileSync(sharedPath('sys_corruptfinal1.json'), 'utf8'), '{"gen":2}', 'newest VALID generation restored over the corrupt final');
+      assert.equal(r.restored, 1);
+      assert.deepEqual(trashDirs(), [], 'older/duplicate/corrupt copies deleted, dirs removed');
+    });
+
+    it('--purge duplicate generations of a rooted name (final absent): newest valid restored, older duplicates dropped; a young generation is untouched', async () => {
+      const d1 = oldTrash('2020-01-01T00-00-00-000Z', []), d2 = oldTrash('2020-02-01T00-00-00-000Z', []);
+      fs.writeFileSync(path.join(d1, 'openai_prompt_meta_dupmetadupme.json'), '{"agent":"old"}');
+      fs.writeFileSync(path.join(d2, 'openai_prompt_meta_dupmetadupme.json'), '{"agent":"new"}');
+      fs.writeFileSync(path.join(d1, 'openai_instructions_dupmetadupme.json'), '{"i":1}');
+      const fresh = oldTrash(trashNameNow(), ['sys_youngcopy1.json']);
+      indexLine({ id: 'a', sysHash: 'dupmetadupme' });
+      await runPurge();
+      assert.equal(fs.readFileSync(sharedPath('openai_prompt_meta_dupmetadupme.json'), 'utf8'), '{"agent":"new"}');
+      assert.equal(fs.readFileSync(sharedPath('openai_instructions_dupmetadupme.json'), 'utf8'), '{"i":1}');
+      assert.deepEqual(trashDirs(), [path.basename(fresh)], 'only the young generation remains');
+      assert.ok(fs.existsSync(path.join(fresh, 'sys_youngcopy1.json')));
+    });
+
+    it('--purge with a valid final deletes every old copy and never touches the final', async () => {
+      oldTrash('2020-01-01T00-00-00-000Z', ['sys_validfinal01.json']); oldTrash('2020-01-02T00-00-00-000Z', ['sys_validfinal01.json']);
+      fs.writeFileSync(sharedPath('sys_validfinal01.json'), '{"writer":2}');
+      indexLine({ id: 'a', sysHash: 'validfinal01' });
+      await runPurge();
+      assert.equal(fs.readFileSync(sharedPath('sys_validfinal01.json'), 'utf8'), '{"writer":2}');
+      assert.deepEqual(trashDirs(), []);
     });
 
     it('--purge --dry-run lists what it would purge and deletes nothing', async () => {

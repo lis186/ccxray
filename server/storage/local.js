@@ -51,19 +51,35 @@ function createLocalStorage(logsDir, opts = {}) {
     }
   }
 
-  // A shared file counts as present only if it parses; missing, empty and
-  // truncated all read as "absent" so the writer replaces them (#775).
-  async function sharedFileIsValid(filename) {
-    try { JSON.parse(await storage.readShared(filename)); return true; } catch { return false; }
+  // ── shared/ (#775) ────────────────────────────────────────────────────
+  // Write-once. The request path only ever publishes a MISSING final file, with
+  // a no-replace link; it never renames over, moves aside or "repairs" an
+  // existing file (three review rounds of races came from doing that). A
+  // corrupt final is left alone and warned about once; `ccxray gc --apply`
+  // repairs it offline. Reads treat an unparseable file as missing.
+
+  // The one place on-disk shared content is decoded; `rel` may be a file in a
+  // quarantine dir (`<.gc-trash-…>/<name>`). Everything below validates through it.
+  function readSharedRaw(rel) {
+    return fsp.readFile(safeJoin(sharedDir, rel), 'utf8');
+  }
+  // 'valid' (parses) | 'corrupt' (present but unparseable: torn / zero-byte) | 'missing'
+  async function checkSharedRel(rel) {
+    let text;
+    try { text = await readSharedRaw(rel); } catch (e) {
+      if (e.code === 'ENOENT') return { state: 'missing' };
+      throw e;
+    }
+    try { JSON.parse(text); return { state: 'valid', text }; } catch { return { state: 'corrupt', text }; }
   }
 
-  // `ccxray gc --apply` quarantines instead of deleting (#775): unreferenced
-  // files move to shared/.gc-trash-<UTC ts>/ and are only removed by `gc
-  // --purge` after 7 days. A read of a missing name therefore looks there first
-  // (newest dir first) and moves the file back with a no-replace link, so a hash
-  // that turns out to be referenced after all is restored transparently and a
-  // writer's fresh file is never overwritten by older quarantined data. The
-  // trash-dir list is cached against shared/'s mtime: a miss costs one stat, and
+  // `ccxray gc --apply` quarantines instead of deleting: unreferenced files move
+  // to shared/.gc-trash-<UTC ts>/ and are only removed by `gc --purge` after 7
+  // days. A read of a missing (or corrupt) name therefore looks there for the
+  // newest VALID copy. It restores it — no-replace link/rename via
+  // server/shared-trash.js — only when the final is ABSENT; a corrupt final is
+  // never overwritten on this path, the quarantine copy is just served. The
+  // trash-dir list is cached against shared/'s mtime: a miss costs one stat and
   // the (large) readdir is redone only when shared/ changed — restore probes
   // sys_ then openai_ names, so misses are routine.
   let trashCache = { mtimeMs: -1, dirs: [] };
@@ -77,49 +93,31 @@ function createLocalStorage(logsDir, opts = {}) {
     }
     return trashCache.dirs;
   }
-  // true when `filename` is (now) present at its final path
-  async function restoreFromTrash(filename) {
-    const p = safeJoin(sharedDir, filename);
+  async function validTrashCopy(filename) {
     for (const dir of await trashDirs()) {
-      const r = await restoreFile(sharedDir, dir, filename);
-      if (r === 'restored' || r === 'exists') return true;
-      // 'missing': not in this dir — or another process already restored it
-      try { await fsp.access(p); return true; } catch {}
+      const r = await checkSharedRel(`${dir}/${filename}`);
+      if (r.state === 'valid') return { dir, text: r.text };
     }
-    return false;
+    return null;
   }
 
-  // Commit `tmp` as shared/<filename> without ever replacing a valid file.
-  // Missing final → no-replace link. Existing final → keep it if it parses;
-  // otherwise REPAIR: rename the corrupt file aside (only one process wins that
-  // rename; the loser gets ENOENT and retries), then link again. The aside file
-  // is re-checked — if the winner of an earlier repair slipped in a valid file
-  // between our check and our rename, we put it back instead of discarding it.
+  const warnedCorrupt = new Set();
   async function commitShared(filename, data) {
     const p = safeJoin(sharedDir, filename);
-    if (await sharedFileIsValid(filename)) { verifiedShared.add(filename); return; }
+    // Plain check: no quarantine lookup, no restore on the write path.
+    const { state } = await checkSharedRel(filename);
+    if (state === 'corrupt' && !warnedCorrupt.has(filename)) {
+      warnedCorrupt.add(filename);
+      console.error(`shared/${filename} is corrupt; leaving it untouched (run \`ccxray gc --apply\` to repair)`);
+    }
+    if (state !== 'missing') { verifiedShared.add(filename); return; }
     // 12-hex nonce: `ccxray gc` recognizes exactly this shape as its own debris.
-    const nonce = () => `${process.pid}-${crypto.randomBytes(6).toString('hex')}-${path.basename(filename)}`;
-    const tmp = path.join(sharedDir, `.tmp-${nonce()}`);
+    const tmp = path.join(sharedDir, `.tmp-${process.pid}-${crypto.randomBytes(6).toString('hex')}-${path.basename(filename)}`);
     try {
       await fsp.writeFile(tmp, data, { flag: 'wx', mode: 0o600 });
-      for (let attempt = 0; ; attempt++) {
-        if (attempt >= 5) throw new Error(`shared commit contention: ${filename}`);
-        if (await linkNoReplace(tmp, p)) break;
-        if (await sharedFileIsValid(filename)) break; // another writer won
-        const aside = path.join(sharedDir, `.corrupt-${nonce()}`);
-        try { await fsp.rename(p, aside); } catch (e) {
-          if (e.code === 'ENOENT') continue; // someone else moved it aside first
-          throw e;
-        }
-        let grabbedValid = false;
-        try { JSON.parse(await storage.readShared(path.basename(aside))); grabbedValid = true; } catch {}
-        if (grabbedValid) await linkNoReplace(aside, p); // restore the repair we displaced
-        await fsp.unlink(aside).catch(() => {});
-        if (grabbedValid) break;
-      }
+      await linkNoReplace(tmp, p); // false = someone else created it first: keep theirs
     } finally {
-      await fsp.unlink(tmp).catch(() => {}); // the link kept the final inode
+      await fsp.unlink(tmp).catch(() => {}); // gone already after a rename fallback
     }
     verifiedShared.add(filename);
   }
@@ -206,20 +204,10 @@ function createLocalStorage(logsDir, opts = {}) {
 
     // ── Shared content-addressed storage (shared/) ───────────────────
 
-    // Atomic + no-clobber (#775). Content goes to a unique tmp file in shared/;
-    // a MISSING final file is committed with `link(tmp, final)`, which fails
-    // with EEXIST instead of replacing, so two writers that both saw "missing"
-    // can never overwrite each other's valid file (openai_prompt_meta_<h> may
-    // legitimately differ for identical instructions). Only a final file that
-    // fails to parse (torn write: zero-byte/truncated) is replaced, via rename,
-    // after re-validating it immediately before — before #775 the `wx` write
-    // skipped on EEXIST, so a torn file stayed corrupt forever. Validation goes
-    // through readShared so it follows whatever on-disk encoding that path
-    // decodes. Same-process writers of one name share a single in-flight
-    // promise (first data wins, like no-clobber). Residual: two PROCESSES
-    // repairing the same corrupt file can still race between the re-validation
-    // and the rename; the content is hash-addressed, so the loser rewrites an
-    // equivalent file.
+    // Write-once (#775): publishes only a missing file, atomically, via a
+    // no-replace link of a complete tmp file. An existing file — valid or
+    // corrupt — is never replaced here. Same-process writers of one name share
+    // one in-flight promise (first data wins).
     writeSharedIfAbsent(filename, data) {
       safeJoin(sharedDir, filename);
       // Hot path (every request): a hash already verified or written by this
@@ -233,24 +221,39 @@ function createLocalStorage(logsDir, opts = {}) {
       return inflight;
     },
 
+    // An unparseable file counts as missing: fall back to the newest valid
+    // quarantine copy (restored only if the final is absent).
     async readShared(filename) {
-      const p = safeJoin(sharedDir, filename);
-      try {
-        return await fsp.readFile(p, 'utf8');
-      } catch (e) {
-        if (e.code !== 'ENOENT' || !(await restoreFromTrash(filename))) throw e;
-        return fsp.readFile(p, 'utf8');
+      const r = await checkSharedRel(filename);
+      if (r.state === 'valid') return r.text;
+      const copy = await validTrashCopy(filename);
+      if (!copy) throw Object.assign(new Error(`ENOENT: shared/${filename} is ${r.state}`), { code: 'ENOENT' });
+      if (r.state === 'missing') {
+        const res = await restoreFile(sharedDir, copy.dir, filename);
+        if (res === 'exists') { // a writer got there first — prefer its file if it is good
+          const again = await checkSharedRel(filename);
+          if (again.state === 'valid') return again.text;
+        }
       }
+      return copy.text; // corrupt final: served from quarantine, final left untouched
     },
 
     async statShared(filename) {
-      const p = safeJoin(sharedDir, filename);
       try {
-        return await fsp.stat(p);
-      } catch (e) {
-        if (e.code !== 'ENOENT') return null;
-        try { return (await restoreFromTrash(filename)) ? await fsp.stat(p) : null; } catch { return null; }
-      }
+        const p = safeJoin(sharedDir, filename);
+        const r = await checkSharedRel(filename);
+        if (r.state === 'valid') return await fsp.stat(p);
+        const copy = await validTrashCopy(filename);
+        if (!copy) return null;
+        if (r.state === 'missing' && (await restoreFile(sharedDir, copy.dir, filename)) !== 'missing') return await fsp.stat(p);
+        return await fsp.stat(safeJoin(sharedDir, `${copy.dir}/${filename}`));
+      } catch { return null; }
+    },
+
+    // Side-effect-free validity probe for `ccxray gc`: 'valid' | 'corrupt' |
+    // 'missing', for the final file or (with `quarantineDir`) a quarantined copy.
+    async checkShared(filename, { quarantineDir } = {}) {
+      return (await checkSharedRel(quarantineDir ? `${quarantineDir}/${filename}` : filename)).state;
     },
 
     // Quarantine dirs (.gc-trash-*) are not shared files: omitted here so every

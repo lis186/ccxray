@@ -14,9 +14,11 @@ const TRASH_PREFIX = '.gc-trash-';
 const NO_LINK = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV']);
 
 // Atomic no-replace publish of `src` at `dst`: link(src, dst). true = created,
-// false = dst already exists (somebody else won). Without hard links, falls
-// back to an O_EXCL copy — still never replaces, though a reader can briefly
-// see a partial file on such filesystems.
+// false = dst already exists (somebody else won). On a filesystem without hard
+// links the fallback is an atomic rename(src, dst) — never a copy, so no
+// reader can ever see a partially written final file. The rename consumes
+// `src` and only replaces if dst appeared after the access() check (a race
+// that content-addressing makes benign).
 async function linkNoReplace(src, dst) {
   try {
     await fsp.link(src, dst);
@@ -26,12 +28,13 @@ async function linkNoReplace(src, dst) {
     if (!NO_LINK.has(e.code)) throw e;
   }
   try {
-    await fsp.copyFile(src, dst, fs.constants.COPYFILE_EXCL);
-    return true;
+    await fsp.access(dst);
+    return false;
   } catch (e) {
-    if (e.code === 'EEXIST') return false;
-    throw e;
+    if (e.code !== 'ENOENT') throw e;
   }
+  await fsp.rename(src, dst);
+  return true;
 }
 
 // Move `filename` out of quarantine dir `dir` back into shared/, never

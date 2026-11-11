@@ -1950,7 +1950,10 @@ function restoreSharedFromQuarantine(sharedDir, name) {
       try { fs.linkSync(src, dst); } catch (e) {
         if (e.code === 'EEXIST') return true; // a writer already created it
         if (e.code === 'ENOENT') continue;
-        fs.copyFileSync(src, dst, fs.constants.COPYFILE_EXCL); // no hard links here
+        // No hard links on this filesystem: atomic rename, never a partial copy.
+        if (fs.existsSync(dst)) return true;
+        fs.renameSync(src, dst);
+        return true;
       }
       try { fs.unlinkSync(src); } catch {}
       return true;
