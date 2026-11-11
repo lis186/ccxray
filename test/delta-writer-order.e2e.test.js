@@ -12,6 +12,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
+const { readLogText } = require('./helpers/read-log');
 const { spawn } = require('node:child_process');
 const { classifyReqHead } = require('../server/delta-helpers');
 
@@ -120,7 +121,7 @@ describe('delta writer key order (#774 classifyReqHead invariant)', () => {
     });
     const [first, second] = rows.map(r => r.id).sort();
 
-    const read = id => fs.readFileSync(path.join(home, 'logs', id + '_req.json'), 'utf8');
+    const read = id => readLogText(path.join(home, 'logs', id + '_req.json')); // #776: decoded text keeps the on-disk key order
     const fullText = read(first), deltaText = read(second);
     const full = JSON.parse(fullText), delta = JSON.parse(deltaText);
 
