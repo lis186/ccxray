@@ -25,6 +25,7 @@ const fsp = require('fs').promises;
 
 const { generate } = require('./generate-fixture');
 const { simulateSseLoad } = require('./sse-load');
+const { isGzip, decodeToStringSync } = require('../../server/storage/gzip'); // #776: logs may be gzip
 
 const TIMEOUT_MS = 120_000;
 const SERVER_START_TIMEOUT_MS = 40_000;
@@ -172,7 +173,9 @@ async function discoverDeltaChain(logsDir, indexLines) {
         const buf = Buffer.alloc(HEADER_BYTES);
         const { bytesRead } = await fd.read(buf, 0, HEADER_BYTES, 0);
         await fd.close();
-        const header = buf.slice(0, bytesRead).toString('utf8');
+        let header = buf.slice(0, bytesRead).toString('utf8');
+        // #776: a gzip header holds no JSON; decode the whole file and take its head.
+        if (isGzip(buf)) header = decodeToStringSync(await fsp.readFile(reqPath)).slice(0, HEADER_BYTES);
         const m = header.match(/"prevId"\s*:\s*"([^"]+)"/);
         if (m) prevIdMap.set(id, m[1]);
       } catch { /* missing file — skip */ }
@@ -342,6 +345,8 @@ async function run({ homeDir, runs }) {
 }
 
 // ── CLI ──────────────────────────────────────────────────────────────
+
+module.exports = { discoverDeltaChain };
 
 if (require.main === module) {
   const args = process.argv.slice(2);

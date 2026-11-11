@@ -3,6 +3,7 @@
 const { describe, it, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
+const { isGzip, decodeToStringSync } = require('../server/storage/gzip');
 const http = require('http');
 const os = require('os');
 const path = require('path');
@@ -186,8 +187,13 @@ describe('AUTH_TOKEN ?token= query param strip (a5d28f0)', () => {
 
       const allFiles = recursiveFiles(home);
       assert.ok(allFiles.length >= 3, `expected logs on disk, found ${allFiles.length}`);
-      for (const f of allFiles) {
-        const txt = fs.readFileSync(f, 'utf8');
+      // #776: log/shared files are gzip; decode them before searching (gunzip only on the
+      // magic bytes, so unrelated files stay raw). Searching raw gzip bytes would pass vacuously.
+      const decoded = allFiles.map(f => ({ f, raw: fs.readFileSync(f) }))
+        .map(({ f, raw }) => ({ f, gz: isGzip(raw), txt: decodeToStringSync(raw) }));
+      assert.ok(decoded.some(d => d.gz), 'expected at least one gzip log/shared file (otherwise this scan proves nothing)');
+      assert.ok(decoded.some(d => d.gz && d.txt.includes('hello')), 'decoded gzip content was actually scanned (request body marker)');
+      for (const { f, txt } of decoded) {
         assert.ok(!txt.includes(SECRET), `secret leaked to disk file: ${f}`);
       }
 
