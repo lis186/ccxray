@@ -924,6 +924,10 @@ function attachTimeoutMs(env = process.env) {
 // for the WS upgrade entry. Bounded by a 5s safety timeout so a stuck write
 // can never block shutdown.
 async function gracefulExit(code) {
+  // #776: stop compressing — writes queued from here on (and gzip jobs still in
+  // flight) go out as plain JSON so the 5s deadline cannot strand an indexed entry
+  // without its payload file.
+  require('./storage/gzip').beginShutdown();
   stopCodexRefresh();
   stopExportSync();
   const deadline = new Promise(resolve => setTimeout(resolve, 5000));
