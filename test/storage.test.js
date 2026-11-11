@@ -157,6 +157,80 @@ describe('storage/local', () => {
       assert.deepEqual((await storage.listShared()).filter(f => f.startsWith('.tmp-')), []);
     });
 
+    // #775 round 2: barrier-controlled races. Two adapters on one dir stand in for
+    // two writers (processes); the tmp-file write is held until both have
+    // already passed their "is it valid?" check, then released one at a time.
+    describe('concurrent writers', () => {
+      const realWriteFile = fs.promises.writeFile;
+      let arrived, gates;
+      function installBarrier() {
+        arrived = []; gates = [];
+        fs.promises.writeFile = async function (p, ...rest) {
+          if (path.basename(String(p)).startsWith('.tmp-')) {
+            let release;
+            gates.push(new Promise(r => { release = r; }));
+            arrived.push(release);
+            await gates[gates.length - 1];
+          }
+          return realWriteFile.call(this, p, ...rest);
+        };
+      }
+      const waitArrived = async n => { for (let i = 0; i < 500 && arrived.length < n; i++) await new Promise(r => setTimeout(r, 5)); assert.equal(arrived.length, n); };
+      const afterEach_ = () => { fs.promises.writeFile = realWriteFile; };
+
+      it('two writers on a MISSING file: the first valid file is never clobbered', async () => {
+        installBarrier();
+        try {
+          const name = 'sys_racemissing.json', fp = path.join(tmpDir, 'shared', name);
+          const a = createLocalStorage(tmpDir), b = createLocalStorage(tmpDir);
+          const pa = a.writeSharedIfAbsent(name, '{"w":"A"}');
+          const pb = b.writeSharedIfAbsent(name, '{"w":"B"}');
+          await waitArrived(2); // both saw "missing"
+          arrived[0](); await pa;
+          assert.equal(fs.readFileSync(fp, 'utf8'), '{"w":"A"}');
+          const ino = fs.statSync(fp).ino;
+          arrived[1](); await pb;
+          assert.equal(fs.readFileSync(fp, 'utf8'), '{"w":"A"}', 'late writer must not replace the valid file');
+          assert.equal(fs.statSync(fp).ino, ino);
+          assert.deepEqual((await a.listShared()).filter(f => f.startsWith('.tmp-')), []);
+        } finally { afterEach_(); }
+      });
+
+      it('two writers on a CORRUPT file: the first repair is never clobbered by the second', async () => {
+        installBarrier();
+        try {
+          const name = 'sys_racecorrupt.json', fp = path.join(tmpDir, 'shared', name);
+          fs.writeFileSync(fp, '{"w":');
+          const a = createLocalStorage(tmpDir), b = createLocalStorage(tmpDir);
+          const pa = a.writeSharedIfAbsent(name, '{"w":"A"}');
+          const pb = b.writeSharedIfAbsent(name, '{"w":"B"}');
+          await waitArrived(2); // both saw "corrupt"
+          arrived[0](); await pa;
+          assert.equal(fs.readFileSync(fp, 'utf8'), '{"w":"A"}', 'corrupt file repaired');
+          const ino = fs.statSync(fp).ino;
+          arrived[1](); await pb;
+          assert.equal(fs.readFileSync(fp, 'utf8'), '{"w":"A"}', 'valid repair must survive the second writer');
+          assert.equal(fs.statSync(fp).ino, ino);
+          assert.deepEqual((await a.listShared()).filter(f => f.startsWith('.tmp-')), []);
+        } finally { afterEach_(); }
+      });
+
+      it('same-process writers of one name coalesce into one in-flight write (first data wins)', async () => {
+        installBarrier();
+        try {
+          const name = 'sys_coalesce.json';
+          const a = createLocalStorage(tmpDir);
+          const p1 = a.writeSharedIfAbsent(name, '{"w":1}');
+          const p2 = a.writeSharedIfAbsent(name, '{"w":2}');
+          assert.strictEqual(p1, p2, 'one promise per filename');
+          await waitArrived(1);
+          arrived[0](); await Promise.all([p1, p2]);
+          assert.equal(arrived.length, 1, 'a single tmp write');
+          assert.equal(await a.readShared(name), '{"w":1}');
+        } finally { afterEach_(); }
+      });
+    });
+
     it('a failed write never leaves a truncated file at the final path', async () => {
       const name = 'sys_atomic.json';
       // data that makes writeFile throw mid-flight (non-string/Buffer)
