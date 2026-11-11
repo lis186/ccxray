@@ -366,6 +366,7 @@ if (process.argv[2] === 'migrate-logs') {
   require('./migrate-logs').migrateLogs({ apply })
     .then(r => process.exit(r && (r.refused || r.paused || r.failed) ? 1 : 0))
     .catch(err => { console.error(`migrate-logs failed: ${err.message}`); process.exit(1); });
+  return;
 }
 
 // ── "gc --dry-run | --apply | --purge [--dry-run]" — early exit, no server/hub boot (#775) ──

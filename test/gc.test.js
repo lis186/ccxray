@@ -7,6 +7,7 @@ const fs = require('fs');
 const net = require('net');
 const os = require('os');
 const path = require('path');
+const { readLogText } = require('./helpers/read-log'); // #776: shared files may be gzip
 
 const TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-gc-home-'));
 process.env.CCXRAY_HOME = TEST_HOME;
@@ -161,7 +162,7 @@ describe('ccxray gc (#775)', () => {
       const r = await run({ apply: true, now: now + 40 * DAY * 0 });
       assert.equal(r.trashDir, '.gc-trash-2026-11-11T10-00-00-123Z');
       assert.deepEqual(trashDirs(), ['.gc-trash-2026-11-11T10-00-00-123Z']);
-      assert.equal(fs.readFileSync(path.join(logsDir, 'shared', r.trashDir, 'sys_aaaaaaaaaaaa.json'), 'utf8'), '{"a":1}');
+      assert.equal(readLogText(path.join(logsDir, 'shared', r.trashDir, 'sys_aaaaaaaaaaaa.json')), '{"a":1}');
       assert.ok(!fs.existsSync(sharedPath('sys_aaaaaaaaaaaa.json')));
       assert.deepEqual(await storage.listShared(), [], 'listShared never returns quarantine dirs');
       assert.match(logs.join('\n'), /Nothing is freed yet/);
@@ -232,7 +233,7 @@ describe('ccxray gc (#775)', () => {
       const r = await runPurge();
       assert.equal(r.restored, 2);
       assert.equal(r.deleted, 2);
-      assert.equal(fs.readFileSync(sharedPath('sys_idxrootedidx.json'), 'utf8'), '{"q":1}');
+      assert.equal(readLogText(sharedPath('sys_idxrootedidx.json')), '{"q":1}');
       assert.ok(fs.existsSync(sharedPath('tools_reqrootedreq.json')));
       assert.ok(!fs.existsSync(path.join(dirA, 'sys_unrootedold1.json')));
       assert.ok(fs.existsSync(path.join(dirA, 'notes.txt')), 'unknown name never deleted');
@@ -255,7 +256,7 @@ describe('ccxray gc (#775)', () => {
       oldTrash('2020-01-01T00-00-00-000Z', ['sys_racedracedr.json']);
       const reader = createLocalStorage(logsDir);
       const r = await runPurge({ onCollected: async () => { assert.equal(await reader.readShared('sys_racedracedr.json'), '{"q":1}'); } });
-      assert.equal(fs.readFileSync(sharedPath('sys_racedracedr.json'), 'utf8'), '{"q":1}', 'reader-restored file is untouched by purge');
+      assert.equal(readLogText(sharedPath('sys_racedracedr.json')), '{"q":1}', 'reader-restored file is untouched by purge');
       assert.equal(trashDirs().length, 0);
       assert.ok(r.purged.length === 1);
     });
@@ -265,7 +266,7 @@ describe('ccxray gc (#775)', () => {
       indexLine({ id: 'later', sysHash: 'idxrootedidx' });
       fs.writeFileSync(sharedPath('sys_idxrootedidx.json'), '{"writer":1}');
       await runPurge();
-      assert.equal(fs.readFileSync(sharedPath('sys_idxrootedidx.json'), 'utf8'), '{"writer":1}');
+      assert.equal(readLogText(sharedPath('sys_idxrootedidx.json')), '{"writer":1}');
       assert.ok(!fs.existsSync(d));
     });
 
@@ -276,13 +277,13 @@ describe('ccxray gc (#775)', () => {
       indexLine({ id: 'a', sysHash: 'corruptwithcopy' }); indexLine({ id: 'b', sysHash: 'corruptnocopy', toolsHash: 'rootedvalid1' });
       const r = await run({ apply: true });
       assert.deepEqual(r.repair, { corrupt: 2, restored: 1, deleted: 1 });
-      assert.equal(fs.readFileSync(sharedPath('sys_corruptwithcopy.json'), 'utf8'), '{"q":1}');
+      assert.equal(readLogText(sharedPath('sys_corruptwithcopy.json')), '{"q":1}');
       assert.ok(!fs.existsSync(sharedPath('sys_corruptnocopy.json')), 'unrecoverable corrupt final deleted');
-      assert.equal(fs.readFileSync(sharedPath('tools_rootedvalid1.json'), 'utf8'), '{"ok":1}');
+      assert.equal(readLogText(sharedPath('tools_rootedvalid1.json')), '{"ok":1}');
       assert.match(logs.join('\n'), /corrupt rooted file\(s\): 2 — restored 1 from quarantine, deleted 1/);
       const w = createLocalStorage(logsDir);
       await w.writeSharedIfAbsent('sys_corruptnocopy.json', '{"fresh":1}');
-      assert.equal(fs.readFileSync(sharedPath('sys_corruptnocopy.json'), 'utf8'), '{"fresh":1}', 'next write recreates it');
+      assert.equal(readLogText(sharedPath('sys_corruptnocopy.json')), '{"fresh":1}', 'next write recreates it');
     });
 
     it('--dry-run reports corrupt rooted finals and changes nothing; an unrooted corrupt file is just quarantined', async () => {
@@ -290,7 +291,7 @@ describe('ccxray gc (#775)', () => {
       indexLine({ id: 'a', sysHash: 'corruptwithcopy' });
       const r = await run({ apply: false });
       assert.deepEqual(r.repair, { corrupt: 1, restored: 0, deleted: 1 });
-      assert.equal(fs.readFileSync(sharedPath('sys_corruptwithcopy.json'), 'utf8'), '{"torn":');
+      assert.equal(readLogText(sharedPath('sys_corruptwithcopy.json')), '{"torn":');
       assert.deepEqual(r.doomed, ['sys_unrootedtorn1.json']);
       assert.match(logs.join('\n'), /would delete 1 \(the next write/);
     });
@@ -310,7 +311,7 @@ describe('ccxray gc (#775)', () => {
       fs.writeFileSync(sharedPath('sys_corruptfinal1.json'), '{"tor');
       indexLine({ id: 'a', sysHash: 'corruptfinal1' });
       const r = await runPurge();
-      assert.equal(fs.readFileSync(sharedPath('sys_corruptfinal1.json'), 'utf8'), '{"gen":2}', 'newest VALID generation restored over the corrupt final');
+      assert.equal(readLogText(sharedPath('sys_corruptfinal1.json')), '{"gen":2}', 'newest VALID generation restored over the corrupt final');
       assert.equal(r.restored, 1);
       assert.deepEqual(trashDirs(), [], 'older/duplicate/corrupt copies deleted, dirs removed');
     });
@@ -323,8 +324,8 @@ describe('ccxray gc (#775)', () => {
       const fresh = oldTrash(trashNameNow(), ['sys_youngcopy1.json']);
       indexLine({ id: 'a', sysHash: 'dupmetadupme' });
       await runPurge();
-      assert.equal(fs.readFileSync(sharedPath('openai_prompt_meta_dupmetadupme.json'), 'utf8'), '{"agent":"new"}');
-      assert.equal(fs.readFileSync(sharedPath('openai_instructions_dupmetadupme.json'), 'utf8'), '{"i":1}');
+      assert.equal(readLogText(sharedPath('openai_prompt_meta_dupmetadupme.json')), '{"agent":"new"}');
+      assert.equal(readLogText(sharedPath('openai_instructions_dupmetadupme.json')), '{"i":1}');
       assert.deepEqual(trashDirs(), [path.basename(fresh)], 'only the young generation remains');
       assert.ok(fs.existsSync(path.join(fresh, 'sys_youngcopy1.json')));
     });
@@ -334,7 +335,7 @@ describe('ccxray gc (#775)', () => {
       fs.writeFileSync(sharedPath('sys_validfinal01.json'), '{"writer":2}');
       indexLine({ id: 'a', sysHash: 'validfinal01' });
       await runPurge();
-      assert.equal(fs.readFileSync(sharedPath('sys_validfinal01.json'), 'utf8'), '{"writer":2}');
+      assert.equal(readLogText(sharedPath('sys_validfinal01.json')), '{"writer":2}');
       assert.deepEqual(trashDirs(), []);
     });
 

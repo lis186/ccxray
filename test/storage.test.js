@@ -4,6 +4,9 @@ const { describe, it, before, after, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const { decodeToStringSync } = require('../server/storage/gzip');
+const readLogTextFromData = (d) => (Buffer.isBuffer(d) ? decodeToStringSync(d) : String(d)); // #776
+const readShared = (f) => decodeToStringSync(fs.readFileSync(f)); // #776: shared files may be gzip
 const os = require('os');
 const { createLocalStorage } = require('../server/storage/local');
 const { createStorage } = require('../server/storage');
@@ -151,7 +154,7 @@ describe('storage/local', () => {
           await createLocalStorage(tmpDir).writeSharedIfAbsent(name, '{"v":"good"}');
           await fresh.writeSharedIfAbsent(name, '{"v":"good"}'); // same adapter again: no second warning
         } finally { console.error = realErr; }
-        assert.equal(fs.readFileSync(fp, 'utf8'), torn, 'corrupt final not repaired or replaced on the hot path');
+        assert.equal(readShared(fp), torn, 'corrupt final not repaired or replaced on the hot path');
         assert.equal(warnings.filter(w => w.includes(name)).length, 2, 'one warning per adapter+filename, not per write');
         assert.deepEqual((await storage.listShared()).filter(f => f.startsWith('.tmp-') || f.startsWith('.corrupt-')), []);
         await assert.rejects(() => createLocalStorage(tmpDir).readShared(name), { code: 'ENOENT' }, 'corrupt reads as missing');
@@ -182,7 +185,7 @@ describe('storage/local', () => {
             let release;
             gates.push(new Promise(r => { release = r; }));
             arrived.push(release);
-            releaseByData.set(String(rest[0]), release); // arrival order is not guaranteed: key by writer
+            releaseByData.set(readLogTextFromData(rest[0]), release); // arrival order is not guaranteed: key by writer (decoded: #776 writes gzip)
             await gates[gates.length - 1];
           }
           return realWriteFile.call(this, p, ...rest);
@@ -201,10 +204,10 @@ describe('storage/local', () => {
           const pb = b.writeSharedIfAbsent(name, '{"w":"B"}');
           await waitArrived(2); // both saw "missing"
           releaseByData.get('{"w":"A"}')(); await pa;
-          assert.equal(fs.readFileSync(fp, 'utf8'), '{"w":"A"}');
+          assert.equal(readShared(fp), '{"w":"A"}');
           const ino = fs.statSync(fp).ino;
           releaseByData.get('{"w":"B"}')(); await pb;
-          assert.equal(fs.readFileSync(fp, 'utf8'), '{"w":"A"}', 'late writer must not replace the valid file');
+          assert.equal(readShared(fp), '{"w":"A"}', 'late writer must not replace the valid file');
           assert.equal(fs.statSync(fp).ino, ino);
           assert.deepEqual((await a.listShared()).filter(f => f.startsWith('.tmp-')), []);
         } finally { afterEach_(); }
@@ -244,10 +247,10 @@ describe('storage/local', () => {
           await a.writeSharedIfAbsent('sys_nolinkmissing.json', '{"v":1}');
           assert.equal(await a.readShared('sys_nolinkmissing.json'), '{"v":1}');
           await createLocalStorage(tmpDir).writeSharedIfAbsent('sys_nolinkmissing.json', '{"v":2}');
-          assert.equal(fs.readFileSync(shared('sys_nolinkmissing.json'), 'utf8'), '{"v":1}', 'valid file kept');
+          assert.equal(readShared(shared('sys_nolinkmissing.json')), '{"v":1}', 'valid file kept');
           fs.writeFileSync(shared('sys_nolinkcorrupt.json'), '{"v"');
           await createLocalStorage(tmpDir).writeSharedIfAbsent('sys_nolinkcorrupt.json', '{"v":3}');
-          assert.equal(fs.readFileSync(shared('sys_nolinkcorrupt.json'), 'utf8'), '{"v"', 'corrupt file left alone');
+          assert.equal(readShared(shared('sys_nolinkcorrupt.json')), '{"v"', 'corrupt file left alone');
           assert.deepEqual(copies, [], 'no copy into a final pathname');
           assert.deepEqual(await leftovers(a), []);
         } finally { fsp.copyFile = realCopy; }
@@ -265,7 +268,7 @@ describe('storage/local', () => {
           assert.equal(await createLocalStorage(tmpDir).readShared(name), '{"q":"nolink"}');
         } finally { fsp.copyFile = realCopy; }
         assert.equal(copied, false);
-        assert.equal(fs.readFileSync(shared(name), 'utf8'), '{"q":"nolink"}');
+        assert.equal(readShared(shared(name), 'utf8'), '{"q":"nolink"}');
         assert.ok(!fs.existsSync(path.join(trash, name)), 'moved, not copied');
       });
 
@@ -277,10 +280,10 @@ describe('storage/local', () => {
         fs.writeFileSync(shared(name), '{"q":');
         const r = createLocalStorage(tmpDir);
         assert.equal(await r.readShared(name), '{"q":"good"}');
-        assert.equal(fs.readFileSync(shared(name), 'utf8'), '{"q":', 'final untouched');
+        assert.equal(readShared(shared(name), 'utf8'), '{"q":', 'final untouched');
         assert.ok(fs.existsSync(path.join(trash, name)), 'quarantine copy stays');
         assert.ok((await r.statShared(name)).size > 0);
-        assert.equal(fs.readFileSync(shared(name), 'utf8'), '{"q":');
+        assert.equal(readShared(shared(name), 'utf8'), '{"q":');
       });
 
       it('a corrupt quarantine copy is never served or restored (newest VALID copy wins)', async () => {
@@ -291,7 +294,7 @@ describe('storage/local', () => {
           fs.writeFileSync(path.join(d, name), body);
         }
         assert.equal(await createLocalStorage(tmpDir).readShared(name), '{"q":"older-valid"}');
-        assert.equal(fs.readFileSync(shared(name), 'utf8'), '{"q":"older-valid"}');
+        assert.equal(readShared(shared(name), 'utf8'), '{"q":"older-valid"}');
       });
 
       it('quarantine restore is no-replace: a writer that creates the final file between the reader ENOENT and the restore keeps its content', async () => {
@@ -309,7 +312,7 @@ describe('storage/local', () => {
         };
         const reader = createLocalStorage(tmpDir);
         assert.equal(await reader.readShared(name), '{"new":"writer"}');
-        assert.equal(fs.readFileSync(shared(name), 'utf8'), '{"new":"writer"}', 'not overwritten by older quarantined data');
+        assert.equal(readShared(shared(name), 'utf8'), '{"new":"writer"}', 'not overwritten by older quarantined data');
         assert.ok(fs.existsSync(path.join(trash, name)), 'trash copy left for purge');
       });
 
