@@ -4,6 +4,7 @@ const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
 const readline = require('readline');
+const { encodeForWrite, decodeToString } = require('./gzip');
 
 /**
  * Local filesystem storage adapter.
@@ -63,11 +64,12 @@ function createLocalStorage(logsDir, opts = {}) {
     },
 
     async write(id, suffix, data) {
-      await fsp.writeFile(path.join(logsDir, id + suffix), data, { mode: 0o600 });
+      // #776: gzip unless CCXRAY_COMPRESS_DISABLE=1; read() sniffs by magic bytes.
+      await fsp.writeFile(path.join(logsDir, id + suffix), await encodeForWrite(data), { mode: 0o600 });
     },
 
     async read(id, suffix) {
-      return fsp.readFile(path.join(logsDir, id + suffix), 'utf8');
+      return decodeToString(await fsp.readFile(path.join(logsDir, id + suffix)));
     },
 
     async list() {
@@ -130,15 +132,17 @@ function createLocalStorage(logsDir, opts = {}) {
 
     async writeSharedIfAbsent(filename, data) {
       const p = safeJoin(sharedDir, filename);
+      const payload = await encodeForWrite(data); // #776
       try {
-        await fsp.writeFile(p, data, { flag: 'wx', mode: 0o600 });
+        await fsp.writeFile(p, payload, { flag: 'wx', mode: 0o600 });
       } catch (e) {
         if (e.code !== 'EEXIST') throw e;
       }
     },
 
     async readShared(filename) {
-      return fsp.readFile(safeJoin(sharedDir, filename), 'utf8');
+      // #776: the single sniff choke point for shared files (plain or gzip).
+      return decodeToString(await fsp.readFile(safeJoin(sharedDir, filename)));
     },
 
     async statShared(filename) {
