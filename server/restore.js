@@ -17,6 +17,8 @@ const sessionIdx = require('./session-index');
 const { assessWeather } = require('../public/weather');
 const { retentionCutoffDate } = require('./retention');
 const { isDeltaRecord, spliceDelta, resolveChainMessages, scanReqHead, ChainReadError } = require('./delta-helpers');
+const { maintenanceLockHolder } = require('./maintenance-lock');
+const { encodeForWrite, decodeToStringSync } = require('./storage/gzip');
 
 
 // #211: model marker ("The exact model ID is ...") from the persisted system
@@ -825,23 +827,28 @@ async function reanchorDelta(location, child, cache) {
   }
   const finalPath = path.join(location, `${child.id}_req.json`);
   const tmpPath = `${finalPath}.reanchor-${process.pid}-${randomBytes(8).toString('hex')}.tmp`;
+  // #774 x #776: the rewritten record is encoded like any other log write (gzip
+  // unless disabled), and both the verify and the CAS compare DECODED text — the
+  // resolver read the source through storage.read, which decodes.
+  const payload = await encodeForWrite(JSON.stringify(full));
   try {
     const fd = fs.openSync(tmpPath, 'w', 0o600);
     try {
-      fs.writeSync(fd, JSON.stringify(full));
+      fs.writeSync(fd, payload);
       fs.fsyncSync(fd); // the bytes must be durable BEFORE the rename can make them the record
     } finally {
       fs.closeSync(fd);
     }
     // Decode-verify: what is on disk must parse to a chainless record whose
     // messages are exactly the resolved chain.
-    const back = JSON.parse(fs.readFileSync(tmpPath, 'utf8'));
+    const back = JSON.parse(decodeToStringSync(fs.readFileSync(tmpPath)));
     if (isDeltaRecord(back) || JSON.stringify(back.messages) !== JSON.stringify(state.messages)
         || JSON.stringify(back.incomplete) !== JSON.stringify(full.incomplete)) {
       return 'verification failed';
     }
     // CAS: the source must still be the bytes we resolved from (sync, no await before rename).
-    if (fs.readFileSync(finalPath, 'utf8') !== child.text) return 'source changed during re-anchor';
+    // Sync decode keeps the read→rename window free of awaits (a rare, startup-only path).
+    if (decodeToStringSync(fs.readFileSync(finalPath)) !== child.text) return 'source changed during re-anchor';
     fs.renameSync(tmpPath, finalPath);
     fsyncDir(location); // …and the rename durable before any ancestor is deleted
     return null;
@@ -925,6 +932,15 @@ async function deleteDescendantsFirst(doomed) {
 // `retentionDays` overrides config for an enrolled export home, whose retention was
 // fixed at enrollment and must not shrink just because this process lacks that env.
 async function pruneLogs({ retentionDays = config.LOG_RETENTION_DAYS } = {}) {
+  // #776: another process (migrate-logs --apply, rebuild-index --apply) holds the
+  // ADR 0021 maintenance lock and is rewriting log files / the index. Pruning or
+  // rewriting underneath it could resurrect a deleted file or drop its output, so
+  // skip this startup sweep; the next start prunes as usual.
+  const holder = maintenanceLockHolder(config.storage);
+  if (holder) {
+    console.log(`\x1b[33m[ccxray] Skipping prune: index maintenance (${holder.op || 'unknown'}${holder.pid ? `, pid ${holder.pid}` : ''}) holds the maintenance lock.\x1b[0m`);
+    return;
+  }
   // The sweep precedes the exclusive storage lock; a second concurrent call in
   // this process could remove the first call's temp. That is unreachable from
   // the single startup call site in server/index.js:1261.

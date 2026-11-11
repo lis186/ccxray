@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const { spawn } = require('child_process');
 const http = require('http');
 const fs = require('fs');
+const { readLogJson, waitForFile } = require('./helpers/read-log');
 const path = require('path');
 const os = require('os');
 const net = require('net');
@@ -210,7 +211,7 @@ describe('OpenAI Responses WebSocket proxy', () => {
     assert.equal(entry.responseMetadata.frameCounts.clientToUpstream, 2);
     assert.equal(entry.responseMetadata.frameCounts.upstreamToClient, 2);
 
-    const reqLog = JSON.parse(fs.readFileSync(path.join(testHome, 'logs', `${entry.id}_req.json`), 'utf8'));
+    const reqLog = await readLogJson(path.join(testHome, 'logs', `${entry.id}_req.json`));
     assert.equal(reqLog.transport, 'websocket');
     assert.equal(reqLog.headers.sessionId, sessionId);
     assert.equal(reqLog.headers.agentType, 'worker');
@@ -299,7 +300,7 @@ describe('OpenAI Responses WebSocket proxy', () => {
     assert.equal(entry.sessionInferred, false);
     assert.equal(entry.title, 'Inspect websocket project');
 
-    const reqLog = JSON.parse(fs.readFileSync(path.join(testHome, 'logs', `${entry.id}_req.json`), 'utf8'));
+    const reqLog = await readLogJson(path.join(testHome, 'logs', `${entry.id}_req.json`));
     assert.equal(reqLog.headers.sessionId, 'ws-thread-parity-001');
     assert.equal(reqLog.metadata.thread_id, 'ws-thread-parity-001');
   });
@@ -393,7 +394,7 @@ describe('OpenAI Responses WebSocket proxy', () => {
     const entry = await waitForIndexEntry(path.join(testHome, 'logs'), e => e.provider === 'openai');
     assert.equal(entry.sessionId, 'codex-raw');
     assert.equal(entry.turnToolFail, undefined);
-    const reqLog = JSON.parse(fs.readFileSync(path.join(testHome, 'logs', `${entry.id}_req.json`), 'utf8'));
+    const reqLog = await readLogJson(path.join(testHome, 'logs', `${entry.id}_req.json`));
     assert.equal(reqLog.metadata?.client, undefined);
   });
 
@@ -588,7 +589,7 @@ describe('OpenAI Responses WebSocket proxy', () => {
     assert.equal(entry.provider, 'openai');
     assert.equal(entry.responseMetadata.transport, 'websocket');
     assert.equal(entry.responseMetadata.endpoint, '/v1/realtime');
-    const reqLog = JSON.parse(fs.readFileSync(path.join(testHome, 'logs', `${entry.id}_req.json`), 'utf8'));
+    const reqLog = await readLogJson(path.join(testHome, 'logs', `${entry.id}_req.json`));
     assert.equal(reqLog.url, '/v1/realtime?model=gpt-realtime');
     assert.equal(reqLog.endpoint, '/v1/realtime');
   });
@@ -841,9 +842,9 @@ describe('OpenAI Responses WebSocket proxy', () => {
     assert.match(entry.coreHash, /^[0-9a-f]{12}$/, 'coreHash from prompt registration');
     assert.equal(entry.agentKey, 'default');
     assert.equal(entry.agentLabel, 'Codex Default');
-    assert.ok(fs.existsSync(path.join(testHome, 'logs', 'shared', `openai_instructions_${entry.sysHash}.json`)), 'shared instructions file written');
+    assert.ok(await waitForFile(path.join(testHome, 'logs', 'shared', `openai_instructions_${entry.sysHash}.json`)), 'shared instructions file written');
 
-    const reqLog = JSON.parse(fs.readFileSync(path.join(testHome, 'logs', `${entry.id}_req.json`), 'utf8'));
+    const reqLog = await readLogJson(path.join(testHome, 'logs', `${entry.id}_req.json`));
     assert.equal(reqLog.provider, 'openai');
     assert.equal(reqLog.model, 'gpt-5.5');
     assert.equal(reqLog.instructions, 'You are a test assistant.');
@@ -910,7 +911,7 @@ describe('OpenAI Responses WebSocket proxy', () => {
     const entry = await waitForIndexEntry(path.join(testHome, 'logs'), e => e.sessionId === sessionId);
     assert.equal(entry.msgCount, 0, 'msgCount should be 0 for non-captured frames');
 
-    const reqLog = JSON.parse(fs.readFileSync(path.join(testHome, 'logs', `${entry.id}_req.json`), 'utf8'));
+    const reqLog = await readLogJson(path.join(testHome, 'logs', `${entry.id}_req.json`));
     assert.equal(reqLog.capture, 'transport-only', 'should fall back to transport-only');
     assert.equal(reqLog.instructions, undefined, 'no instructions in transport-only');
   });
@@ -1149,7 +1150,7 @@ describe('OpenAI Responses WebSocket proxy', () => {
     }
 
     const entry = await waitForIndexEntry(path.join(testHome, 'logs'), e => e.sessionId === sessionId && e.title);
-    const resLog = JSON.parse(fs.readFileSync(path.join(testHome, 'logs', `${entry.id}_res.json`), 'utf8'));
+    const resLog = await readLogJson(path.join(testHome, 'logs', `${entry.id}_res.json`));
     assert.ok(Array.isArray(resLog), 'recorded res.json should be the responseEvents array');
 
     const recordedTypes = resLog.map(ev => ev.type);
@@ -1238,7 +1239,7 @@ describe('OpenAI Responses WebSocket proxy', () => {
     }
 
     const entry = await waitForIndexEntry(path.join(testHome, 'logs'), e => e.sessionId === sessionId && e.title);
-    const resLog = JSON.parse(fs.readFileSync(path.join(testHome, 'logs', `${entry.id}_res.json`), 'utf8'));
+    const resLog = await readLogJson(path.join(testHome, 'logs', `${entry.id}_res.json`));
     assert.ok(Array.isArray(resLog), 'recorded res.json should be the responseEvents array');
 
     const marker = resLog.find(ev => ev.type === 'response.done');

@@ -257,42 +257,8 @@ function indexWasRecentlyWritten(indexPath, log) {
   return false
 }
 
-function acquireMaintenanceLock(storage, op, log) {
-  // ponytail: realpath so symlinked paths to the same dir share one lock (codex P2)
-  let resolved
-  try { resolved = fs.realpathSync(storage.location) } catch { resolved = storage.location }
-  const lockPath = path.join(resolved, '.index-maintenance.lock');
-  const token = crypto.randomUUID();
-  const contents = JSON.stringify({ pid: process.pid, token, op, startedAt: new Date().toISOString() });
-  while (true) {
-    try {
-      fs.writeFileSync(lockPath, contents, { flag: 'wx', mode: 0o600 });
-      return { lockPath, token };
-    } catch (e) {
-      if (e.code !== 'EEXIST') throw e;
-      let existing;
-      try { existing = JSON.parse(fs.readFileSync(lockPath, 'utf8')); } catch {}
-      if (!existing || !existing.pid || hub.isPidAlive(existing.pid)) {
-        log('Another index maintenance command is already running; aborting.');
-        return null;
-      }
-      try { fs.unlinkSync(lockPath); } catch (unlinkError) {
-        if (unlinkError.code === 'ENOENT') continue;
-        throw unlinkError;
-      }
-    }
-  }
-}
-
-function releaseMaintenanceLock(lock) {
-  if (!lock) return;
-  try {
-    const current = JSON.parse(fs.readFileSync(lock.lockPath, 'utf8'));
-    if (current.token === lock.token) fs.unlinkSync(lock.lockPath);
-  } catch (e) {
-    if (e.code !== 'ENOENT') throw e;
-  }
-}
+// Lock helpers live in ./maintenance-lock (shared with migrate-logs and startup prune, #776).
+const { acquireMaintenanceLock, releaseMaintenanceLock } = require('./maintenance-lock');
 
 async function rebuildIndex({ apply = false, storage = config.storage, log = console.log } = {}) {
   // ── Hub safety: refuse to race a live hub's appends. ──

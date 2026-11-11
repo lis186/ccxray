@@ -53,6 +53,7 @@ function migrationRetentionDays() {
   const { resolveCcxrayHome } = require('../server/paths');
   return writerRetentionDays(retentionDays(), { home: resolveCcxrayHome(), logsDir: LOGS_DIR });
 }
+const { decodeToStringSync } = require('../server/storage/gzip'); // #776: logs may be gzip
 
 // ── Safe JSON parse — handles legacy double-JSON-concatenated files ───
 function safeParseFirst(text) {
@@ -80,7 +81,7 @@ async function probeChainDepth(deltaParsed, logsDir = LOGS_DIR, cap = SNAPSHOT_N
   let cursor = deltaParsed.prevId;
   while (cursor && depth < cap) {
     try {
-      const txt = await fsp.readFile(path.join(logsDir, cursor + '_req.json'), 'utf8');
+      const txt = decodeToStringSync(await fsp.readFile(path.join(logsDir, cursor + '_req.json')));
       const p = safeParseFirst(txt);
       if (!p) break;
       if (p.prevId == null) break; // hit anchor
@@ -194,7 +195,7 @@ async function migrate() {
     for (const id of ids) {
       const fpath = path.join(LOGS_DIR, id + '_req.json');
       let raw, size;
-      try { raw = await fsp.readFile(fpath, 'utf8'); size = Buffer.byteLength(raw, 'utf8'); }
+      try { raw = decodeToStringSync(await fsp.readFile(fpath)); size = Buffer.byteLength(raw, 'utf8'); }
       catch { if (prevState !== null) hasGap = true; prevState = null; continue; }
 
       const parsed = safeParseFirst(raw);

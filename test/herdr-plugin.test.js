@@ -199,10 +199,11 @@ function makeTargetedImportWrapper() {
 const NO_TRANSCRIPTS = tempDir('ccxray-herdr-no-transcripts-');
 const NO_CODEX_TRANSCRIPTS = tempDir('ccxray-herdr-no-codex-transcripts-');
 
-function writeToolDefinitions(home, hash, tools, prefix = 'tools_') {
+function writeToolDefinitions(home, hash, tools, prefix = 'tools_', { gzip = false } = {}) {
   const shared = path.join(home, 'logs', 'shared');
   fs.mkdirSync(shared, { recursive: true });
-  fs.writeFileSync(path.join(shared, `${prefix}${hash}.json`), JSON.stringify(tools));
+  const text = JSON.stringify(tools);
+  fs.writeFileSync(path.join(shared, `${prefix}${hash}.json`), gzip ? require('zlib').gzipSync(text) : text);
 }
 
 // A mock `herdr` that starts in ~5ms instead of ~150ms+.
@@ -4731,6 +4732,26 @@ describe('Herdr plugin commands', () => {
     });
     assert.equal(defaultResult.status, 0, defaultResult.stderr);
     assert.doesNotMatch(defaultResult.stdout, /tool tax|unused MCP|skills tdd/);
+  });
+
+  it('reads gzip shared tool definitions (#776)', () => {
+    const hash = 'abc123def456';
+    const now = Date.now();
+    const home = makeHome([{
+      ...sampleEntry, id: 'capability-gz', sessionId: 'capability-gz-session', receivedAt: now,
+      toolsHash: hash, turnToolCalls: { Bash: 1 }, cost: { cost: 0.01, confidence: 'exact' },
+    }]);
+    writeToolDefinitions(home, hash, [
+      { name: 'Bash', description: 'Run a command', input_schema: { type: 'object' } },
+      { name: 'mcp__notion__search', description: 'x'.repeat(4000), input_schema: { type: 'object' } },
+    ], 'tools_', { gzip: true });
+    const result = runScript('mission-control.js', ['--once'], {
+      CCXRAY_HOME: home, CCXRAY_HERDR_NOW_MS: String(now), HERDR_BIN_PATH: makeHerdr([]),
+      CCXRAY_MISSION_COLS: '120', CCXRAY_MISSION_SHOW_CAPABILITIES: '1',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /tools 1\/2/);
+    assert.match(result.stdout, /not called here MCP notion ~1\.0K/);
   });
 
   it('capability-review uses eligible-session samples before suggesting changes', () => {

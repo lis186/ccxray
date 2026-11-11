@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const { spawn } = require('child_process');
 const http = require('http');
 const fs = require('fs');
+const { readLogText } = require('./helpers/read-log');
 const path = require('path');
 const os = require('os');
 const net = require('net');
@@ -847,7 +848,7 @@ describe('P0: proxy end-to-end forwarding', () => {
     assert.ok(resFiles.length > 0, `Expected res log files, found: ${files.join(', ')}`);
 
     // Verify req log content
-    const reqContent = JSON.parse(fs.readFileSync(path.join(logsDir, reqFiles[0]), 'utf8'));
+    const reqContent = JSON.parse(readLogText(path.join(logsDir, reqFiles[0])));
     assert.equal(reqContent.model, 'claude-sonnet-4-20250514');
     assert.ok(reqContent.messages);
   });
@@ -871,7 +872,7 @@ describe('P0: proxy end-to-end forwarding', () => {
         ? fs.readdirSync(logsDir).filter(f => f.endsWith('_req.json')).sort().reverse()
         : [];
       if (!reqFiles.length) return null;
-      const latest = JSON.parse(fs.readFileSync(path.join(logsDir, reqFiles[0]), 'utf8'));
+      const latest = JSON.parse(readLogText(path.join(logsDir, reqFiles[0])));
       return latest.model === 'claude-haiku-4-5-20251001' ? latest : null;
     });
 
@@ -990,7 +991,7 @@ describe('SSE streaming proxy', () => {
       const resFiles = files.filter(f => f.endsWith('_res.json'));
       if (!resFiles.length) return null;
       const lastResFile = resFiles.sort().pop();
-      const parsed = JSON.parse(fs.readFileSync(path.join(logsDir, lastResFile), 'utf8'));
+      const parsed = JSON.parse(readLogText(path.join(logsDir, lastResFile)));
       return (Array.isArray(parsed) && parsed.length >= 5) ? parsed : null;
     });
 
@@ -1131,12 +1132,12 @@ describe('OpenAI Responses raw capture', () => {
     assert.equal(entry.sessionId, 'codex-raw');
     assert.equal(entry.cost, null);
 
-    const reqLog = JSON.parse(fs.readFileSync(path.join(logsDir, `${entry.id}_req.json`), 'utf8'));
+    const reqLog = JSON.parse(readLogText(path.join(logsDir, `${entry.id}_req.json`)));
     assert.equal(reqLog.instructions, 'You are Codex in raw capture mode.');
     assert.equal(reqLog.input, 'inspect the repository');
     assert.equal(reqLog.prevId, undefined);
 
-    const resLog = JSON.parse(fs.readFileSync(path.join(logsDir, `${entry.id}_res.json`), 'utf8'));
+    const resLog = JSON.parse(readLogText(path.join(logsDir, `${entry.id}_res.json`)));
     assert.equal(resLog.id, 'resp_raw_v0');
     assert.equal(resLog.output[0].content[0].text, 'codex ok');
   });
@@ -1170,7 +1171,7 @@ describe('OpenAI Responses raw capture', () => {
     assert.equal(entry.cwd, '/Users/test/codex-project');
     assert.equal(entry.title, 'inspect this repo');
 
-    const reqLog = JSON.parse(fs.readFileSync(path.join(logsDir, `${entry.id}_req.json`), 'utf8'));
+    const reqLog = JSON.parse(readLogText(path.join(logsDir, `${entry.id}_req.json`)));
     assert.equal(reqLog.metadata.session_id, 'codex-thread-parity-001');
     assert.equal(reqLog.metadata.cwd, '/Users/test/codex-project');
   });
@@ -1195,7 +1196,7 @@ describe('OpenAI Responses raw capture', () => {
     assert.equal(entry.usage.input_tokens, 10);
     assert.equal(entry.responseMetadata.responseStatus, 'completed');
 
-    const resLog = JSON.parse(fs.readFileSync(path.join(logsDir, `${entry.id}_res.json`), 'utf8'));
+    const resLog = JSON.parse(readLogText(path.join(logsDir, `${entry.id}_res.json`)));
     const finalEvent = resLog[resLog.length - 1];
     assert.equal(finalEvent.type, 'response.completed');
     assert.equal(finalEvent.data.response.output[0].content[0].text, 'stream ok');

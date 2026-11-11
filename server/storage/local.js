@@ -4,6 +4,15 @@ const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
 const readline = require('readline');
+const zlib = require('zlib');
+const { encodeForWrite, decodeToString, isGzip } = require('./gzip');
+
+// Partial inflate for readHead (#774 x #776): never throws on truncated input.
+function gunzipPrefix(buf) {
+  return new Promise((resolve) => {
+    zlib.gunzip(buf, { finishFlush: zlib.constants.Z_SYNC_FLUSH }, (err, out) => resolve(err ? Buffer.alloc(0) : out));
+  });
+}
 
 /**
  * Local filesystem storage adapter.
@@ -63,11 +72,12 @@ function createLocalStorage(logsDir, opts = {}) {
     },
 
     async write(id, suffix, data) {
-      await fsp.writeFile(path.join(logsDir, id + suffix), data, { mode: 0o600 });
+      // #776: gzip unless CCXRAY_COMPRESS_DISABLE=1; read() sniffs by magic bytes.
+      await fsp.writeFile(path.join(logsDir, id + suffix), await encodeForWrite(data), { mode: 0o600 });
     },
 
     async read(id, suffix) {
-      return fsp.readFile(path.join(logsDir, id + suffix), 'utf8');
+      return decodeToString(await fsp.readFile(path.join(logsDir, id + suffix)));
     },
 
     // First `bytes` bytes of an artifact as UTF-8 (a multi-byte char cut at the
@@ -78,7 +88,19 @@ function createLocalStorage(logsDir, opts = {}) {
       try {
         const buf = Buffer.alloc(bytes);
         const { bytesRead } = await fh.read(buf, 0, bytes, 0);
-        return buf.toString('utf8', 0, bytesRead);
+        if (!isGzip(buf.subarray(0, bytesRead))) return buf.toString('utf8', 0, bytesRead);
+        // #774 x #776: a gzip file's head is compressed bytes. Inflate a bounded
+        // prefix of the compressed stream (Z_SYNC_FLUSH tolerates the truncated
+        // input) and return the first `bytes` decoded bytes. JSON compresses well
+        // over 4x, so 4x the window of compressed input covers the decoded head;
+        // a shorter result only makes the caller fall back to a full read.
+        const zbuf = Buffer.alloc(bytes * 4);
+        const z = await fh.read(zbuf, 0, zbuf.length, 0);
+        let out = await gunzipPrefix(zbuf.subarray(0, z.bytesRead));
+        // A failed partial inflate must never look like an empty (0-byte) file —
+        // callers skip empty heads — so fall back to decoding the whole file.
+        if (out.length === 0) out = Buffer.from(await decodeToString(await fsp.readFile(path.join(logsDir, id + suffix))), 'utf8');
+        return out.toString('utf8', 0, Math.min(bytes, out.length));
       } finally {
         await fh.close();
       }
@@ -144,15 +166,17 @@ function createLocalStorage(logsDir, opts = {}) {
 
     async writeSharedIfAbsent(filename, data) {
       const p = safeJoin(sharedDir, filename);
+      const payload = await encodeForWrite(data); // #776
       try {
-        await fsp.writeFile(p, data, { flag: 'wx', mode: 0o600 });
+        await fsp.writeFile(p, payload, { flag: 'wx', mode: 0o600 });
       } catch (e) {
         if (e.code !== 'EEXIST') throw e;
       }
     },
 
     async readShared(filename) {
-      return fsp.readFile(safeJoin(sharedDir, filename), 'utf8');
+      // #776: the single sniff choke point for shared files (plain or gzip).
+      return decodeToString(await fsp.readFile(safeJoin(sharedDir, filename)));
     },
 
     async statShared(filename) {

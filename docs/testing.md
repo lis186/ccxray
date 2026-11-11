@@ -58,6 +58,8 @@ Anthropic keys with gateway bearers (Anthropic), and xAI header forwarding
 
 ## Test hygiene
 
+Log files written through `config.storage` are gzip by default (#776). A test that reads one straight off disk must use `test/helpers/read-log.js` (`readLogText`), not `fs.readFileSync(..., 'utf8')`; `CCXRAY_COMPRESS_DISABLE` is scrubbed by the HOME-guard preload so a shell-exported value cannot change results. The proxy writes the index line concurrently with the log files and async gzip delays the files, so a test that waits on the index must poll the file (`readLogJson`, `waitForFile`). `test/helpers/proxy-fixture.js` starts an isolated proxy in front of a mock upstream; `test/helpers/slow-gzip.js` (preloaded via `slowGzipEnv`) delays `zlib.gzip` in the child to model a slow compressor.
+
 `bodyless-session.e2e.test.js` uses two keep-alive clients with synthetic agent ids,
 UUIDs and cwd, a fake upstream, and a child proxy with temporary HOME/CCXRAY_HOME
 and import/export disabled. It checks body-less attribution in index.ndjson and

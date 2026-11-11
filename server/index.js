@@ -25,6 +25,7 @@ Commands:
   open                Open dashboard in browser
   import              Import transcripts (--once or --target-transcript)
   rebuild-index       Rebuild index.ndjson from log files
+  migrate-logs        Gzip existing log files, one-way (--dry-run | --apply)
   setup               Install the Claude shell wrapper (export opt-in: --export)
   setup-statusline    Configure Claude Code status line
   hud on|off|status   Turn the Context HUD on or off, or show it (off by default)
@@ -218,6 +219,7 @@ const unknownCommand = cliCommand
   && cliCommand !== 'open'
   && cliCommand !== 'secret'
   && cliCommand !== 'rebuild-index'
+  && cliCommand !== 'migrate-logs'
   && cliCommand !== 'import'
   && cliCommand !== 'setup'
   && cliCommand !== 'setup-statusline'
@@ -351,6 +353,17 @@ if (process.argv[2] === 'rebuild-index') {
       .then(r => process.exit(r && r.refused ? 1 : 0))
       .catch(err => { console.error(`rebuild-index failed: ${err.message}`); process.exit(1); });
   }
+  return;
+}
+
+// ── "migrate-logs [--dry-run|--apply]" — early exit, no server/hub boot ──
+// One-way gzip of pre-existing plain log files (#776). Dry-run by default.
+if (process.argv[2] === 'migrate-logs') {
+  const dry = process.argv.includes('--dry-run'), apply = process.argv.includes('--apply');
+  if (dry && apply) { console.error('migrate-logs: --dry-run and --apply are mutually exclusive'); process.exit(1); }
+  require('./migrate-logs').migrateLogs({ apply })
+    .then(r => process.exit(r && (r.refused || r.paused || r.failed) ? 1 : 0))
+    .catch(err => { console.error(`migrate-logs failed: ${err.message}`); process.exit(1); });
   return;
 }
 
@@ -573,6 +586,10 @@ function handleHttpRequest(clientReq, clientRes) {
     }
 
     let reqWritePromise = null;
+    // #776: shared sys/tools/meta writes join reqWritePromise (the entry write
+    // barrier). Compression makes them land later than the entry registers, and a
+    // lazy load that reads a shared file before it exists caches null permanently.
+    const sharedWrites = [];
     let sysHash = null;
     let toolsHash = null;
     let coreHash = null;
@@ -584,12 +601,12 @@ function handleHttpRequest(clientReq, clientRes) {
       toolsHash = toolsPH.hash;
 
       if (sysHash) {
-        config.storage.writeSharedIfAbsent(`${sysPH.filePrefix}${sysHash}.json`, JSON.stringify(sysPH.content))
-          .catch(e => console.error('Write sys/instructions failed:', e.message));
+        sharedWrites.push(config.storage.writeSharedIfAbsent(`${sysPH.filePrefix}${sysHash}.json`, JSON.stringify(sysPH.content))
+          .catch(e => console.error('Write sys/instructions failed:', e.message)));
       }
       if (toolsHash) {
-        config.storage.writeSharedIfAbsent(`${toolsPH.filePrefix}${toolsHash}.json`, JSON.stringify(parsedBody.tools))
-          .catch(e => console.error('Write tools failed:', e.message));
+        sharedWrites.push(config.storage.writeSharedIfAbsent(`${toolsPH.filePrefix}${toolsHash}.json`, JSON.stringify(parsedBody.tools))
+          .catch(e => console.error('Write tools failed:', e.message)));
       }
 
       // registerPromptVersion for openai: also writes prompt metadata + extracts agent identity
@@ -598,10 +615,10 @@ function handleHttpRequest(clientReq, clientRes) {
           parsedBody, sysHash, sharedFile: `${sysPH.filePrefix}${sysHash}.json`,
         }) || null;
         if (promptInfo) {
-          config.storage.writeSharedIfAbsent(`openai_prompt_meta_${sysHash}.json`, JSON.stringify({
+          sharedWrites.push(config.storage.writeSharedIfAbsent(`openai_prompt_meta_${sysHash}.json`, JSON.stringify({
             agentKey: promptInfo.agentKey,
             agentLabel: promptInfo.agentLabel,
-          })).catch(e => console.error('Write OpenAI prompt metadata failed:', e.message));
+          })).catch(e => console.error('Write OpenAI prompt metadata failed:', e.message)));
         }
         coreHash = promptInfo?.coreHash || null;
         agentKey = promptInfo?.agentKey || null;
@@ -662,8 +679,11 @@ function handleHttpRequest(clientReq, clientRes) {
         stripped = { model: parsedBody.model, max_tokens: parsedBody.max_tokens, ...extraParams, messages: currMessages, sysHash, toolsHash, ...(meta && { metadata: meta }) };
       }
 
-      reqWritePromise = config.storage.write(id, '_req.json', JSON.stringify(stripped))
-        .catch(e => console.error('Write req.json failed:', e.message));
+      reqWritePromise = Promise.all([
+        ...sharedWrites,
+        config.storage.write(id, '_req.json', JSON.stringify(stripped))
+          .catch(e => console.error('Write req.json failed:', e.message)),
+      ]);
     }
 
     const detectedSession = parsedBody
@@ -912,6 +932,10 @@ function attachTimeoutMs(env = process.env) {
 // for the WS upgrade entry. Bounded by a 5s safety timeout so a stuck write
 // can never block shutdown.
 async function gracefulExit(code) {
+  // #776: stop compressing — writes queued from here on (and gzip jobs still in
+  // flight) go out as plain JSON so the 5s deadline cannot strand an indexed entry
+  // without its payload file.
+  require('./storage/gzip').beginShutdown();
   stopCodexRefresh();
   stopExportSync();
   const deadline = new Promise(resolve => setTimeout(resolve, 5000));

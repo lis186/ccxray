@@ -12,9 +12,11 @@
  *
  * @property {(id: string, suffix: string, data: string|Buffer) => Promise<void>} write
  *   Write a log artifact. Fire-and-forget callers should .catch() the promise.
+ *   The local adapter gzips the payload (#776) unless CCXRAY_COMPRESS_DISABLE=1.
  *
  * @property {(id: string, suffix: string) => Promise<string>} read
- *   Read a log artifact as UTF-8 string. Throws if not found.
+ *   Read a log artifact as UTF-8 string. Throws if not found. The local adapter
+ *   transparently gunzips files that start with the gzip magic bytes (#776).
  *
  * @property {(id: string, suffix: string, bytes: number) => Promise<string>} [readHead]
  *   Optional. First `bytes` bytes of a log artifact as UTF-8, without reading the rest.
