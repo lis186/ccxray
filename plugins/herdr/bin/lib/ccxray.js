@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const zlib = require('zlib');
 
 const DEFAULT_TIMEOUT_MS = 8000;
 
@@ -1936,6 +1937,18 @@ function mcpServerName(name) {
   return String(name).split('__')[1] || 'unknown';
 }
 
+// #776: ccxray writes shared/ files gzip. The plugin must stay standalone (it can
+// be installed without a ccxray checkout), so it sniffs the magic bytes itself
+// with node:zlib instead of requiring server/storage/gzip.js. The output cap keeps
+// a corrupt or hostile file from inflating past the 32 MiB raw-size guard.
+function readSharedText(file) {
+  const buf = fs.readFileSync(file);
+  if (buf.length >= 2 && buf[0] === 0x1f && buf[1] === 0x8b) {
+    return zlib.gunzipSync(buf, { maxOutputLength: 32 * 1024 * 1024 }).toString('utf8');
+  }
+  return buf.toString('utf8');
+}
+
 function readToolDefinitions(turns, opts = {}) {
   const latestWithHash = turns.slice().reverse().find(turn => turn.toolsHash);
   const hash = latestWithHash?.toolsHash;
@@ -1953,7 +1966,7 @@ function readToolDefinitions(turns, opts = {}) {
     const file = path.join(sharedDir, `${prefix}${hash}.json`);
     try {
       if (fs.statSync(file).size > 32 * 1024 * 1024) continue;
-      const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const parsed = JSON.parse(readSharedText(file));
       if (Array.isArray(parsed)) {
         tools = parsed;
         break;
