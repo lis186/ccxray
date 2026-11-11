@@ -29,7 +29,8 @@
 // `_res.json` survives the file deletion pass.
 //
 // Recovers offline: model/usage/cost/maxContext/toolCalls (canonical), cwd (from
-// the rehydrated system prompt — shared sys_*.json files are never pruned),
+// the rehydrated system prompt — shared sys_*.json files are only ever removed
+// by the explicit offline `ccxray gc` (#775), never by retention prune),
 // title, thinkingDuration, stopReason, session attribution, and prompt identity
 // (sysHash/coreHash/agentKey — recomputed from the rehydrated system prompt).
 // Honestly null for runtime-only fields it cannot know (elapsed, receivedAt).
@@ -125,8 +126,9 @@ async function reconstructReq(id, storage, cache, seen = new Set()) {
     return null;
   }
 
-  // Anthropic: rehydrate system/tools from content-addressed shared files (never
-  // pruned, so always available when the hash is present).
+  // Anthropic: rehydrate system/tools from content-addressed shared files
+  // (retention prune never touches them; `ccxray gc` (#775) keeps any hash an
+  // index line or surviving _req references, so they are present when the hash is).
   const system = stripped.sysHash
     ? await readSharedJson(storage, `sys_${stripped.sysHash}.json`)
     : null;
@@ -755,4 +757,4 @@ async function reimportEntries({ storage = config.storage, log = console.log } =
   }
 }
 
-module.exports = { rebuildIndex, reimportEntries, reconstructReq, tsFromId, nearestPrecedingSession, indexFingerprint };
+module.exports = { rebuildIndex, reimportEntries, reconstructReq, tsFromId, nearestPrecedingSession, indexFingerprint, liveHubBlocking, acquireMaintenanceLock, releaseMaintenanceLock };
