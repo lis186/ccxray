@@ -61,6 +61,7 @@ Runs that bypass the proxy are not recorded live. Claude Code and Codex transcri
 
 ## Imported rows and retention
 
+- `logs/shared/` (system prompts and tool lists, one file per content hash) is not touched by retention. Reclaim unreferenced files explicitly with `ccxray gc --dry-run` then `ccxray gc --apply` (offline; 7-day grace; see README) (#775).
 - Startup pruning (`LOG_RETENTION_DAYS`, default 14) deletes old `_req.json`/`_res.json` files and then drops index lines whose proxy files are gone. Imported lines have no such files, so they survive pruning. The exception: an imported line that duplicates a proxy line (same `responseId`) is dropped once that proxy line's files are pruned.
 - The dashboard's startup restore loads only index lines from the last `RESTORE_DAYS` (default: `LOG_RETENTION_DAYS`, i.e. 14) into memory. Older sessions, imported or not, still appear as session cards from the session index (`sessions.json`), and their turns are read from `index.ndjson` when the session is opened. `ccxray usage` and `ccxray agentflow report` read `index.ndjson` directly and are not limited by `RESTORE_DAYS`.
 

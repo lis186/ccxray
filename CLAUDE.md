@@ -19,6 +19,7 @@ ccxray --port 8080 status                        # Checks hub lock/socket first;
 ccxray setup                                     # Claude wrapper + local recording only; import stays disabled
 ccxray setup --export --bucket <bucket> --domains example.com # Also enroll in summary export (opt-in)
 ccxray setup --wrap-binaries [--dry-run|--check|--remove] # Opt-in fail-open claude/codex launcher shims (docs/launcher-shims.md)
+ccxray gc --dry-run|--apply                      # Offline GC of unreferenced shared/ files (#775)
 ccxray hud on|off|status                         # Context HUD toggle (off by default; same settings.json as the dashboard)
 ccxray                                           # Proxy + dashboard only
 npm run dev                                      # Dev mode (auto-restart on server/public changes)
@@ -161,6 +162,7 @@ Before pushing, confirm the suite passes against an empty home: `CCXRAY_HOME=$(m
 | `server/git-sha.js` | Resolves the commit the running code was loaded from (`gitSha` in `GET /_api/health`, #728): `captureGitSha()` snapshots it once in `startServer()` before listen and health only reads the snapshot. Reads `.git` metadata in the package root only (no parent walk, no process spawn) via O_NOFOLLOW/O_NONBLOCK size-capped descriptor reads; symlinks (including in any ancestor of a gitdir/commondir pointer target, checked against the package root's realpath), forged worktree indirection, unreadable loose refs (no packed fallback), reftable → null. Per-worktree ref namespaces route to the worktree gitdir. Residual: the startup read is size-bounded, not time-bounded |
 | `server/git-branch.js` | Resolves the checked-out git branch of a cwd by reading `.git/HEAD` (follows worktree `gitdir:` files; detached → null); per-cwd 5s TTL cache, no process spawn, never throws. Feeds the entry/session `branch` field |
 | `server/rebuild-index.js` | `ccxray rebuild-index` CLI — rebuilds `index.ndjson` from surviving `_req/_res` log files |
+| `server/gc.js` | `ccxray gc` (#775) — offline, explicit (`--dry-run`/`--apply`) removal of unreferenced `shared/` files. Roots = sysHash/toolsHash named by any index line or surviving `_req`/`_req.received.json` (regex over raw text, so torn lines still root); 7-day mtime grace; unknown prefixes untouched. Refuses on a live `hub.json`, any listener on the configured port, or a held ADR 0021 maintenance lock |
 | `server/import-once.js` | `ccxray import --once` CLI — throttled, lock-guarded single-shot transcript scan for a dashboard that has noticed the index fell behind. Appends index lines only and sets `CCXRAY_SESSION_INDEX_NO_FLUSH=1`, so it may run beside a live hub (unlike `rebuild-index --reimport`, which refuses). Env: `CCXRAY_IMPORT_ONCE_MIN_INTERVAL_MS` (default 10min) |
 | `server/usage.js` | Per-turn usage extraction and session-level aggregation helpers |
 | `server/local-usage-reader.js` | Reads Claude/Codex local transcript files for the cost-worker |
