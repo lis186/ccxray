@@ -4686,6 +4686,27 @@ describe('Herdr plugin commands', () => {
     assert.match(result.stdout, /GREEN w1:p5 claude · working/);
   });
 
+  it('capabilityPortfolio restores a tools file that `ccxray gc --apply` quarantined instead of caching a miss (#775)', () => {
+    const { capabilityPortfolio } = require('../plugins/herdr/bin/lib/ccxray');
+    const hash = 'abc123def456';
+    const home = tempDir('ccxray-herdr-gc-trash-');
+    const trash = path.join(home, 'logs', 'shared', '.gc-trash-2026-11-01T00-00-00-000Z');
+    fs.mkdirSync(trash, { recursive: true });
+    fs.writeFileSync(path.join(trash, `tools_${hash}.json`), JSON.stringify([{ name: 'Bash', description: 'Run', input_schema: { type: 'object' } }]));
+    const turns = [{ ...sampleEntry, id: 'q1', sessionId: 'q', toolsHash: hash, turnToolCalls: { Bash: 1 } }];
+    const cache = new Map();
+    const portfolio = capabilityPortfolio(turns, { env: { CCXRAY_HOME: home }, cache });
+    assert.equal(portfolio && portfolio.exposedTools, 1, 'tool definitions found via quarantine');
+    assert.ok(fs.existsSync(path.join(home, 'logs', 'shared', `tools_${hash}.json`)), 'moved back to shared/');
+    assert.ok(!fs.existsSync(path.join(trash, `tools_${hash}.json`)), 'trash copy removed');
+    // a writer's fresh file wins over older quarantined data (no-replace)
+    const hash2 = 'def456abc123';
+    fs.writeFileSync(path.join(trash, `tools_${hash2}.json`), JSON.stringify([{ name: 'Old', description: 'x', input_schema: {} }]));
+    fs.writeFileSync(path.join(home, 'logs', 'shared', `tools_${hash2}.json`), JSON.stringify([{ name: 'New', description: 'x', input_schema: {} }]));
+    assert.equal(capabilityPortfolio([{ ...sampleEntry, id: 'q2', sessionId: 'q', toolsHash: hash2, turnToolCalls: {} }], { env: { CCXRAY_HOME: home } }).exposedTools, 1);
+    assert.match(fs.readFileSync(path.join(home, 'logs', 'shared', `tools_${hash2}.json`), 'utf8'), /New/);
+  });
+
   it('mission-control reports observed tool and MCP utilization without charging deferred tools', () => {
     const hash = 'abc123def456';
     const now = Date.now();

@@ -1936,6 +1936,31 @@ function mcpServerName(name) {
   return String(name).split('__')[1] || 'unknown';
 }
 
+// `ccxray gc --apply` quarantines unreferenced shared/ files under
+// shared/.gc-trash-<ts>/ (#775). Before a shared file counts as missing, move it
+// back (newest dir first) with a no-replace link. Standalone copy of
+// server/shared-trash.js restoreFile — built-ins only; keep the two in step.
+function restoreSharedFromQuarantine(sharedDir, name) {
+  let dirs;
+  try { dirs = fs.readdirSync(sharedDir).filter(n => n.startsWith('.gc-trash-')).sort().reverse(); } catch { return false; }
+  const dst = path.join(sharedDir, name);
+  for (const dir of dirs) {
+    const src = path.join(sharedDir, dir, name);
+    try {
+      try { fs.linkSync(src, dst); } catch (e) {
+        if (e.code === 'EEXIST') return true; // a writer already created it
+        if (e.code === 'ENOENT') continue;
+        fs.copyFileSync(src, dst, fs.constants.COPYFILE_EXCL); // no hard links here
+      }
+      try { fs.unlinkSync(src); } catch {}
+      return true;
+    } catch (e) {
+      if (e.code === 'EEXIST') return true;
+    }
+  }
+  return false;
+}
+
 function readToolDefinitions(turns, opts = {}) {
   const latestWithHash = turns.slice().reverse().find(turn => turn.toolsHash);
   const hash = latestWithHash?.toolsHash;
@@ -1952,6 +1977,7 @@ function readToolDefinitions(turns, opts = {}) {
   for (const prefix of prefixes) {
     const file = path.join(sharedDir, `${prefix}${hash}.json`);
     try {
+      if (!fs.existsSync(file)) restoreSharedFromQuarantine(sharedDir, `${prefix}${hash}.json`);
       if (fs.statSync(file).size > 32 * 1024 * 1024) continue;
       const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
       if (Array.isArray(parsed)) {
