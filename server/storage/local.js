@@ -8,9 +8,19 @@ const zlib = require('zlib');
 const { encodeForWrite, decodeToString, isGzip } = require('./gzip');
 
 // Partial inflate for readHead (#774 x #776): never throws on truncated input.
-function gunzipPrefix(buf) {
+// Streams, and stops once `want` decoded bytes exist, so a highly repetitive
+// file cannot inflate the whole compressed window (codex integration review).
+function gunzipPrefix(buf, want) {
   return new Promise((resolve) => {
-    zlib.gunzip(buf, { finishFlush: zlib.constants.Z_SYNC_FLUSH }, (err, out) => resolve(err ? Buffer.alloc(0) : out));
+    const z = zlib.createGunzip({ finishFlush: zlib.constants.Z_SYNC_FLUSH });
+    const chunks = [];
+    let n = 0;
+    let done = false;
+    const finish = () => { if (done) return; done = true; z.destroy(); resolve(Buffer.concat(chunks)); };
+    z.on('data', (c) => { chunks.push(c); n += c.length; if (n >= want) finish(); });
+    z.on('end', finish);
+    z.on('error', finish); // partial output (or empty → caller falls back to a full decode)
+    z.end(buf);
   });
 }
 
@@ -96,7 +106,7 @@ function createLocalStorage(logsDir, opts = {}) {
         // a shorter result only makes the caller fall back to a full read.
         const zbuf = Buffer.alloc(bytes * 4);
         const z = await fh.read(zbuf, 0, zbuf.length, 0);
-        let out = await gunzipPrefix(zbuf.subarray(0, z.bytesRead));
+        let out = await gunzipPrefix(zbuf.subarray(0, z.bytesRead), bytes);
         // A failed partial inflate must never look like an empty (0-byte) file —
         // callers skip empty heads — so fall back to decoding the whole file.
         if (out.length === 0) out = Buffer.from(await decodeToString(await fsp.readFile(path.join(logsDir, id + suffix))), 'utf8');

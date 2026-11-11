@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
+const { readLogText } = require('./helpers/read-log'); // #776: the script writes encoded deltas
 const os = require('os');
 
 // The script switches between CLI mode and module mode via require.main.
@@ -199,14 +200,14 @@ describe('migrate-to-delta: end-to-end on synthetic logs', () => {
     assert.match(stdout, /Skipped \(subagent\):\s+1/, 'should skip 1 sub-agent row');
 
     // Verify the sub-agent file was NOT rewritten (still FULL with msgCount=1)
-    const subAgentRaw = JSON.parse(await fsp.readFile(path.join(tmpDir, '2026-01-01T00-00-00-003_req.json'), 'utf8'));
+    const subAgentRaw = JSON.parse(readLogText(path.join(tmpDir, '2026-01-01T00-00-00-003_req.json')));
     assert.ok(!('prevId' in subAgentRaw), 'sub-agent file must not be converted to delta');
     assert.equal(subAgentRaw.messages.length, 1);
 
     // Verify main-thread turns 4 and 5 were converted to delta (chain not broken by sub-agent)
-    const turn4 = JSON.parse(await fsp.readFile(path.join(tmpDir, '2026-01-01T00-00-00-004_req.json'), 'utf8'));
+    const turn4 = JSON.parse(readLogText(path.join(tmpDir, '2026-01-01T00-00-00-004_req.json')));
     assert.equal(turn4.prevId, '2026-01-01T00-00-00-002', 'turn 4 should delta from turn 2 (turn 3 is filtered)');
-    const turn5 = JSON.parse(await fsp.readFile(path.join(tmpDir, '2026-01-01T00-00-00-005_req.json'), 'utf8'));
+    const turn5 = JSON.parse(readLogText(path.join(tmpDir, '2026-01-01T00-00-00-005_req.json')));
     assert.equal(turn5.prevId, '2026-01-01T00-00-00-004');
   });
 
@@ -247,7 +248,7 @@ describe('migrate-to-delta: end-to-end on synthetic logs', () => {
     const { stdout } = await runMigration(['--write']);
     assert.match(stdout, /Existing deltas:\s+1/, 'should track 1 existing delta');
 
-    const turn4 = JSON.parse(await fsp.readFile(path.join(tmpDir, 't-004_req.json'), 'utf8'));
+    const turn4 = JSON.parse(readLogText(path.join(tmpDir, 't-004_req.json')));
     assert.ok('prevId' in turn4, 'turn 4 must be converted to delta (chain resumed across t-003)');
     // turn 4 should chain from t-003 (the existing delta) since that's the most recent
     assert.equal(turn4.prevId, 't-003');

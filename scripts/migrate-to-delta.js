@@ -53,7 +53,7 @@ function migrationRetentionDays() {
   const { resolveCcxrayHome } = require('../server/paths');
   return writerRetentionDays(retentionDays(), { home: resolveCcxrayHome(), logsDir: LOGS_DIR });
 }
-const { decodeToStringSync } = require('../server/storage/gzip'); // #776: logs may be gzip
+const { decodeToStringSync, encodeForWrite } = require('../server/storage/gzip'); // #776: logs may be gzip; deltas are written encoded like any log
 
 // ── Safe JSON parse — handles legacy double-JSON-concatenated files ───
 function safeParseFirst(text) {
@@ -267,12 +267,18 @@ async function migrate() {
       };
 
       const deltaJson = JSON.stringify(delta);
-      const saved = size - Buffer.byteLength(deltaJson, 'utf8');
+      // #776: write the delta encoded like every other log write (gzip unless
+      // CCXRAY_COMPRESS_DISABLE=1) and count savings in on-disk bytes, so a home
+      // already converted by migrate-logs is not silently expanded back to plain.
+      const payload = await encodeForWrite(deltaJson);
+      let diskSize = size;
+      try { diskSize = (await fsp.stat(fpath)).size; } catch {}
+      const saved = diskSize - Buffer.byteLength(payload);
 
       if (WRITE) {
         const tmp = fpath + '.tmp';
         try {
-          await fsp.writeFile(tmp, deltaJson, 'utf8');
+          await fsp.writeFile(tmp, payload);
           await fsp.rename(tmp, fpath);
         } catch (e) {
           console.error(`  Error writing ${id}: ${e.message}`);

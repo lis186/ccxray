@@ -8,6 +8,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { readLogText } = require('./helpers/read-log'); // #776: the script writes encoded deltas
 const { spawnSync } = require('node:child_process');
 
 const SCRIPT = path.join(__dirname, '..', 'scripts', 'migrate-to-delta.js');
@@ -46,7 +47,7 @@ function run({ home, logsDir }, extra = []) {
   return spawnSync(process.execPath, [SCRIPT, '--write', '--logs-dir', logsDir, ...extra], { env, encoding: 'utf8', timeout: 30000 });
 }
 
-const readReq = (logsDir, id) => JSON.parse(fs.readFileSync(path.join(logsDir, id + '_req.json'), 'utf8'));
+const readReq = (logsDir, id) => JSON.parse(readLogText(path.join(logsDir, id + '_req.json')));
 
 describe('migrate-to-delta retention guard + maintenance lock (#774)', () => {
   it('converts the second record when its ancestor is recent (control)', () => {
@@ -74,11 +75,11 @@ describe('migrate-to-delta retention guard + maintenance lock (#774)', () => {
   it('refuses to write while the maintenance lock is held by a live process, and changes nothing', () => {
     const fx = fixture({ ageMs: 3600_000 });
     fs.writeFileSync(path.join(fx.logsDir, '.index-maintenance.lock'), JSON.stringify({ pid: process.pid, token: 't', op: 'rebuild-index' }));
-    const before = fs.readFileSync(path.join(fx.logsDir, fx.ids[1] + '_req.json'), 'utf8');
+    const before = readLogText(path.join(fx.logsDir, fx.ids[1] + '_req.json'));
     const r = run(fx);
     assert.equal(r.status, 1);
     assert.match(r.stderr, /maintenance command is already running/);
-    assert.equal(fs.readFileSync(path.join(fx.logsDir, fx.ids[1] + '_req.json'), 'utf8'), before);
+    assert.equal(readLogText(path.join(fx.logsDir, fx.ids[1] + '_req.json')), before);
   });
 
   it('refuses while the index was just written (a server appears to be recording) and releases its lock', () => {

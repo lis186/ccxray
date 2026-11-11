@@ -18,7 +18,7 @@ const { assessWeather } = require('../public/weather');
 const { retentionCutoffDate } = require('./retention');
 const { isDeltaRecord, spliceDelta, resolveChainMessages, scanReqHead, ChainReadError } = require('./delta-helpers');
 const { maintenanceLockHolder } = require('./maintenance-lock');
-const { encodeForWrite, decodeToStringSync } = require('./storage/gzip');
+const { encodeForWrite, decodeToString } = require('./storage/gzip');
 
 
 // #211: model marker ("The exact model ID is ...") from the persisted system
@@ -815,7 +815,22 @@ function fsyncDir(dir) {
 // becomes a full record of exactly what is resolvable and carries
 // `incomplete: { reason, prevId, msgOffset, persisted: true }`, so the
 // truncation stays marked and the ancestor no longer has to be kept forever.
+// ADR 0021 fingerprint (dev+ino+size+mtime) — the re-anchor CAS compares this
+// synchronously right before the rename, so no decode or await sits in the window.
+function fileFingerprint(p) {
+  const st = fs.statSync(p);
+  return `${st.dev}:${st.ino}:${st.size}:${st.mtimeMs}`;
+}
+
 async function reanchorDelta(location, child, cache) {
+  const finalPath = path.join(location, `${child.id}_req.json`);
+  // Pin the source: fingerprint first, then confirm its decoded content is still
+  // the text the scan classified; any later change shows up as a new fingerprint.
+  let sourceFp;
+  try {
+    sourceFp = fileFingerprint(finalPath);
+    if (await decodeToString(await fs.promises.readFile(finalPath)) !== child.text) return 'source changed during re-anchor';
+  } catch (err) { return err.message; }
   const state = await resolveChainMessages(config.storage, child.id, { cache, strict: true });
   if (!state) return 'chain unreadable';
   const full = { ...child.rec };
@@ -825,11 +840,10 @@ async function reanchorDelta(location, child, cache) {
   if (state.missing) {
     full.incomplete = { reason: 'missing-ancestor', prevId: state.missing.prevId, msgOffset: state.missing.msgOffset, persisted: true };
   }
-  const finalPath = path.join(location, `${child.id}_req.json`);
   const tmpPath = `${finalPath}.reanchor-${process.pid}-${randomBytes(8).toString('hex')}.tmp`;
   // #774 x #776: the rewritten record is encoded like any other log write (gzip
-  // unless disabled), and both the verify and the CAS compare DECODED text — the
-  // resolver read the source through storage.read, which decodes.
+  // unless disabled); verify decodes it asynchronously, and the CAS is the
+  // fingerprint pinned above.
   const payload = await encodeForWrite(JSON.stringify(full));
   try {
     const fd = fs.openSync(tmpPath, 'w', 0o600);
@@ -841,14 +855,13 @@ async function reanchorDelta(location, child, cache) {
     }
     // Decode-verify: what is on disk must parse to a chainless record whose
     // messages are exactly the resolved chain.
-    const back = JSON.parse(decodeToStringSync(fs.readFileSync(tmpPath)));
+    const back = JSON.parse(await decodeToString(await fs.promises.readFile(tmpPath)));
     if (isDeltaRecord(back) || JSON.stringify(back.messages) !== JSON.stringify(state.messages)
         || JSON.stringify(back.incomplete) !== JSON.stringify(full.incomplete)) {
       return 'verification failed';
     }
-    // CAS: the source must still be the bytes we resolved from (sync, no await before rename).
-    // Sync decode keeps the read→rename window free of awaits (a rare, startup-only path).
-    if (decodeToStringSync(fs.readFileSync(finalPath)) !== child.text) return 'source changed during re-anchor';
+    // CAS: the source must still be the file we pinned (sync, no await before rename).
+    if (fileFingerprint(finalPath) !== sourceFp) return 'source changed during re-anchor';
     fs.renameSync(tmpPath, finalPath);
     fsyncDir(location); // …and the rename durable before any ancestor is deleted
     return null;
