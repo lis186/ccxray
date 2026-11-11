@@ -586,6 +586,10 @@ function handleHttpRequest(clientReq, clientRes) {
     }
 
     let reqWritePromise = null;
+    // #776: shared sys/tools/meta writes join reqWritePromise (the entry write
+    // barrier). Compression makes them land later than the entry registers, and a
+    // lazy load that reads a shared file before it exists caches null permanently.
+    const sharedWrites = [];
     let sysHash = null;
     let toolsHash = null;
     let coreHash = null;
@@ -597,12 +601,12 @@ function handleHttpRequest(clientReq, clientRes) {
       toolsHash = toolsPH.hash;
 
       if (sysHash) {
-        config.storage.writeSharedIfAbsent(`${sysPH.filePrefix}${sysHash}.json`, JSON.stringify(sysPH.content))
-          .catch(e => console.error('Write sys/instructions failed:', e.message));
+        sharedWrites.push(config.storage.writeSharedIfAbsent(`${sysPH.filePrefix}${sysHash}.json`, JSON.stringify(sysPH.content))
+          .catch(e => console.error('Write sys/instructions failed:', e.message)));
       }
       if (toolsHash) {
-        config.storage.writeSharedIfAbsent(`${toolsPH.filePrefix}${toolsHash}.json`, JSON.stringify(parsedBody.tools))
-          .catch(e => console.error('Write tools failed:', e.message));
+        sharedWrites.push(config.storage.writeSharedIfAbsent(`${toolsPH.filePrefix}${toolsHash}.json`, JSON.stringify(parsedBody.tools))
+          .catch(e => console.error('Write tools failed:', e.message)));
       }
 
       // registerPromptVersion for openai: also writes prompt metadata + extracts agent identity
@@ -611,10 +615,10 @@ function handleHttpRequest(clientReq, clientRes) {
           parsedBody, sysHash, sharedFile: `${sysPH.filePrefix}${sysHash}.json`,
         }) || null;
         if (promptInfo) {
-          config.storage.writeSharedIfAbsent(`openai_prompt_meta_${sysHash}.json`, JSON.stringify({
+          sharedWrites.push(config.storage.writeSharedIfAbsent(`openai_prompt_meta_${sysHash}.json`, JSON.stringify({
             agentKey: promptInfo.agentKey,
             agentLabel: promptInfo.agentLabel,
-          })).catch(e => console.error('Write OpenAI prompt metadata failed:', e.message));
+          })).catch(e => console.error('Write OpenAI prompt metadata failed:', e.message)));
         }
         coreHash = promptInfo?.coreHash || null;
         agentKey = promptInfo?.agentKey || null;
@@ -667,8 +671,11 @@ function handleHttpRequest(clientReq, clientRes) {
         stripped = { model: parsedBody.model, max_tokens: parsedBody.max_tokens, ...extraParams, messages: currMessages, sysHash, toolsHash, ...(meta && { metadata: meta }) };
       }
 
-      reqWritePromise = config.storage.write(id, '_req.json', JSON.stringify(stripped))
-        .catch(e => console.error('Write req.json failed:', e.message));
+      reqWritePromise = Promise.all([
+        ...sharedWrites,
+        config.storage.write(id, '_req.json', JSON.stringify(stripped))
+          .catch(e => console.error('Write req.json failed:', e.message)),
+      ]);
     }
 
     const detectedSession = parsedBody
