@@ -70,6 +70,20 @@ function createLocalStorage(logsDir, opts = {}) {
       return fsp.readFile(path.join(logsDir, id + suffix), 'utf8');
     },
 
+    // First `bytes` bytes of an artifact as UTF-8 (a multi-byte char cut at the
+    // boundary decodes to U+FFFD — harmless for substring probes). Optional on
+    // the adapter interface; callers fall back to read() when absent (#774).
+    async readHead(id, suffix, bytes) {
+      const fh = await fsp.open(path.join(logsDir, id + suffix), 'r');
+      try {
+        const buf = Buffer.alloc(bytes);
+        const { bytesRead } = await fh.read(buf, 0, bytes, 0);
+        return buf.toString('utf8', 0, bytesRead);
+      } finally {
+        await fh.close();
+      }
+    },
+
     async list() {
       return fsp.readdir(logsDir);
     },

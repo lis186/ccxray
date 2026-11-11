@@ -16,6 +16,10 @@
  * @property {(id: string, suffix: string) => Promise<string>} read
  *   Read a log artifact as UTF-8 string. Throws if not found.
  *
+ * @property {(id: string, suffix: string, bytes: number) => Promise<string>} [readHead]
+ *   Optional. First `bytes` bytes of a log artifact as UTF-8, without reading the rest.
+ *   Callers must fall back to read() when an adapter does not provide it.
+ *
  * @property {() => Promise<string[]>} list
  *   List all filenames in the log store (e.g. ['2025-03-17T12-00-00-000_req.json', ...]).
  *

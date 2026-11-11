@@ -18,7 +18,8 @@ after(() => fs.rmSync(TEST_HOME, { recursive: true, force: true }));
 const config = require('../server/config');
 const store = require('../server/store');
 const { createLocalStorage } = require('../server/storage/local');
-const { loadEntryReqRes, pruneLogs } = require('../server/restore');
+const { loadEntryReqRes, pruneLogs, findChainChildren, sweepOrphanedPruneTmpFiles } = require('../server/restore');
+const { reconstructReq } = require('../server/rebuild-index');
 const { resolveChainMessages, spliceDelta } = require('../server/delta-helpers');
 
 const msg = (role, text) => ({ role, content: text });
@@ -218,41 +219,108 @@ describe('#774 delta chain integrity', () => {
       assert.ok(!('prevId' in onDisk));
     });
 
-    it('keeps the ancestor and logs why when the re-anchor cannot be verified', async () => {
-      // OLD_B's own anchor is already gone → the child's chain is incomplete → nothing to verify against.
+    // Option C: a kept child whose chain is ALREADY truncated is rewritten as a
+    // full record of what is resolvable + a persisted marker, so the ancestor can go.
+    async function seedIncompleteChild(childId) {
+      // OLD_A (anchor) is gone; OLD_B is a delta on it; the child is a delta on OLD_B.
       await writeReq(OLD_B, rec({ prevId: OLD_A, msgOffset: 3, messages: D1 }));
       await writeRes(OLD_B);
+      await writeReq(childId, rec({ prevId: OLD_B, msgOffset: 5, messages: D2 }));
+      await writeRes(childId);
+    }
+
+    it('rewrites an already-incomplete child as a full record with a persisted marker, then deletes the ancestor', async () => {
       const child = todayId(2);
-      const childBody = rec({ prevId: OLD_B, msgOffset: 5, messages: D2 });
-      await writeReq(child, childBody);
+      await seedIncompleteChild(child);
       writeIndex([OLD_B, child]);
 
-      const errors = [];
-      const origErr = console.error;
-      console.error = (...a) => { errors.push(a.join(' ')); };
-      try { await pruneLogs({ retentionDays: 14 }); } finally { console.error = origErr; }
+      const before = coldEntry(child);
+      await loadEntryReqRes(before);
+      assert.deepEqual(before.req.incomplete, { reason: 'missing-ancestor', prevId: OLD_A, msgOffset: 3 });
+      const preMessages = JSON.stringify(before.req.messages);
 
-      assert.equal(exists(OLD_B), true, 'ancestor kept');
-      assert.equal(exists(OLD_B, '_res.json'), true, 'ancestor _res kept with it');
-      assert.deepEqual(JSON.parse(fs.readFileSync(path.join(tmpDir, child + '_req.json'), 'utf8')), childBody, 'child untouched');
-      assert.ok(errors.some(l => l.includes(OLD_B) && l.includes(child) && /incomplete/.test(l)), errors.join('\n'));
+      await pruneLogs({ retentionDays: 14 });
+
+      assert.equal(exists(OLD_B), false, 'ancestor deleted');
+      assert.equal(exists(OLD_B, '_res.json'), false);
+      const onDisk = JSON.parse(fs.readFileSync(path.join(tmpDir, child + '_req.json'), 'utf8'));
+      assert.ok(!('prevId' in onDisk) && !('msgOffset' in onDisk));
+      assert.equal(JSON.stringify(onDisk.messages), preMessages, 'exactly the resolvable messages');
+      assert.deepEqual(onDisk.incomplete, { reason: 'missing-ancestor', prevId: OLD_A, msgOffset: 3, persisted: true });
+
+      // The marker survives the rewrite: lazy load surfaces it like a live one.
+      const after = coldEntry(child);
+      await loadEntryReqRes(after);
+      assert.equal(JSON.stringify(after.req.messages), preMessages);
+      assert.equal(after.req.incomplete.reason, 'missing-ancestor');
+      assert.equal(after.req.incomplete.msgOffset, 3);
+      assert.equal(after.req.incomplete.prevId, OLD_A);
+      assert.deepEqual(fs.readdirSync(tmpDir).filter(f => f.includes('.reanchor-')), []);
     });
 
-    it('cascades: a kept ancestor whose own head is doomed is handled the same way', async () => {
-      // Z (missing) ← Q ← P (both old, unprotected) ← C (kept). C can't be verified → P kept → P can't → Q kept.
+    it('a delta chained onto a persisted-incomplete record stays aligned and marked', async () => {
+      const child = todayId(3);
+      await seedIncompleteChild(child);
+      writeIndex([OLD_B, child]);
+      await pruneLogs({ retentionDays: 14 });
+
+      // child now holds absolute messages 3..6; a later turn appends one at offset 7.
+      const next = todayId(4);
+      await writeReq(next, rec({ prevId: child, msgOffset: 7, messages: [msg('user', 'h')] }));
+      const entry = coldEntry(next);
+      await loadEntryReqRes(entry);
+      assert.deepEqual(entry.req.messages, [...D1, ...D2, msg('user', 'h')]);
+      assert.equal(entry.req.incomplete.msgOffset, 3);
+      assert.equal(entry.req.incomplete.prevId, OLD_A);
+    });
+
+    it('rebuild-index treats a persisted-incomplete record as unrecoverable', async () => {
+      const child = todayId(5);
+      await seedIncompleteChild(child);
+      writeIndex([OLD_B, child]);
+      await pruneLogs({ retentionDays: 14 });
+      assert.equal(await reconstructReq(child, storage, new Map()), null);
+    });
+
+    it('cascades: Z(missing) <- Q <- P (old) <- C (kept) collapses into one persisted-incomplete record', async () => {
       const Q = '2020-01-01T00-00-00-000', P = '2020-01-01T00-00-01-000';
       await writeReq(Q, rec({ prevId: 'missing-Z', msgOffset: 3, messages: D1 }));
       await writeReq(P, rec({ prevId: Q, msgOffset: 5, messages: D2 }));
-      const child = todayId(3);
+      const child = todayId(6);
       await writeReq(child, rec({ prevId: P, msgOffset: 7, messages: [msg('user', 'h')] }));
       writeIndex([Q, P, child]);
 
-      const origErr = console.error;
-      console.error = () => {};
-      try { await pruneLogs({ retentionDays: 14 }); } finally { console.error = origErr; }
+      await pruneLogs({ retentionDays: 14 });
 
-      assert.equal(exists(P), true);
-      assert.equal(exists(Q), true);
+      assert.equal(exists(P), false);
+      assert.equal(exists(Q), false);
+      const onDisk = JSON.parse(fs.readFileSync(path.join(tmpDir, child + '_req.json'), 'utf8'));
+      assert.deepEqual(onDisk.messages, [...D1, ...D2, msg('user', 'h')]);
+      assert.deepEqual(onDisk.incomplete, { reason: 'missing-ancestor', prevId: 'missing-Z', msgOffset: 3, persisted: true });
+    });
+
+    it('keeps the ancestor and logs why when the source changes during the re-anchor (CAS)', async () => {
+      const child = todayId(7);
+      await seedIncompleteChild(child);
+      writeIndex([OLD_B, child]);
+      const childPath = path.join(tmpDir, child + '_req.json');
+      const origRead = storage.read;
+      let mutated = false;
+      storage.read = async function (id, suffix) {
+        const r = await origRead.call(this, id, suffix);
+        if (id === OLD_B && !mutated) { mutated = true; fs.appendFileSync(childPath, ' '); } // a concurrent writer
+        return r;
+      };
+      const errors = [];
+      const origErr = console.error;
+      console.error = (...a) => { errors.push(a.join(' ')); };
+      try { await pruneLogs({ retentionDays: 14 }); } finally { console.error = origErr; storage.read = origRead; }
+
+      assert.equal(exists(OLD_B), true, 'ancestor kept');
+      assert.equal(exists(OLD_B, '_res.json'), true);
+      assert.ok(JSON.parse(fs.readFileSync(childPath, 'utf8')).prevId, 'child still a delta');
+      assert.ok(errors.some(l => l.includes(OLD_B) && l.includes(child) && /source changed/.test(l)), errors.join('\n'));
+      assert.deepEqual(fs.readdirSync(tmpDir).filter(f => f.includes('.reanchor-')), []);
     });
 
     it('leaves an unreferenced old record alone to be pruned as before', async () => {
@@ -264,6 +332,60 @@ describe('#774 delta chain integrity', () => {
       await pruneLogs({ retentionDays: 14 });
       assert.equal(exists(OLD_A), false);
       assert.equal(exists(keep), true);
+    });
+  });
+
+  describe('findChainChildren (head-only scan)', () => {
+    const ANC = '2020-01-01T00-00-00-000';
+
+    it('finds deltas by head and never reads a full record in full', async () => {
+      const reads = [];
+      const origRead = storage.read;
+      storage.read = async function (id, suffix) { reads.push(id); return origRead.call(this, id, suffix); };
+      try {
+        const delta = todayId(10), full = todayId(11);
+        await writeReq(delta, rec({ prevId: ANC, msgOffset: 3, messages: D1 }));
+        await writeReq(full, rec({ messages: ANCHOR }));
+        const files = [delta, full].map(i => i + '_req.json');
+        const kids = await findChainChildren(files, new Set([ANC]), ANC);
+        assert.deepEqual(kids.map(k => k.id), [delta]);
+        assert.deepEqual(reads, [delta], 'the full record was classified from its head alone');
+      } finally { storage.read = origRead; }
+    });
+
+    it('falls back to a full read when extra params push prevId past the head window', async () => {
+      const delta = todayId(12);
+      await writeReq(delta, rec({ pad: 'x'.repeat(20000), prevId: ANC, msgOffset: 3, messages: D1 }));
+      const kids = await findChainChildren([delta + '_req.json'], new Set([ANC]), ANC);
+      assert.deepEqual(kids.map(k => k.id), [delta]);
+    });
+
+    it('ignores deltas whose head is not doomed and ids not newer than the oldest doomed', async () => {
+      const keepHead = todayId(13);
+      await writeReq(keepHead, rec({ prevId: 'someone-else', msgOffset: 3, messages: D1 }));
+      assert.deepEqual(await findChainChildren([keepHead + '_req.json'], new Set([ANC]), ANC), []);
+      assert.deepEqual(await findChainChildren([keepHead + '_req.json'], new Set([ANC]), 'zzzz'), []);
+    });
+  });
+
+  describe('re-anchor tmp sweep', () => {
+    const tmpName = (id, hex) => `${id}_req.json.reanchor-12345-${hex}.tmp`;
+
+    it('removes a stale reanchor tmp, keeps a fresh one and unrelated files', () => {
+      const stale = tmpName('2020-01-01T00-00-00-000', 'a'.repeat(16));
+      const fresh = tmpName('2020-01-01T00-00-01-000', 'b'.repeat(16));
+      for (const f of [stale, fresh, '2020-01-01T00-00-02-000_req.json', 'index.ndjson']) {
+        fs.writeFileSync(path.join(tmpDir, f), '{}');
+      }
+      const old = new Date(Date.now() - 10 * 60 * 1000);
+      fs.utimesSync(path.join(tmpDir, stale), old, old);
+
+      sweepOrphanedPruneTmpFiles(tmpDir);
+
+      assert.equal(fs.existsSync(path.join(tmpDir, stale)), false, 'stale tmp removed');
+      assert.equal(fs.existsSync(path.join(tmpDir, fresh)), true, 'in-flight tmp not raced');
+      assert.equal(fs.existsSync(path.join(tmpDir, '2020-01-01T00-00-02-000_req.json')), true);
+      assert.equal(fs.existsSync(path.join(tmpDir, 'index.ndjson')), true);
     });
   });
 });

@@ -125,6 +125,13 @@ async function reconstructReq(id, storage, cache) {
     return null;
   }
 
+  // #774: a full record re-anchored from an already-truncated chain lacks its
+  // leading messages (convId/msgCount would be wrong) — unrecoverable, skip.
+  if (stripped.incomplete && stripped.incomplete.persisted) {
+    cache.set(id, null);
+    return null;
+  }
+
   // Anthropic: rehydrate system/tools from content-addressed shared files (never
   // pruned, so always available when the hash is present).
   const system = stripped.sysHash

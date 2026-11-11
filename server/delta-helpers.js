@@ -90,6 +90,18 @@ function isDeltaRecord(rec) {
   return !!rec && rec.prevId != null && rec.msgOffset != null;
 }
 
+// State of a FULL record. One carrying a persisted `incomplete` (a prune
+// re-anchor of an already-truncated chain, #774) holds only messages from
+// absolute index incomplete.msgOffset on — treating it as complete would
+// misalign every delta that chains to it.
+function anchorState(rec) {
+  const inc = rec.incomplete;
+  if (inc && inc.persisted && Number.isInteger(inc.msgOffset) && inc.msgOffset > 0) {
+    return { messages: rec.messages, base: inc.msgOffset, missing: { prevId: inc.prevId, msgOffset: inc.msgOffset } };
+  }
+  return { messages: rec.messages, base: 0, missing: null };
+}
+
 // Apply one delta record on top of its resolved parent state. `parent` null
 // means the ancestor could not be read. A delta's messages start at absolute
 // index msgOffset, so the parent contributes absolute [parent.base, msgOffset);
@@ -124,7 +136,7 @@ async function resolveChainMessages(storage, id, { cache, maxDepth = DELTA_CHAIN
     try { rec = JSON.parse(await storage.read(cur, '_req.json')); } catch { unreadable = true; }
     if (unreadable || !rec || !Array.isArray(rec.messages)) { if (cache) cache.set(cur, null); break; }
     if (!isDeltaRecord(rec)) {
-      state = { messages: rec.messages, base: 0, missing: null };
+      state = anchorState(rec);
       if (cache) cache.set(cur, state);
       break;
     }
@@ -140,5 +152,5 @@ async function resolveChainMessages(storage, id, { cache, maxDepth = DELTA_CHAIN
 
 module.exports = {
   msgNorm, findSharedPrefix, findSharedPrefixFromLast, buildEditedReqRecord,
-  DELTA_CHAIN_MAX_DEPTH, isDeltaRecord, spliceDelta, resolveChainMessages,
+  DELTA_CHAIN_MAX_DEPTH, isDeltaRecord, anchorState, spliceDelta, resolveChainMessages,
 };
