@@ -14,7 +14,7 @@ const config = require('../server/config');
 const store = require('../server/store');
 const { createLocalStorage } = require('../server/storage/local');
 const { pruneLogs } = require('../server/restore');
-const { acquireMaintenanceLock, releaseMaintenanceLock, maintenanceLockHolder } = require('../server/maintenance-lock');
+const { acquireMaintenanceLock, releaseMaintenanceLock, maintenanceLockHolder, isPidAlive } = require('../server/maintenance-lock');
 
 const OLD_ID = '2020-01-01T00-00-00-001';
 let dir, realStorage, out, origLog;
@@ -66,5 +66,38 @@ describe('pruneLogs vs maintenance lock (#776)', () => {
     fs.writeFileSync(path.join(dir, '.index-maintenance.lock'), 'not json');
     await pruneLogs({ retentionDays: 1 });
     assert.ok(fs.existsSync(path.join(dir, OLD_ID + '_req.json')));
+  });
+
+  it('EACCES (or any non-ENOENT read error) on the lock file means an unknown live holder', () => {
+    const eacces = Object.assign(new Error('denied'), { code: 'EACCES' });
+    const eio = Object.assign(new Error('io'), { code: 'EIO' });
+    for (const err of [eacces, eio]) {
+      const holder = maintenanceLockHolder(config.storage, { readFileSync: () => { throw err; } });
+      assert.deepEqual(holder, { pid: null, op: 'unknown' }, err.code);
+    }
+    const enoent = Object.assign(new Error('none'), { code: 'ENOENT' });
+    assert.equal(maintenanceLockHolder(config.storage, { readFileSync: () => { throw enoent; } }), null, 'ENOENT = no lock');
+  });
+
+  it('EPERM from kill(pid, 0) means the holder is alive; ESRCH means dead', () => {
+    const kill = code => () => { throw Object.assign(new Error(code), { code }); };
+    assert.equal(isPidAlive(4242, kill('EPERM')), true);
+    assert.equal(isPidAlive(4242, kill('ESRCH')), false);
+    assert.equal(isPidAlive(4242, () => true), true);
+    fs.writeFileSync(path.join(dir, '.index-maintenance.lock'), JSON.stringify({ pid: 4242, token: 't', op: 'migrate-logs' }));
+    const holder = maintenanceLockHolder(config.storage, { kill: kill('EPERM') });
+    assert.equal(holder.op, 'migrate-logs', 'foreign-owned live holder is held');
+    assert.equal(maintenanceLockHolder(config.storage, { kill: kill('ESRCH') }), null);
+  });
+
+  it('a real unreadable lock file (chmod 000) blocks prune', async function () {
+    if (process.getuid && process.getuid() === 0) return; // root reads anything
+    const lock = path.join(dir, '.index-maintenance.lock');
+    fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, token: 't', op: 'migrate-logs' }));
+    fs.chmodSync(lock, 0);
+    try {
+      await pruneLogs({ retentionDays: 1 });
+      assert.ok(fs.existsSync(path.join(dir, OLD_ID + '_req.json')), 'prune skipped');
+    } finally { fs.chmodSync(lock, 0o600); }
   });
 });

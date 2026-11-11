@@ -12,8 +12,10 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-function isPidAlive(pid) {
-  try { process.kill(pid, 0); return true; } catch { return false; }
+// EPERM means the pid exists but belongs to another user — alive, not dead. Treating
+// it as dead would let a second writer reclaim or ignore a live holder's lock.
+function isPidAlive(pid, kill = process.kill.bind(process)) {
+  try { kill(pid, 0); return true; } catch (e) { return !!e && e.code === 'EPERM'; }
 }
 
 function lockPathFor(storage) {
@@ -58,17 +60,19 @@ function releaseMaintenanceLock(lock) {
 }
 
 // Non-acquiring check: the holder's `{pid, op, startedAt}` while the lock is held
-// (live pid, or an unreadable lock file — same fail-closed reading as acquire),
-// else null. A stale lock of a dead pid is not "held".
-function maintenanceLockHolder(storage) {
+// (live pid, or a lock file that exists but cannot be read or parsed — the same
+// fail-closed reading as acquire), else null. Only ENOENT (no lock) or a dead
+// holder's pid yields null; EACCES or any other read error is an unknown live holder.
+function maintenanceLockHolder(storage, { readFileSync = fs.readFileSync, kill } = {}) {
   if (!storage || !storage.location) return null;
-  const lockPath = lockPathFor(storage);
   let raw;
-  try { raw = fs.readFileSync(lockPath, 'utf8'); } catch { return null; }
+  try { raw = readFileSync(lockPathFor(storage), 'utf8'); } catch (e) {
+    return e && e.code === 'ENOENT' ? null : { pid: null, op: 'unknown' };
+  }
   let existing;
   try { existing = JSON.parse(raw); } catch {}
   if (!existing || !existing.pid) return { pid: null, op: 'unknown' };
-  return isPidAlive(existing.pid) ? existing : null;
+  return isPidAlive(existing.pid, kill) ? existing : null;
 }
 
-module.exports = { acquireMaintenanceLock, releaseMaintenanceLock, maintenanceLockHolder, lockPathFor };
+module.exports = { acquireMaintenanceLock, releaseMaintenanceLock, maintenanceLockHolder, isPidAlive, lockPathFor };
