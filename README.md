@@ -79,14 +79,14 @@ ccxray --port 8080 claude        # Custom port (independent, no hub sharing)
 ccxray claude --no-browser       # Skip auto-open browser
 ccxray status                    # Show process, export, home, and hub status
 ccxray --port 5602 status        # Probes port 5602 only when no hub lock is found
-ccxray gc --dry-run              # Report unreferenced shared/ prompt+tools files (deletes nothing)
-ccxray gc --apply                # Delete them (offline only; refuses while a server is running)
+ccxray gc --dry-run              # Per-prefix summary of unreferenced shared/ prompt+tools files (deletes nothing; add --verbose to list files)
+ccxray gc --apply                # Delete them (refuses while a server is running; add --verbose to list files)
 ANTHROPIC_BASE_URL=http://localhost:5577 claude   # Point existing claude session at a running ccxray hub
 ```
 
 Hub vs standalone, keeping a proxy up, and pointing agents that are not launched through ccxray at it: see [Running ccxray](docs/running-ccxray.md).
 
-`ccxray gc` reclaims disk from `<CCXRAY_HOME>/logs/shared/`, where system prompts and tool lists are stored once per content hash and are not removed by log retention. It deletes only files that no `index.ndjson` line and no surviving `*_req.json` / `*_req.received.json` names, and never one modified in the last 7 days. It refuses to run while a hub is registered, while anything listens on the configured port (`PROXY_PORT`, or `--port N gc`), or while another index maintenance command holds the lock. There is no default action: pass `--dry-run` or `--apply`.
+`ccxray gc` reclaims disk from `<CCXRAY_HOME>/logs/shared/`, where system prompts and tool lists are stored once per content hash and are not removed by log retention. It deletes only files that no `index.ndjson` line and no surviving `*_req.json` / `*_req.received.json` names, and never one modified in the last 7 days. `--apply` refuses to run while a hub is registered, while anything listens on the configured port (`PROXY_PORT`, or `--port N gc`), or while another index maintenance command holds the lock; `--dry-run` is read-only, so with a server running it only warns that results may change. Output is a per-prefix summary (files, bytes, rooted, under 7 days, would delete/deleted) plus totals; `--verbose` also lists every file. There is no default action: pass `--dry-run` or `--apply`.
 
 Provider arguments are forwarded to the CLI. ccxray consumes its recognized global flags, such as `--port` and `--no-browser`, wherever they appear in the argument list; they are not forwarded to the CLI.
 

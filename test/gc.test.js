@@ -51,7 +51,7 @@ describe('ccxray gc (#775)', () => {
   const indexLine = o => fs.appendFileSync(path.join(logsDir, 'index.ndjson'), JSON.stringify(o) + '\n');
   const run = async (opts = {}) => gcShared({ storage, log: quiet(), port: await freePort(), ...opts });
 
-  it('dry-run reports per-prefix counts/bytes and exact files, deletes nothing', async () => {
+  it('dry-run prints a per-prefix summary and totals but no file list by default; --verbose lists every file; deletes nothing', async () => {
     shared('sys_aaaaaaaaaaaa.json'); shared('tools_bbbbbbbbbbbb.json');
     shared('openai_instructions_cccccccccccc.json'); shared('openai_tools_dddddddddddd.json');
     shared('openai_prompt_meta_cccccccccccc.json');
@@ -60,8 +60,13 @@ describe('ccxray gc (#775)', () => {
     assert.equal(r.doomed.length, 5);
     const out = logs.join('\n');
     for (const prefix of ['sys_', 'tools_', 'openai_instructions_', 'openai_tools_', 'openai_prompt_meta_']) assert.ok(out.includes(prefix), prefix);
-    assert.ok(out.includes('  sys_aaaaaaaaaaaa.json'), 'lists the exact file');
+    assert.match(out, /total\s+5 files .*would delete 5/, 'totals row');
+    assert.ok(!out.includes('sys_aaaaaaaaaaaa.json'), 'no per-file list without --verbose');
     assert.equal((await storage.listShared()).length, 5, 'nothing deleted');
+    await run({ apply: false, verbose: true });
+    const verbose = logs.join('\n');
+    for (const f of ['sys_aaaaaaaaaaaa.json', 'tools_bbbbbbbbbbbb.json', 'openai_prompt_meta_cccccccccccc.json']) assert.ok(verbose.includes(`would delete ${f}`), f);
+    assert.equal((await storage.listShared()).length, 5, 'still nothing deleted');
   });
 
   it('--apply deletes only unrooted, older-than-grace files', async () => {
@@ -69,6 +74,7 @@ describe('ccxray gc (#775)', () => {
     shared('sys_keepkeepkeep.json'); shared('sys_youngyoungyou.json', { ageDays: 1 });
     indexLine({ id: 'x', sysHash: 'keepkeepkeep' });
     const r = await run({ apply: true });
+    assert.ok(!logs.join('\n').includes('sys_aaaaaaaaaaaa.json'), 'apply summary only, no per-file list');
     assert.deepEqual(r.doomed.sort(), ['sys_aaaaaaaaaaaa.json', 'tools_bbbbbbbbbbbb.json']);
     assert.deepEqual((await storage.listShared()).sort(), ['sys_keepkeepkeep.json', 'sys_youngyoungyou.json']);
   });
@@ -129,8 +135,8 @@ describe('ccxray gc (#775)', () => {
     assert.ok(!fs.existsSync(path.join(logsDir, '.index-maintenance.lock')), 'lock released on failure');
   });
 
-  describe('refusals', () => {
-    it('refuses while a live hub is registered', async () => {
+  describe('live server / lock', () => {
+    it('--apply refuses while a live hub is registered; --dry-run warns and continues', async () => {
       shared('sys_aaaaaaaaaaaa.json');
       hub.readHubLock = () => ({ pid: process.pid, port: 5577 });
       try {
@@ -138,38 +144,59 @@ describe('ccxray gc (#775)', () => {
         assert.equal(r.refused, true);
         assert.equal(r.reason, 'hub-running');
         assert.match(logs.join('\n'), /hub is running/);
+        assert.equal((await storage.listShared()).length, 1);
+
+        const d = await run({ apply: false });
+        assert.equal(d.refused, undefined);
+        assert.equal(d.applied, false);
+        assert.deepEqual(d.doomed, ['sys_aaaaaaaaaaaa.json']);
+        assert.match(logs.join('\n'), /a server is running; results may change before --apply/);
       } finally { hub.readHubLock = () => null; }
       assert.equal((await storage.listShared()).length, 1);
     });
 
-    it('refuses while a listener holds the configured port (no hub.json: standalone/--port server)', async () => {
+    it('--apply refuses while a listener holds the configured port (no hub.json: standalone/--port server); --dry-run warns and continues', async () => {
       shared('sys_aaaaaaaaaaaa.json');
       const srv = net.createServer().listen(0, '127.0.0.1');
       await new Promise(r => srv.on('listening', r));
+      const port = srv.address().port;
       try {
-        const r = await gcShared({ storage, log: quiet(), apply: true, port: srv.address().port });
+        const r = await gcShared({ storage, log: quiet(), apply: true, port });
         assert.equal(r.refused, true);
         assert.equal(r.reason, 'listener');
         assert.match(logs.join('\n'), /listening on/);
+        assert.equal((await storage.listShared()).length, 1);
+
+        const d = await gcShared({ storage, log: quiet(), apply: false, port });
+        assert.equal(d.refused, undefined);
+        assert.deepEqual(d.doomed, ['sys_aaaaaaaaaaaa.json']);
+        assert.match(logs.join('\n'), /a server is running; results may change before --apply/);
       } finally { await new Promise(r => srv.close(r)); }
-      assert.equal((await storage.listShared()).length, 1);
+      assert.equal((await storage.listShared()).length, 1, 'dry-run deleted nothing');
     });
 
-    it('refuses while the ADR 0021 maintenance lock is held by a live process', async () => {
+    it('--apply refuses while the ADR 0021 maintenance lock is held; --dry-run neither refuses nor takes the lock', async () => {
       shared('sys_aaaaaaaaaaaa.json');
       const lockPath = path.join(fs.realpathSync(logsDir), '.index-maintenance.lock');
-      fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, token: 't', op: 'rebuild-index' }));
+      const held = JSON.stringify({ pid: process.pid, token: 't', op: 'rebuild-index' });
+      fs.writeFileSync(lockPath, held);
       const r = await run({ apply: true });
       assert.equal(r.refused, true);
       assert.equal(r.reason, 'maintenance-locked');
       assert.match(logs.join('\n'), /already running/);
       assert.equal((await storage.listShared()).length, 1);
-      assert.ok(fs.existsSync(lockPath), "someone else's lock is left alone");
+
+      const d = await run({ apply: false });
+      assert.equal(d.refused, undefined);
+      assert.equal(fs.readFileSync(lockPath, 'utf8'), held, "someone else's lock is left alone");
     });
 
-    it('releases its own maintenance lock after a run', async () => {
+    it('--apply releases its own maintenance lock after a run; --dry-run never creates one', async () => {
+      const lockPath = path.join(fs.realpathSync(logsDir), '.index-maintenance.lock');
+      await run({ apply: false });
+      assert.ok(!fs.existsSync(lockPath));
       await run({ apply: true });
-      assert.ok(!fs.existsSync(path.join(fs.realpathSync(logsDir), '.index-maintenance.lock')));
+      assert.ok(!fs.existsSync(lockPath));
     });
   });
 });

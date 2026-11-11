@@ -33,15 +33,19 @@ describe('ccxray gc CLI (#775)', () => {
     for (const args of [['gc'], ['gc', '--dry-run', '--apply']]) {
       const r = ccxray(args);
       assert.equal(r.status, 1, args.join(' '));
-      assert.match(r.stderr, /Usage: ccxray gc --dry-run \| --apply/);
+      assert.match(r.stderr, /Usage: ccxray gc --dry-run \| --apply \[--verbose\]/);
     }
     assert.ok(fs.existsSync(path.join(home, 'logs', 'shared', 'sys_aaaaaaaaaaaa.json')));
   });
 
-  it('--dry-run lists the file and deletes nothing; --apply deletes it', () => {
+  it('--dry-run prints a summary (file names only with --verbose) and deletes nothing; --apply deletes it', () => {
     const dry = ccxray(['gc', '--dry-run']);
     assert.equal(dry.status, 0, dry.stderr);
-    assert.match(dry.stdout, /sys_aaaaaaaaaaaa\.json/);
+    assert.match(dry.stdout, /total\s+1 files .*would delete 1/);
+    assert.doesNotMatch(dry.stdout, /sys_aaaaaaaaaaaa\.json/);
+    const verbose = ccxray(['gc', '--dry-run', '--verbose']);
+    assert.equal(verbose.status, 0, verbose.stderr);
+    assert.match(verbose.stdout, /would delete sys_aaaaaaaaaaaa\.json/);
     assert.ok(fs.existsSync(path.join(home, 'logs', 'shared', 'sys_aaaaaaaaaaaa.json')));
     const applied = ccxray(['gc', '--apply']);
     assert.equal(applied.status, 0, applied.stderr);

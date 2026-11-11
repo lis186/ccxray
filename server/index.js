@@ -25,7 +25,7 @@ Commands:
   open                Open dashboard in browser
   import              Import transcripts (--once or --target-transcript)
   rebuild-index       Rebuild index.ndjson from log files
-  gc                  Delete unreferenced shared/ files (--dry-run | --apply, offline)
+  gc                  Delete unreferenced shared/ files (--dry-run | --apply [--verbose])
   setup               Install the Claude shell wrapper (export opt-in: --export)
   setup-statusline    Configure Claude Code status line
   hud on|off|status   Turn the Context HUD on or off, or show it (off by default)
@@ -363,10 +363,10 @@ if (process.argv[2] === 'gc') {
   const apply = process.argv.includes('--apply');
   const dryRun = process.argv.includes('--dry-run');
   if (apply === dryRun) {
-    console.error('Usage: ccxray gc --dry-run | --apply  (exactly one; offline, refuses while a server is running)');
+    console.error('Usage: ccxray gc --dry-run | --apply [--verbose]  (exactly one of the two; --apply refuses while a server is running; --verbose lists every file)');
     process.exit(1);
   }
-  require('./gc').gcShared({ apply })
+  require('./gc').gcShared({ apply, verbose: process.argv.includes('--verbose') })
     .then(r => process.exit(r && r.refused ? 1 : 0))
     .catch(err => { console.error(`gc failed: ${err.message}`); process.exit(1); });
   return;

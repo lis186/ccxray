@@ -9,9 +9,10 @@
 //   • offline + explicit — `--dry-run` reports, `--apply` deletes; there is no
 //     default action. Never runs from startup prune, and nothing on the request
 //     path freshens mtimes, so grace is judged on write time alone.
-//   • refuses while a server can be appending: a live hub.json, or any listener
-//     on the configured port (standalone/--port servers write no hub.json).
-//     Takes the ADR 0021 maintenance lock, serializing against rebuild-index.
+//   • --apply refuses while a server can be appending: a live hub.json, or any
+//     listener on the configured port (standalone/--port servers write no
+//     hub.json), and takes the ADR 0021 maintenance lock (serializing against
+//     rebuild-index). --dry-run is read-only: it only warns and takes no lock.
 //   • roots = every sysHash/toolsHash named by any index.ndjson line or any
 //     surviving *_req.json / *_req.received.json (D6). Hashes are pulled with a
 //     regex over the raw text, not JSON.parse: a torn index line or an
@@ -98,25 +99,30 @@ async function collectRoots(storage) {
 
 const fmtBytes = n => n >= 1e9 ? `${(n / 1e9).toFixed(2)} GB` : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${n} B`;
 
-async function gcShared({ apply = false, storage = config.storage, log = console.log, now = Date.now(), graceMs = GRACE_MS, port } = {}) {
+async function gcShared({ apply = false, verbose = false, storage = config.storage, log = console.log, now = Date.now(), graceMs = GRACE_MS, port } = {}) {
+  // A live server only matters for --apply: dry-run reads and deletes nothing,
+  // so it warns (the numbers may shift) instead of refusing, and takes no lock.
   const blockingHub = liveHubBlocking();
-  if (blockingHub) {
-    log(`\x1b[31mA ccxray hub is running (pid ${blockingHub.pid}). Stop it first.\x1b[0m`);
-    log('  Run `ccxray status` to inspect, stop all `ccxray claude` clients, then retry.');
-    return { refused: true, reason: 'hub-running' };
-  }
-  const listener = await listenerOnConfiguredPort(port);
-  if (listener) {
-    log(`\x1b[31mSomething is listening on ${listener}:${port ?? config.PORT} — a ccxray server may be recording. Stop it first.\x1b[0m`);
-    return { refused: true, reason: 'listener' };
+  const listener = blockingHub ? null : await listenerOnConfiguredPort(port);
+  if (blockingHub || listener) {
+    if (!apply) {
+      log('\x1b[33mWarning: a server is running; results may change before --apply.\x1b[0m');
+    } else if (blockingHub) {
+      log(`\x1b[31mA ccxray hub is running (pid ${blockingHub.pid}). Stop it first.\x1b[0m`);
+      log('  Run `ccxray status` to inspect, stop all `ccxray claude` clients, then retry.');
+      return { refused: true, reason: 'hub-running' };
+    } else {
+      log(`\x1b[31mSomething is listening on ${listener}:${port ?? config.PORT} — a ccxray server may be recording. Stop it first.\x1b[0m`);
+      return { refused: true, reason: 'listener' };
+    }
   }
 
   if (!storage.location || !fs.existsSync(storage.location)) {
     log('No logs directory — nothing to collect.');
     return { applied: false, doomed: [], bytes: 0 };
   }
-  const lock = acquireMaintenanceLock(storage, 'gc', log);
-  if (!lock) return { refused: true, reason: 'maintenance-locked' };
+  const lock = apply ? acquireMaintenanceLock(storage, 'gc', log) : null;
+  if (apply && !lock) return { refused: true, reason: 'maintenance-locked' };
 
   try {
     const roots = await collectRoots(storage);
@@ -143,17 +149,20 @@ async function gcShared({ apply = false, storage = config.storage, log = console
     doomed.sort();
 
     log(`${apply ? 'gc --apply' : 'gc --dry-run'}: ${roots.sys.size} sysHash + ${roots.tools.size} toolsHash roots from the index and ${roots.reqFiles} request files`);
-    let totalBytes = 0;
-    for (const [prefix, s] of stats) {
-      if (!s.files) continue;
-      totalBytes += s.doomedBytes;
-      log(`  ${prefix.padEnd(22)} ${String(s.files).padStart(7)} files ${fmtBytes(s.bytes).padStart(9)} | rooted ${s.rooted} | <${Math.round(graceMs / 86400000)}d old ${s.young} | ${apply ? 'delete' : 'would delete'} ${s.doomed} (${fmtBytes(s.doomedBytes)})`);
+    const total = { files: 0, bytes: 0, rooted: 0, young: 0, doomed: 0, doomedBytes: 0 };
+    const row = (label, t) => log(`  ${label.padEnd(22)} ${String(t.files).padStart(7)} files ${fmtBytes(t.bytes).padStart(9)} | rooted ${t.rooted} | <${Math.round(graceMs / 86400000)}d old ${t.young} | ${apply ? 'delete' : 'would delete'} ${t.doomed} (${fmtBytes(t.doomedBytes)})`);
+    for (const [prefix, st] of stats) {
+      if (!st.files) continue;
+      for (const k of Object.keys(total)) total[k] += st[k];
+      row(prefix, st);
     }
+    row('total', total);
+    const totalBytes = total.doomedBytes;
     if (unknown) log(`  ${unknown} unrecognized shared/ file(s) left untouched`);
+    if (verbose) for (const name of doomed) log(`  ${apply ? 'delete' : 'would delete'} ${name}`);
 
     if (!apply) {
-      for (const name of doomed) log(`  ${name}`);
-      log(`${doomed.length} file(s), ${fmtBytes(totalBytes)} would be deleted. Re-run with --apply to delete.`);
+      log(`${doomed.length} file(s), ${fmtBytes(totalBytes)} would be deleted. Re-run with --apply to delete (--verbose lists each file).`);
       return { applied: false, doomed, bytes: totalBytes };
     }
     // deleteFile is relative to the logs dir and tolerates ENOENT
