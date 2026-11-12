@@ -18,6 +18,8 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { createRequire } from 'node:module';
+const { decodeToStringSync } = createRequire(import.meta.url)('../server/storage/gzip.js'); // #776: logs may be gzip
 
 const args = process.argv.slice(2);
 const port = args.includes('--port') ? args[args.indexOf('--port') + 1] : '5577';
@@ -72,7 +74,7 @@ if (deep) {
   for (const [sid, s] of sess) {
     for (const e of s.inferred) {
       let req;
-      try { req = JSON.parse(fs.readFileSync(path.join(logsDir, `${e.id}_req.json`), 'utf8')); } catch { unreadable++; continue; }
+      try { req = JSON.parse(decodeToStringSync(fs.readFileSync(path.join(logsDir, `${e.id}_req.json`)))); } catch { unreadable++; continue; }
       const c = req.messages?.[0]?.content;
       const blocks = typeof c === 'string' ? [c] : Array.isArray(c) ? c.filter(b => b.type === 'text').map(b => b.text) : [];
       // Longest single line: survives the line-number prefixes that Read tool
@@ -90,7 +92,7 @@ if (deep) {
       let found = false, sibMissing = false;
       for (const sib of bySess.get(sid) || []) {
         if (sib.id === e.id) continue;
-        try { if (fs.readFileSync(path.join(logsDir, `${sib.id}_req.json`), 'utf8').includes(needle)) { found = true; break; } } catch { sibMissing = true; }
+        try { if (decodeToStringSync(fs.readFileSync(path.join(logsDir, `${sib.id}_req.json`))).includes(needle)) { found = true; break; } } catch { sibMissing = true; }
       }
       if (found) ok++;
       else if (sibMissing) unreadable++;

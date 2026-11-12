@@ -29,7 +29,8 @@
 // `_res.json` survives the file deletion pass.
 //
 // Recovers offline: model/usage/cost/maxContext/toolCalls (canonical), cwd (from
-// the rehydrated system prompt — shared sys_*.json files are never pruned),
+// the rehydrated system prompt — shared sys_*.json files are only ever removed
+// by the explicit offline `ccxray gc` (#775), never by retention prune),
 // title, thinkingDuration, stopReason, session attribution, and prompt identity
 // (sysHash/coreHash/agentKey — recomputed from the rehydrated system prompt).
 // Honestly null for runtime-only fields it cannot know (elapsed, receivedAt).
@@ -43,6 +44,7 @@ const hub = require('./hub');
 const helpers = require('./helpers');
 const { getParser } = require('./wire-parsers');
 const { buildIndexLine } = require('./entry');
+const { isDeltaRecord, spliceDelta, resolveChainMessages } = require('./delta-helpers');
 const { extractAgentType, splitB2IntoBlocks, computeCoreHash } = require('./system-prompt');
 
 // Offline twin of registerPromptVersion's identity computation (no versionIndex
@@ -98,10 +100,9 @@ function tsFromId(id) {
 // twin of loadEntryReqRes (server/restore.js). Returns { provider, parsedBody }
 // or null when the delta chain is broken (an ancestor _req.json is missing), so
 // the caller can skip rather than emit a degraded line. `cache` memoizes across
-// the run (one anchor is the ancestor of many deltas); `seen` guards prevId cycles.
-async function reconstructReq(id, storage, cache, seen = new Set()) {
-  if (cache.has(id)) return cache.get(id);
-
+// the run (one anchor is the ancestor of many deltas); cycle/depth guards live in
+// the shared resolver (delta-helpers).
+async function reconstructReq(id, storage, cache) {
   let stripped;
   try {
     stripped = JSON.parse(await storage.read(id, '_req.json'));
@@ -125,8 +126,16 @@ async function reconstructReq(id, storage, cache, seen = new Set()) {
     return null;
   }
 
-  // Anthropic: rehydrate system/tools from content-addressed shared files (never
-  // pruned, so always available when the hash is present).
+  // #774: a full record re-anchored from an already-truncated chain lacks its
+  // leading messages (convId/msgCount would be wrong) — unrecoverable, skip.
+  if (stripped.incomplete && stripped.incomplete.persisted) {
+    cache.set(id, null);
+    return null;
+  }
+
+  // Anthropic: rehydrate system/tools from content-addressed shared files
+  // (retention prune never touches them; `ccxray gc` (#775) keeps any hash an
+  // index line or surviving _req references, so they are present when the hash is).
   const system = stripped.sysHash
     ? await readSharedJson(storage, `sys_${stripped.sysHash}.json`)
     : null;
@@ -134,19 +143,25 @@ async function reconstructReq(id, storage, cache, seen = new Set()) {
     ? await readSharedJson(storage, `tools_${stripped.toolsHash}.json`)
     : null;
 
-  // Delta turn: splice prevMessages[0..msgOffset] + delta messages. If the
-  // ancestor can't be reconstructed (pruned anywhere up the chain), the whole
-  // turn is unrecoverable.
+  // Delta turn: the shared resolver (delta-helpers, #774) walks the chain on
+  // disk. If an ancestor can't be reconstructed (pruned anywhere up the chain),
+  // the whole turn is unrecoverable — rebuild skips rather than emit a degraded line.
   let messages = Array.isArray(stripped.messages) ? stripped.messages : [];
-  if (stripped.prevId != null && stripped.msgOffset != null) {
-    if (seen.has(id)) { cache.set(id, null); return null; } // cycle guard
-    seen.add(id);
-    const prev = await reconstructReq(stripped.prevId, storage, cache, seen);
-    if (!prev || !Array.isArray(prev.parsedBody?.messages)) {
+  if (isDeltaRecord(stripped)) {
+    const parent = await resolveChainMessages(storage, stripped.prevId, { cache });
+    if (!parent || parent.missing) {
       cache.set(id, null);
       return null;
     }
-    messages = [...prev.parsedBody.messages.slice(0, stripped.msgOffset), ...messages];
+    // The leaf's own splice must be complete too: a readable parent with a gapped
+    // or corrupt offset would otherwise rebuild as a suffix-only entry (wrong
+    // msgCount/convId).
+    const spliced = spliceDelta(parent, stripped);
+    if (spliced.missing) {
+      cache.set(id, null);
+      return null;
+    }
+    messages = spliced.messages;
   }
 
   const parsedBody = { ...stripped, system, tools, messages };
@@ -159,7 +174,7 @@ async function reconstructReq(id, storage, cache, seen = new Set()) {
   // ponytail: cache only what delta splicing needs (messages array). Full parsedBody
   // (system 50-100KB + tools 10-50KB per entry) is returned to caller but NOT retained.
   // Without this, 65K entries × 100KB = 4GB+ cache → OOM.
-  cache.set(id, { provider: 'anthropic', parsedBody: { messages } });
+  cache.set(id, { messages, base: 0, missing: null });
   return result;
 }
 
@@ -244,42 +259,8 @@ function indexWasRecentlyWritten(indexPath, log) {
   return false
 }
 
-function acquireMaintenanceLock(storage, op, log) {
-  // ponytail: realpath so symlinked paths to the same dir share one lock (codex P2)
-  let resolved
-  try { resolved = fs.realpathSync(storage.location) } catch { resolved = storage.location }
-  const lockPath = path.join(resolved, '.index-maintenance.lock');
-  const token = crypto.randomUUID();
-  const contents = JSON.stringify({ pid: process.pid, token, op, startedAt: new Date().toISOString() });
-  while (true) {
-    try {
-      fs.writeFileSync(lockPath, contents, { flag: 'wx', mode: 0o600 });
-      return { lockPath, token };
-    } catch (e) {
-      if (e.code !== 'EEXIST') throw e;
-      let existing;
-      try { existing = JSON.parse(fs.readFileSync(lockPath, 'utf8')); } catch {}
-      if (!existing || !existing.pid || hub.isPidAlive(existing.pid)) {
-        log('Another index maintenance command is already running; aborting.');
-        return null;
-      }
-      try { fs.unlinkSync(lockPath); } catch (unlinkError) {
-        if (unlinkError.code === 'ENOENT') continue;
-        throw unlinkError;
-      }
-    }
-  }
-}
-
-function releaseMaintenanceLock(lock) {
-  if (!lock) return;
-  try {
-    const current = JSON.parse(fs.readFileSync(lock.lockPath, 'utf8'));
-    if (current.token === lock.token) fs.unlinkSync(lock.lockPath);
-  } catch (e) {
-    if (e.code !== 'ENOENT') throw e;
-  }
-}
+// Lock helpers live in ./maintenance-lock (shared with migrate-logs and startup prune, #776).
+const { acquireMaintenanceLock, releaseMaintenanceLock } = require('./maintenance-lock');
 
 async function rebuildIndex({ apply = false, storage = config.storage, log = console.log } = {}) {
   // ── Hub safety: refuse to race a live hub's appends. ──
@@ -755,4 +736,4 @@ async function reimportEntries({ storage = config.storage, log = console.log } =
   }
 }
 
-module.exports = { rebuildIndex, reimportEntries, reconstructReq, tsFromId, nearestPrecedingSession, indexFingerprint };
+module.exports = { rebuildIndex, reimportEntries, reconstructReq, tsFromId, nearestPrecedingSession, indexFingerprint, acquireMaintenanceLock, releaseMaintenanceLock, indexWasRecentlyWritten, liveHubBlocking };

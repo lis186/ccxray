@@ -16,6 +16,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { extractAgentType } = require('../server/system-prompt');
+const { decodeToStringSync } = require('../server/storage/gzip'); // #776: shared files may be gzip
 
 const SHARED_DIR = path.join(os.homedir(), '.ccxray', 'logs', 'shared');
 
@@ -70,7 +71,7 @@ function run() {
 
   for (const f of files) {
     let d;
-    try { d = JSON.parse(fs.readFileSync(path.join(SHARED_DIR, f), 'utf8')); } catch { continue; }
+    try { d = JSON.parse(decodeToStringSync(fs.readFileSync(path.join(SHARED_DIR, f)))); } catch { continue; }
     const sys = d.value || d;
     const truth = truthLabel(sys);
     const pred = extractAgentType(sys).key;

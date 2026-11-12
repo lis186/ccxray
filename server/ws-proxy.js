@@ -305,22 +305,24 @@ async function recordWebSocketEntry(ctx, result, turn = null) {
   // the detection body like preprocessBody does — explicit type wins over
   // instructions-text matching.
   let sysHash = null, toolsHash = null, coreHash = null, agentKey = null, agentLabel = null;
+  // #776: shared writes join entry._writePromise (see server/index.js sharedWrites).
+  const sharedWrites = [];
   // Fill-if-absent like withCodexMetadata: explicit body metadata wins over header
   const detectBody = cr && agentType && !(cr.metadata && cr.metadata.agent_type)
     ? { ...cr, metadata: fillCodexMetadata(cr.metadata, { agentType }) }
     : cr;
   if (cr && cr.instructions != null) {
     sysHash = crypto.createHash('sha256').update(JSON.stringify(cr.instructions)).digest('hex').slice(0, 12);
-    config.storage.writeSharedIfAbsent(`openai_instructions_${sysHash}.json`, JSON.stringify(cr.instructions))
-      .catch(e => console.error('Write OpenAI instructions failed:', e.message));
+    sharedWrites.push(config.storage.writeSharedIfAbsent(`openai_instructions_${sysHash}.json`, JSON.stringify(cr.instructions))
+      .catch(e => console.error('Write OpenAI instructions failed:', e.message)));
     const promptInfo = getParser('openai')?.registerPromptVersion?.({
       parsedBody: detectBody, sysHash, sharedFile: `openai_instructions_${sysHash}.json`,
     }) || null;
     if (promptInfo) {
-      config.storage.writeSharedIfAbsent(`openai_prompt_meta_${sysHash}.json`, JSON.stringify({
+      sharedWrites.push(config.storage.writeSharedIfAbsent(`openai_prompt_meta_${sysHash}.json`, JSON.stringify({
         agentKey: promptInfo.agentKey,
         agentLabel: promptInfo.agentLabel,
-      })).catch(e => console.error('Write OpenAI prompt metadata failed:', e.message));
+      })).catch(e => console.error('Write OpenAI prompt metadata failed:', e.message)));
       coreHash = promptInfo.coreHash || null;
       agentKey = promptInfo.agentKey || null;
       agentLabel = promptInfo.agentLabel || null;
@@ -335,8 +337,8 @@ async function recordWebSocketEntry(ctx, result, turn = null) {
   }
   if (cr && cr.tools) {
     toolsHash = crypto.createHash('sha256').update(JSON.stringify(cr.tools)).digest('hex').slice(0, 12);
-    config.storage.writeSharedIfAbsent(`openai_tools_${toolsHash}.json`, JSON.stringify(cr.tools))
-      .catch(e => console.error('Write OpenAI tools failed:', e.message));
+    sharedWrites.push(config.storage.writeSharedIfAbsent(`openai_tools_${toolsHash}.json`, JSON.stringify(cr.tools))
+      .catch(e => console.error('Write OpenAI tools failed:', e.message)));
   }
 
   const responseMetadata = {
@@ -384,7 +386,7 @@ async function recordWebSocketEntry(ctx, result, turn = null) {
   entry.parentSessionId = store.sessionMeta[entry.sessionId]?.parentSessionId || undefined;
   entry.hasCredential = helpers.entryHasCredential(entry) || undefined;
   entry.toolSources = helpers.buildToolSources(entry) || undefined;
-  entry._writePromise = Promise.all([reqWritePromise, resWritePromise]);
+  entry._writePromise = Promise.all([reqWritePromise, resWritePromise, ...sharedWrites]);
   store.registerEntry(entry);
   store.trimEntries();
   broadcast(entry);

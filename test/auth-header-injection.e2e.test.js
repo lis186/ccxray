@@ -6,6 +6,7 @@ const fs = require('fs');
 const http = require('http');
 const os = require('os');
 const path = require('path');
+const { readLogText } = require('./helpers/read-log');
 const { spawn } = require('child_process');
 const WebSocket = require('ws');
 const { deriveUpstreamToken } = require('./helpers/upstream-token');
@@ -205,7 +206,7 @@ describe('Auth header injection E2E (1.4)', () => {
       if (fs.existsSync(logsDir)) {
         const files = fs.readdirSync(logsDir).filter(f => f.endsWith('.json'));
         for (const f of files) {
-          const content = fs.readFileSync(path.join(logsDir, f), 'utf8');
+          const content = readLogText(path.join(logsDir, f)); // gunzip: a raw read would never contain the token
           assert.ok(!content.includes(upstreamToken),
             `X-Ccxray-Auth value leaked to ${f}`);
           assert.ok(!content.includes('sensitive-session-cookie'),

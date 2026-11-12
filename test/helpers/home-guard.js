@@ -20,7 +20,7 @@ if (!(process.env.NODE_OPTIONS || '').includes(__filename)) {
 if (firstProcess) {
   for (const name of ['CCXRAY_IMPORT_DISABLE', 'CCXRAY_DISABLE_TITLES', 'CCXRAY_SKIP_RECENCY_CHECK',
     'CCXRAY_FAIL_CLOSED', 'CCXRAY_LOOPBACK_REQUIRE_AUTH', 'CCXRAY_LOOPBACK_NO_AUTH',
-    'PROXY_HOST', 'CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN']) delete process.env[name];
+    'PROXY_HOST', 'CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN', 'CCXRAY_COMPRESS_DISABLE']) delete process.env[name];
 }
 if (firstProcess && !process.env.CCXRAY_HOME) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-suite-'));

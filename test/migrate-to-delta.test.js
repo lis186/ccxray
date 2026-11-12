@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
+const { readLogText } = require('./helpers/read-log'); // #776: the script writes encoded deltas
 const os = require('os');
 
 // The script switches between CLI mode and module mode via require.main.
@@ -138,7 +139,13 @@ describe('migrate-to-delta: probeChainDepth', () => {
 // ── End-to-end migration on a synthetic logs dir ─────────────────────
 
 describe('migrate-to-delta: end-to-end on synthetic logs', () => {
-  const tmpDir = path.join(os.tmpdir(), 'ccxray-migrate-e2e-' + Date.now());
+  // #774: the script now follows the live writer's retention guard and takes the
+  // maintenance lock. These fixtures use fixed 2026-01-01 ids, so they run with
+  // retention off and the logs dir at <home>/logs (not a shared root), and skip the
+  // just-written-index recency check; the guard itself is covered by
+  // test/migrate-to-delta-guard.e2e.test.js.
+  const home = path.join(os.tmpdir(), 'ccxray-migrate-e2e-' + Date.now());
+  const tmpDir = path.join(home, 'logs');
   const scriptPath = path.join(__dirname, '..', 'scripts', 'migrate-to-delta.js');
 
   before(async () => {
@@ -146,7 +153,7 @@ describe('migrate-to-delta: end-to-end on synthetic logs', () => {
   });
 
   after(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true });
   });
 
   // Run the script as a subprocess with a custom --logs-dir, capture stdout.
@@ -154,7 +161,7 @@ describe('migrate-to-delta: end-to-end on synthetic logs', () => {
     const { spawn } = require('child_process');
     return new Promise((resolve, reject) => {
       const child = spawn(process.execPath, [scriptPath, '--logs-dir', tmpDir, ...extraArgs], {
-        env: { ...process.env, CCXRAY_DELTA_SNAPSHOT_N: '0' },
+        env: { ...process.env, CCXRAY_DELTA_SNAPSHOT_N: '0', CCXRAY_HOME: home, LOG_RETENTION_DAYS: '0', CCXRAY_SKIP_RECENCY_CHECK: '1' },
       });
       let stdout = '', stderr = '';
       child.stdout.on('data', d => { stdout += d; });
@@ -193,14 +200,14 @@ describe('migrate-to-delta: end-to-end on synthetic logs', () => {
     assert.match(stdout, /Skipped \(subagent\):\s+1/, 'should skip 1 sub-agent row');
 
     // Verify the sub-agent file was NOT rewritten (still FULL with msgCount=1)
-    const subAgentRaw = JSON.parse(await fsp.readFile(path.join(tmpDir, '2026-01-01T00-00-00-003_req.json'), 'utf8'));
+    const subAgentRaw = JSON.parse(readLogText(path.join(tmpDir, '2026-01-01T00-00-00-003_req.json')));
     assert.ok(!('prevId' in subAgentRaw), 'sub-agent file must not be converted to delta');
     assert.equal(subAgentRaw.messages.length, 1);
 
     // Verify main-thread turns 4 and 5 were converted to delta (chain not broken by sub-agent)
-    const turn4 = JSON.parse(await fsp.readFile(path.join(tmpDir, '2026-01-01T00-00-00-004_req.json'), 'utf8'));
+    const turn4 = JSON.parse(readLogText(path.join(tmpDir, '2026-01-01T00-00-00-004_req.json')));
     assert.equal(turn4.prevId, '2026-01-01T00-00-00-002', 'turn 4 should delta from turn 2 (turn 3 is filtered)');
-    const turn5 = JSON.parse(await fsp.readFile(path.join(tmpDir, '2026-01-01T00-00-00-005_req.json'), 'utf8'));
+    const turn5 = JSON.parse(readLogText(path.join(tmpDir, '2026-01-01T00-00-00-005_req.json')));
     assert.equal(turn5.prevId, '2026-01-01T00-00-00-004');
   });
 
@@ -241,7 +248,7 @@ describe('migrate-to-delta: end-to-end on synthetic logs', () => {
     const { stdout } = await runMigration(['--write']);
     assert.match(stdout, /Existing deltas:\s+1/, 'should track 1 existing delta');
 
-    const turn4 = JSON.parse(await fsp.readFile(path.join(tmpDir, 't-004_req.json'), 'utf8'));
+    const turn4 = JSON.parse(readLogText(path.join(tmpDir, 't-004_req.json')));
     assert.ok('prevId' in turn4, 'turn 4 must be converted to delta (chain resumed across t-003)');
     // turn 4 should chain from t-003 (the existing delta) since that's the most recent
     assert.equal(turn4.prevId, 't-003');

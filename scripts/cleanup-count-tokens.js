@@ -24,6 +24,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { decodeToStringSync } = require('../server/storage/gzip'); // #776: logs may be gzip
 
 const APPLY = process.argv.includes('--apply');
 const FORCE = process.argv.includes('--force');
@@ -43,7 +44,7 @@ function hubAlive() {
 }
 
 function readJson(p) {
-  try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return null; }
+  try { return JSON.parse(decodeToStringSync(fs.readFileSync(p))); } catch { return null; }
 }
 
 // Both sides of the wire must agree before we remove anything:

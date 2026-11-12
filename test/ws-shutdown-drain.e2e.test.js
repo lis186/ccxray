@@ -13,6 +13,7 @@ const fs = require('fs');
 const http = require('http');
 const os = require('os');
 const path = require('path');
+const { readLogText } = require('./helpers/read-log');
 const { spawn } = require('child_process');
 const WebSocket = require('ws');
 
@@ -146,7 +147,7 @@ describe('Bug 1: ccxray drains WS storage writes before process exit', () => {
       let wsResFile = null;
       let wsResPayload = null;
       for (const f of files) {
-        const text = fs.readFileSync(path.join(logsDir, f), 'utf8');
+        const text = readLogText(path.join(logsDir, f));
         assert.ok(text.length > 0, `${f} must not be 0-byte after gracefulExit`);
         let parsed;
         try { parsed = JSON.parse(text); }
@@ -167,7 +168,7 @@ describe('Bug 1: ccxray drains WS storage writes before process exit', () => {
 
       // The matching _req.json must also exist and be parseable.
       const reqFile = wsResFile.replace('_res.json', '_req.json');
-      const reqText = fs.readFileSync(path.join(logsDir, reqFile), 'utf8');
+      const reqText = readLogText(path.join(logsDir, reqFile));
       assert.ok(reqText.length > 0, `${reqFile} must not be 0-byte`);
       const reqParsed = JSON.parse(reqText);
       assert.equal(reqParsed.transport, 'websocket');

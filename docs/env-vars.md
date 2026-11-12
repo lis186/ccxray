@@ -32,6 +32,7 @@ Unless noted, a variable is read once at process start. In hub mode the hub's ow
 | `CCXRAY_SSE_RING_SIZE` | `2000` | SSE replay ring size. | `server/sse-broadcast.js` |
 | `CCXRAY_RECENT_SESSIONS` | `10` | Number of recent sessions returned by the recent-sessions API. | `server/routes/api.js` |
 | `CCXRAY_DELTA_SNAPSHOT_N` | `0` | Force a full `_req.json` snapshot every N delta writes (`0` = only the session-start anchor). | `server/config.js` |
+| `CCXRAY_COMPRESS_DISABLE` | — | `1` writes new `_req.json` / `_res.json` / `_req.received.json` and `shared/` files as plain JSON; unset writes gzip (#776). Readers detect gzip by magic bytes, so both formats are always readable. Existing files are converted only by `ccxray migrate-logs --apply`. | `server/storage/gzip.js` |
 | `CCXRAY_WS_IDLE_TIMEOUT_MS` | `60000` | Idle timeout for proxied WebSocket sessions. | `server/ws-proxy.js` |
 | `CCXRAY_WS_MAX_QUEUE_BYTES` | `4194304` (4 MiB) | Cap on client→upstream bytes buffered while the upstream WebSocket connects. | `server/ws-proxy.js` |
 | `CCXRAY_GROK_BILLING_TTL_MS` | `60000` | Suppression window for repeat Grok billing calls after a success. | `server/adapters/grok-adapter.js` |

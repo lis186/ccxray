@@ -25,6 +25,8 @@ Commands:
   open                Open dashboard in browser
   import              Import transcripts (--once or --target-transcript)
   rebuild-index       Rebuild index.ndjson from log files
+  migrate-logs        Gzip existing log files, one-way (--dry-run | --apply)
+  gc                  Reclaim unreferenced shared/ files (--dry-run | --apply | --purge)
   setup               Install the Claude shell wrapper (export opt-in: --export)
   setup-statusline    Configure Claude Code status line
   hud on|off|status   Turn the Context HUD on or off, or show it (off by default)
@@ -175,7 +177,7 @@ const { readSettings, hudStatusText } = require('./settings');
 const { broadcastSessionStatus, broadcastPendingRequest } = require('./sse-broadcast');
 const { dispatch, mintAutoOpenUrl, formatAutoOpenUrl, verifyDashboardWrite } = require('./auth');
 const { failRequest } = require('./routes/route-errors');
-const { findSharedPrefix } = require('./delta-helpers');
+const { findSharedPrefix, shouldForceFullRecord, writerRetentionDays } = require('./delta-helpers');
 const { extractPromptAgentType } = require('./system-prompt');
 const providers = require('./providers');
 const { handleWebSocketUpgrade, drainWebSocketProxy } = require('./ws-proxy');
@@ -218,6 +220,8 @@ const unknownCommand = cliCommand
   && cliCommand !== 'open'
   && cliCommand !== 'secret'
   && cliCommand !== 'rebuild-index'
+  && cliCommand !== 'migrate-logs'
+  && cliCommand !== 'gc'
   && cliCommand !== 'import'
   && cliCommand !== 'setup'
   && cliCommand !== 'setup-statusline'
@@ -351,6 +355,35 @@ if (process.argv[2] === 'rebuild-index') {
       .then(r => process.exit(r && r.refused ? 1 : 0))
       .catch(err => { console.error(`rebuild-index failed: ${err.message}`); process.exit(1); });
   }
+  return;
+}
+
+// ── "migrate-logs [--dry-run|--apply]" — early exit, no server/hub boot ──
+// One-way gzip of pre-existing plain log files (#776). Dry-run by default.
+if (process.argv[2] === 'migrate-logs') {
+  const dry = process.argv.includes('--dry-run'), apply = process.argv.includes('--apply');
+  if (dry && apply) { console.error('migrate-logs: --dry-run and --apply are mutually exclusive'); process.exit(1); }
+  require('./migrate-logs').migrateLogs({ apply })
+    .then(r => process.exit(r && (r.refused || r.paused || r.failed) ? 1 : 0))
+    .catch(err => { console.error(`migrate-logs failed: ${err.message}`); process.exit(1); });
+  return;
+}
+
+// ── "gc --dry-run | --apply | --purge [--dry-run]" — early exit, no server/hub boot (#775) ──
+// --apply quarantines unreferenced shared/ files (reversible); --purge deletes
+// quarantine older than 7 days. No default action.
+if (process.argv[2] === 'gc') {
+  const has = f => process.argv.includes(f);
+  const apply = has('--apply'), purge = has('--purge'), dryRun = has('--dry-run');
+  const valid = (dryRun && !apply && !purge) || (apply && !purge && !dryRun) || (purge && !apply);
+  if (!valid) {
+    console.error('Usage: ccxray gc --dry-run | --apply | --purge [--dry-run] [--verbose]\n  --dry-run  report what --apply would quarantine (read-only)\n  --apply    move unreferenced shared/ files to shared/.gc-trash-<ts>/ (reversible; frees no space yet; refuses while a server is running)\n  --purge    permanently delete quarantine older than 7 days (irreversible; refuses while a server is running; add --dry-run to preview)\n  --verbose  list every file');
+    process.exit(1);
+  }
+  const gc = require('./gc');
+  (purge ? gc.purgeTrash({ dryRun }) : gc.gcShared({ apply, verbose: has('--verbose') }))
+    .then(r => process.exit(r && r.refused ? 1 : 0))
+    .catch(err => { console.error(`gc failed: ${err.message}`); process.exit(1); });
   return;
 }
 
@@ -573,6 +606,10 @@ function handleHttpRequest(clientReq, clientRes) {
     }
 
     let reqWritePromise = null;
+    // #776: shared sys/tools/meta writes join reqWritePromise (the entry write
+    // barrier). Compression makes them land later than the entry registers, and a
+    // lazy load that reads a shared file before it exists caches null permanently.
+    const sharedWrites = [];
     let sysHash = null;
     let toolsHash = null;
     let coreHash = null;
@@ -584,12 +621,12 @@ function handleHttpRequest(clientReq, clientRes) {
       toolsHash = toolsPH.hash;
 
       if (sysHash) {
-        config.storage.writeSharedIfAbsent(`${sysPH.filePrefix}${sysHash}.json`, JSON.stringify(sysPH.content))
-          .catch(e => console.error('Write sys/instructions failed:', e.message));
+        sharedWrites.push(config.storage.writeSharedIfAbsent(`${sysPH.filePrefix}${sysHash}.json`, JSON.stringify(sysPH.content))
+          .catch(e => console.error('Write sys/instructions failed:', e.message)));
       }
       if (toolsHash) {
-        config.storage.writeSharedIfAbsent(`${toolsPH.filePrefix}${toolsHash}.json`, JSON.stringify(parsedBody.tools))
-          .catch(e => console.error('Write tools failed:', e.message));
+        sharedWrites.push(config.storage.writeSharedIfAbsent(`${toolsPH.filePrefix}${toolsHash}.json`, JSON.stringify(parsedBody.tools))
+          .catch(e => console.error('Write tools failed:', e.message)));
       }
 
       // registerPromptVersion for openai: also writes prompt metadata + extracts agent identity
@@ -598,10 +635,10 @@ function handleHttpRequest(clientReq, clientRes) {
           parsedBody, sysHash, sharedFile: `${sysPH.filePrefix}${sysHash}.json`,
         }) || null;
         if (promptInfo) {
-          config.storage.writeSharedIfAbsent(`openai_prompt_meta_${sysHash}.json`, JSON.stringify({
+          sharedWrites.push(config.storage.writeSharedIfAbsent(`openai_prompt_meta_${sysHash}.json`, JSON.stringify({
             agentKey: promptInfo.agentKey,
             agentLabel: promptInfo.agentLabel,
-          })).catch(e => console.error('Write OpenAI prompt metadata failed:', e.message));
+          })).catch(e => console.error('Write OpenAI prompt metadata failed:', e.message)));
         }
         coreHash = promptInfo?.coreHash || null;
         agentKey = promptInfo?.agentKey || null;
@@ -628,11 +665,19 @@ function handleHttpRequest(clientReq, clientRes) {
       } else if (peekSid && config.storage.supportsDelta) {
         const prev = sessionLastReq.get(peekSid);
         const sharedCount = prev ? findSharedPrefix(prev.messages, currMessages) : 0;
-        const forceFull = !prev ||
-          (config.DELTA_SNAPSHOT_N > 0 && (prev.deltaCount || 0) >= config.DELTA_SNAPSHOT_N);
+        // INVARIANT(#774): never start a delta whose ancestor retention prune could
+        // reach — see deltaAncestorTooOld (delta-helpers) and the note at pruneLogs.
+        const forceFull = shouldForceFullRecord(prev, {
+          snapshotN: config.DELTA_SNAPSHOT_N, retentionDays: writerRetentionDays(config.LOG_RETENTION_DAYS),
+        });
 
         const meta = peekSid ? { session_id: peekSid } : undefined;
         if (!forceFull && sharedCount >= 2) {
+          // INVARIANT(#774): prevId/msgOffset are emitted BEFORE messages, and
+          // extraParams (above) never carries a top-level "messages". Prune's
+          // re-anchor scan (delta-helpers classifyReqHead) classifies a record
+          // with messages first as a full record. Pinned by
+          // test/delta-writer-order.e2e.test.js — keep this order.
           stripped = {
             model: parsedBody.model,
             max_tokens: parsedBody.max_tokens,
@@ -654,8 +699,11 @@ function handleHttpRequest(clientReq, clientRes) {
         stripped = { model: parsedBody.model, max_tokens: parsedBody.max_tokens, ...extraParams, messages: currMessages, sysHash, toolsHash, ...(meta && { metadata: meta }) };
       }
 
-      reqWritePromise = config.storage.write(id, '_req.json', JSON.stringify(stripped))
-        .catch(e => console.error('Write req.json failed:', e.message));
+      reqWritePromise = Promise.all([
+        ...sharedWrites,
+        config.storage.write(id, '_req.json', JSON.stringify(stripped))
+          .catch(e => console.error('Write req.json failed:', e.message)),
+      ]);
     }
 
     const detectedSession = parsedBody
@@ -904,6 +952,10 @@ function attachTimeoutMs(env = process.env) {
 // for the WS upgrade entry. Bounded by a 5s safety timeout so a stuck write
 // can never block shutdown.
 async function gracefulExit(code) {
+  // #776: stop compressing — writes queued from here on (and gzip jobs still in
+  // flight) go out as plain JSON so the 5s deadline cannot strand an indexed entry
+  // without its payload file.
+  require('./storage/gzip').beginShutdown();
   stopCodexRefresh();
   stopExportSync();
   const deadline = new Promise(resolve => setTimeout(resolve, 5000));

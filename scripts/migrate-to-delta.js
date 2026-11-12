@@ -37,7 +37,23 @@ if (snIdx !== -1) {
 }
 
 // Reuse the live-server helpers so the two paths cannot drift.
-const { findSharedPrefixFromLast: canDelta } = require('../server/delta-helpers');
+const {
+  findSharedPrefixFromLast: canDelta, shouldForceFullRecord, deltaAncestorTooOld, writerRetentionDays,
+} = require('../server/delta-helpers');
+
+// INVARIANT(#774): this writer follows the SAME rule as the live writer — never
+// convert a record into a delta whose previous record is older than half the
+// smallest retention that can prune this logs root (delta-helpers
+// shouldForceFullRecord / writerRetentionDays; an explicit --logs-dir that is not
+// <home>/logs counts as shared and gets the 1-day window). A rewrite also runs
+// under the ADR 0021 maintenance lock and is refused while a server appears to be
+// recording, so it cannot race a prune's scan-then-delete.
+function migrationRetentionDays() {
+  const { retentionDays } = require('../server/retention');
+  const { resolveCcxrayHome } = require('../server/paths');
+  return writerRetentionDays(retentionDays(), { home: resolveCcxrayHome(), logsDir: LOGS_DIR });
+}
+const { decodeToStringSync, encodeForWrite } = require('../server/storage/gzip'); // #776: logs may be gzip; deltas are written encoded like any log
 
 // ── Safe JSON parse — handles legacy double-JSON-concatenated files ───
 function safeParseFirst(text) {
@@ -65,7 +81,7 @@ async function probeChainDepth(deltaParsed, logsDir = LOGS_DIR, cap = SNAPSHOT_N
   let cursor = deltaParsed.prevId;
   while (cursor && depth < cap) {
     try {
-      const txt = await fsp.readFile(path.join(logsDir, cursor + '_req.json'), 'utf8');
+      const txt = decodeToStringSync(await fsp.readFile(path.join(logsDir, cursor + '_req.json')));
       const p = safeParseFirst(txt);
       if (!p) break;
       if (p.prevId == null) break; // hit anchor
@@ -78,6 +94,32 @@ async function probeChainDepth(deltaParsed, logsDir = LOGS_DIR, cap = SNAPSHOT_N
 
 // ── Main ──────────────────────────────────────────────────────────────
 async function main() {
+  // --write only: serialize with other index-maintenance commands and refuse to
+  // run beside a live recorder (a prune or server could otherwise interleave).
+  let maintenanceLock = null;
+  const maintenance = WRITE ? require('../server/rebuild-index') : null;
+  if (WRITE) {
+    const blockingHub = maintenance.liveHubBlocking();
+    if (blockingHub) {
+      console.error(`A ccxray hub is running (pid ${blockingHub.pid}). Stop it first.`);
+      process.exit(1);
+    }
+    maintenanceLock = maintenance.acquireMaintenanceLock({ location: LOGS_DIR }, 'migrate-to-delta', console.error);
+    if (!maintenanceLock) process.exit(1);
+    if (maintenance.indexWasRecentlyWritten(path.join(LOGS_DIR, 'index.ndjson'), console.error)) {
+      maintenance.releaseMaintenanceLock(maintenanceLock);
+      process.exit(1);
+    }
+  }
+  try {
+    await migrate();
+  } finally {
+    if (maintenanceLock) maintenance.releaseMaintenanceLock(maintenanceLock);
+  }
+}
+
+async function migrate() {
+  const RETENTION = migrationRetentionDays();
   console.log('ccxray delta migration');
   console.log(`  Logs:       ${LOGS_DIR}`);
   console.log(`  Mode:       ${WRITE ? 'WRITE' : 'DRY RUN (pass --write to apply)'}`);
@@ -94,8 +136,7 @@ async function main() {
       }
     }
   } catch (e) {
-    console.error(`Cannot read logs dir: ${e.message}`);
-    process.exit(1);
+    throw new Error(`Cannot read logs dir: ${e.message}`); // thrown, not exit(): main() must release the lock
   }
   if (tmpCleaned > 0) console.log(`  Cleaned ${tmpCleaned} orphan .tmp file(s)\n`);
 
@@ -103,7 +144,7 @@ async function main() {
   const indexPath = path.join(LOGS_DIR, 'index.ndjson');
   let indexText;
   try { indexText = await fsp.readFile(indexPath, 'utf8'); }
-  catch (e) { console.error(`Cannot read index.ndjson: ${e.message}`); process.exit(1); }
+  catch (e) { throw new Error(`Cannot read index.ndjson: ${e.message}`); }
 
   // Group by sessionId, filter, sort, de-dup
   // sessionInferred !== true: explicit undefined (legacy entries) are treated as explicit —
@@ -141,7 +182,7 @@ async function main() {
   let totalConverted = 0, totalEligible = 0, totalBytesSaved = 0;
   let maxChainDepth = 0;
   let chainsResumed = 0;
-  const anchorReasons = { firstInSession: 0, snapshotCap: 0, noSharedPrefix: 0 };
+  const anchorReasons = { firstInSession: 0, snapshotCap: 0, noSharedPrefix: 0, ageGuard: 0 };
   const gapSessions = [];
 
   for (const [sessionId, ids] of sessions) {
@@ -154,7 +195,7 @@ async function main() {
     for (const id of ids) {
       const fpath = path.join(LOGS_DIR, id + '_req.json');
       let raw, size;
-      try { raw = await fsp.readFile(fpath, 'utf8'); size = Buffer.byteLength(raw, 'utf8'); }
+      try { raw = decodeToStringSync(await fsp.readFile(fpath)); size = Buffer.byteLength(raw, 'utf8'); }
       catch { if (prevState !== null) hasGap = true; prevState = null; continue; }
 
       const parsed = safeParseFirst(raw);
@@ -191,10 +232,12 @@ async function main() {
       const currMessages = Array.isArray(parsed.messages) ? parsed.messages : [];
       totalEligible++;
 
-      const forceAnchor = (prevState === null || deltaCount >= SNAPSHOT_N);
+      const forceAnchor = shouldForceFullRecord(prevState && { id: prevState.id, deltaCount }, { snapshotN: SNAPSHOT_N, retentionDays: RETENTION });
 
       if (forceAnchor) {
         if (prevState === null) anchorReasons.firstInSession++;
+        else if (deltaCount >= SNAPSHOT_N) anchorReasons.snapshotCap++;
+        else if (deltaAncestorTooOld(prevState.id, RETENTION)) anchorReasons.ageGuard++;
         else anchorReasons.snapshotCap++;
         prevState = { id, lastMsg: currMessages[currMessages.length - 1], msgCount: currMessages.length };
         deltaCount = 0;
@@ -224,12 +267,18 @@ async function main() {
       };
 
       const deltaJson = JSON.stringify(delta);
-      const saved = size - Buffer.byteLength(deltaJson, 'utf8');
+      // #776: write the delta encoded like every other log write (gzip unless
+      // CCXRAY_COMPRESS_DISABLE=1) and count savings in on-disk bytes, so a home
+      // already converted by migrate-logs is not silently expanded back to plain.
+      const payload = await encodeForWrite(deltaJson);
+      let diskSize = size;
+      try { diskSize = (await fsp.stat(fpath)).size; } catch {}
+      const saved = diskSize - Buffer.byteLength(payload);
 
       if (WRITE) {
         const tmp = fpath + '.tmp';
         try {
-          await fsp.writeFile(tmp, deltaJson, 'utf8');
+          await fsp.writeFile(tmp, payload);
           await fsp.rename(tmp, fpath);
         } catch (e) {
           console.error(`  Error writing ${id}: ${e.message}`);
@@ -278,11 +327,12 @@ async function main() {
   console.log(`  Skipped (inferred): ${skippedInferred.toLocaleString()}`);
   console.log(`  Existing deltas:    ${chainsResumed.toLocaleString()} (skipped but used to continue chains)`);
   console.log(`  Files converted:    ${totalConverted.toLocaleString()} / ${totalEligible.toLocaleString()} eligible`);
-  const anchorTotal = anchorReasons.firstInSession + anchorReasons.snapshotCap + anchorReasons.noSharedPrefix;
+  const anchorTotal = anchorReasons.firstInSession + anchorReasons.snapshotCap + anchorReasons.noSharedPrefix + anchorReasons.ageGuard;
   console.log(`  Anchors:            ${anchorTotal.toLocaleString()} (= ${(totalEligible - totalConverted).toLocaleString()} expected)`);
   console.log(`    first-in-session:   ${anchorReasons.firstInSession.toLocaleString()}`);
   console.log(`    snapshot-cap:       ${anchorReasons.snapshotCap.toLocaleString()}`);
   console.log(`    no-shared-prefix:   ${anchorReasons.noSharedPrefix.toLocaleString()}`);
+  console.log(`    ancestor too old:   ${anchorReasons.ageGuard.toLocaleString()} (retention guard, #774)`);
   console.log(`  Max chain depth:    ${maxChainDepth}`);
   console.log(`  Space saved:        ${savedStr}${WRITE ? '' : ' (dry run estimate)'}`);
 
