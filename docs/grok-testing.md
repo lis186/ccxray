@@ -123,7 +123,7 @@ CCXRAY_HOME=$(mktemp -d) CCXRAY_EXPORT_DISABLE=1 node server/index.js --port 561
 
 ## 3b. Browser verification (2026-08-01, merged tree @ `0274cf7`)
 
-`CLAUDE.md` requires UI or server changes to be verified in a real browser, not only by unit
+`AGENTS.md` requires UI or server changes to be verified in a real browser, not only by unit
 tests. Done once against the merged tree, isolated `CCXRAY_HOME`, port 5615, one agentic Grok run
 (browser-harness / CDP against a real Chrome):
 

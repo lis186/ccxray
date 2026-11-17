@@ -2905,7 +2905,7 @@ function ensureProxy(opts = {}) {
   if (standalone && acceptable(standalone)) return standalone;
 
   // Start one, DETACHED. `ccxray --no-browser` with no agent is a FOREGROUND
-  // standalone server: per CLAUDE.md, a hub is forked only by `ccxray <agent>`
+  // standalone server: per AGENTS.md, a hub is forked only by `ccxray <agent>`
   // without an explicit --port, and `hubMode` comes solely from the internal
   // `--hub-mode` flag the hub gives itself. So spawnSync blocked for its whole
   // 15s timeout and then SIGTERM'd the very server it had just started, and the
