@@ -2,7 +2,7 @@
 # browser-harness e2e for `ccxray rebuild-index` (GitHub #48).
 #
 # Proves the full self-heal path through the REAL browser-harness tool (CDP/Chrome,
-# per CLAUDE.md), not headless puppeteer: seed log files with NO index → rebuild →
+# per AGENTS.md), not headless puppeteer: seed log files with NO index → rebuild →
 # start the dashboard → drive browser-harness to assert the recovered turns render.
 #
 # Not part of `npm test` (browser-harness + Chrome are environment-specific). Run

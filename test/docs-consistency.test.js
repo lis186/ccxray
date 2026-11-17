@@ -1,6 +1,6 @@
 'use strict';
 
-// #168: CLAUDE.md's module tables and docs/env-vars.md drifted from the tree
+// #168: AGENTS.md's module tables and docs/env-vars.md drifted from the tree
 // twice. These checks are the mechanical guard against a third time.
 
 const { describe, it } = require('node:test');
@@ -15,7 +15,7 @@ const read = rel => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 function tablePaths(markdown, startHeading, endHeading) {
   const start = markdown.indexOf(startHeading);
   const end = markdown.indexOf(endHeading, start + 1);
-  assert.ok(start >= 0 && end > start, `CLAUDE.md must contain "${startHeading}" followed by "${endHeading}"`);
+  assert.ok(start >= 0 && end > start, `AGENTS.md must contain "${startHeading}" followed by "${endHeading}"`);
   return markdown.slice(start, end).split('\n')
     .map(line => /^\| `([^`]+)`/.exec(line))
     .filter(Boolean)
@@ -37,14 +37,14 @@ function walk(dir, out = []) {
   return out;
 }
 
-describe('CLAUDE.md module tables match the tree', () => {
-  const claude = read('CLAUDE.md');
+describe('AGENTS.md module tables match the tree', () => {
+  const claude = read('AGENTS.md');
   const server = tablePaths(claude, '### Server (`server/`)', '### Client (`public/`)');
   const client = tablePaths(claude, '### Client (`public/`)', '### Hub Mode');
 
   it('every listed path exists', () => {
     const missing = [...server, ...client].filter(p => !fs.existsSync(path.join(ROOT, p)));
-    assert.deepEqual(missing, [], 'CLAUDE.md lists paths that do not exist');
+    assert.deepEqual(missing, [], 'AGENTS.md lists paths that do not exist');
   });
 
   it('every server/*.js and server/routes/*.js has a row', () => {

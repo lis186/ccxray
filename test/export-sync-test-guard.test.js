@@ -330,7 +330,7 @@ test('every synthetic launcher declares CCXRAY_EXPORT_DISABLE', () => {
     'scripts/generate-screenshot-fixtures.js',
     'test/rebuild-index.browser-harness.e2e.sh',
     'docs/site/slides/coscup2026/tools/shoot-spiral.mjs',
-    'CLAUDE.md',
+    'AGENTS.md',
     'docs/grok-testing.md',
     'docs/site/slides/coscup2026/README.md',
   ];
@@ -340,7 +340,7 @@ test('every synthetic launcher declares CCXRAY_EXPORT_DISABLE', () => {
   // setting taking effect, not about the word appearing.
   // For shell/JS files, a non-comment line with the assignment is enough. For Markdown
   // files, the flag must appear inside a code fence — prose that DESCRIBES the flag
-  // (e.g. CLAUDE.md line 58) must not satisfy the check, or removing it from the actual
+  // (e.g. the AGENTS.md smoke-testing bullet) must not satisfy the check, or removing it from the actual
   // command would go undetected (codex review, same class as the "grep catches comments"
   // bug hit three times during development).
   const setsFlag = (text, filePath) => {
