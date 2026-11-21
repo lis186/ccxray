@@ -22,11 +22,13 @@
 // cost of the rebuild path's cheaper dedup.
 //
 // READ-ONLY: never writes to ~/.ccxray, never mutates index.ndjson.
+// Parsed turns live only for a session's replay (including shared response groups).
+// Per-row byte ranges and response-ID indexes remain resident: O(rows), roughly
+// 0.3 KB/row in the synthetic bench, plus session summaries and the working set.
 
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const readline = require('readline');
 // sessionIssuedBashCall is the ADR 0018-correct presence test, shared with the
 // escalation rule in weather.js rather than reimplemented here (#509).
 const { assessWeather, sessionIssuedBashCall } = require('../public/weather');
@@ -80,6 +82,98 @@ async function ingest(lines, provider) {
   return { all, consumed, malformed, skippedProvider, skippedNoSid };
 }
 
+// Pass 1 retains byte ranges and grouping keys, never parsed entries. Both
+// passes share the initial fstat bound (ADR 0016), including a final unterminated
+// line as readline did. Byte scanning keeps UTF-8 and CRLF offsets exact.
+async function scanIndex(fd, snapshotBytes, provider) {
+  const bySid = new Map(), byRid = new Map(), firstMain = new Map();
+  const counts = { consumed: 0, kept: 0, malformed: 0, skippedProvider: 0, skippedNoSid: 0 };
+  let pending = Buffer.alloc(0), start = 0;
+  function record(bytes, offset) {
+    if (!bytes.length) return;
+    counts.consumed++;
+    let m;
+    try { m = JSON.parse(bytes.toString('utf8')); } catch { counts.malformed++; return; }
+    if (!m.sessionId) { counts.skippedNoSid++; return; }
+    if (provider && m.provider !== provider) { counts.skippedProvider++; return; }
+    counts.kept++;
+    const range = { start: offset, length: bytes.length, group: null };
+    if (!bySid.has(m.sessionId)) bySid.set(m.sessionId, []);
+    bySid.get(m.sessionId).push(range);
+    if (m.responseId) {
+      if (!byRid.has(m.responseId)) byRid.set(m.responseId, []);
+      // Refer to the shared group directly; don't retain another rid string per row.
+      range.group = byRid.get(m.responseId);
+      range.group.push(range);
+      if (!m.isSubagent && !firstMain.has(m.responseId)) firstMain.set(m.responseId, offset);
+    }
+  }
+  if (snapshotBytes) {
+    const input = fs.createReadStream(null, { fd, autoClose: false, start: 0, end: snapshotBytes - 1 });
+    for await (const chunk of input) {
+      const bytes = pending.length ? Buffer.concat([pending, chunk]) : chunk;
+      let from = 0;
+      for (let i = 0; i < bytes.length; i++) {
+        if (bytes[i] !== 10 && bytes[i] !== 13) continue;
+        record(bytes.subarray(from, i), start + from);
+        from = i + 1;
+      }
+      start += from;
+      pending = Buffer.from(bytes.subarray(from));
+    }
+    record(pending, start);
+  }
+  return { bySid, byRid, firstMain, ...counts };
+}
+
+function readRange(fd, range, snapshotBytes) {
+  if (range.start + range.length > snapshotBytes) throw new Error('Range exceeds index snapshot');
+  const bytes = Buffer.allocUnsafe(range.length);
+  let read = 0;
+  while (read < bytes.length) {
+    const n = fs.readSync(fd, bytes, read, bytes.length - read, range.start + read);
+    if (!n) throw new Error('Index truncated during replay');
+    read += n;
+  }
+  return JSON.parse(bytes.toString('utf8'));
+}
+
+function replaySessions(fd, snapshotBytes, ing) {
+  const first = [], merged = [];
+  for (const [sid, own] of ing.bySid) {
+    // Global response-id semantics: borrow ALL copies of this session's response
+    // groups, even when another copy claims a different session. A logical
+    // session's working set includes these copies; unrelated sessions stay on disk.
+    const ranges = new Set(own);
+    for (const r of own) if (r.group) for (const copy of r.group) ranges.add(copy);
+    const ordered = [...ranges].sort((a, b) => a.start - b.start);
+    const all = ordered.map(r => readRange(fd, r, snapshotBytes));
+    const offsets = new Map(all.map((m, i) => [m, ordered[i].start]));
+    const firstTurns = all.filter((m, i) => m.sessionId === sid && !m.isSubagent
+      && (!m.responseId || ing.firstMain.get(m.responseId) === ordered[i].start));
+    if (firstTurns.length) {
+      const order = offsets.get(firstTurns[0]);
+      const summary = measure(new Map([[sid, firstTurns]])).sessions[0];
+      // Use the first retained turn's offset (subagent-only rows don't create a slot).
+      summary.order = order;
+      first.push(summary);
+    }
+    // CAUTION: first-seen has already been reduced to scalars before mutation.
+    const turns = store.mergeByResponseId(all).filter(m => m.sessionId === sid && !m.isSubagent);
+    if (turns.length) {
+      const order = turns.reduce((min, m) => Math.min(min, m.responseId
+        ? ing.byRid.get(m.responseId)[0].start : offsets.get(m)), Infinity);
+      const summary = measure(new Map([[sid, turns]])).sessions[0];
+      summary.order = order;
+      merged.push(summary);
+    }
+  }
+  // Restore global first-encounter order: object key ordering and stable ranking
+  // ties in stdout depend on it. These arrays contain scalar summaries only.
+  const finish = rows => aggregate(rows.sort((a, b) => a.order - b.order));
+  return { first: finish(first), merged: finish(merged) };
+}
+
 // ── the two dedup semantics ────────────────────────────────────────
 // Both return Map<sid, turns[]>.
 
@@ -121,8 +215,6 @@ function groupMerged(all) {
 
 // ── measurement ────────────────────────────────────────────────────
 function measure(bySid) {
-  const levels = {};
-  const availability = {};
   const sessions = [];
 
   for (const [sid, turns] of bySid) {
@@ -148,10 +240,18 @@ function measure(bySid) {
       issuedBash: sessionIssuedBashCall(turns),
       top: w.factors[0] ? w.factors[0].type : null,
     });
-    levels[w.level] = (levels[w.level] || 0) + 1;
-    availability[w.stats.toolSignal] = (availability[w.stats.toolSignal] || 0) + 1;
   }
+  return aggregate(sessions);
+}
 
+// Aggregates retain only numeric/scalar session summaries for exact percentiles,
+// delta comparisons and --list-bad; no turn objects survive a session's replay.
+function aggregate(sessions) {
+  const levels = {}, availability = {};
+  for (const s of sessions) {
+    levels[s.level] = (levels[s.level] || 0) + 1;
+    availability[s.toolSignal] = (availability[s.toolSignal] || 0) + 1;
+  }
   const qualifying = sessions.filter(s => s.paired >= QUALIFY_PAIRED);
   const degraded = qualifying.filter(s => s.rate > DEGRADED_RATE);
   const rates = qualifying.map(s => s.rate).sort((a, b) => a - b);
@@ -322,19 +422,20 @@ async function run() {
     process.exit(1);
   }
 
-  const rl = readline.createInterface({ input: fs.createReadStream(indexPath), crlfDelay: Infinity });
-  const ing = await ingest(rl, provider);
+  const fd = fs.openSync(indexPath, 'r');
+  let ing, first, merged;
+  try {
+    const snapshotBytes = fs.fstatSync(fd).size;
+    ing = await scanIndex(fd, snapshotBytes, provider);
+    ({ first, merged } = replaySessions(fd, snapshotBytes, ing));
+  } finally { fs.closeSync(fd); }
 
   console.log('\n=== Weather Replay ===');
   console.log('index: ' + indexPath);
-  console.log('lines consumed: ' + ing.consumed + ' (kept ' + ing.all.length
+  console.log('lines consumed: ' + ing.consumed + ' (kept ' + ing.kept
     + ', malformed ' + ing.malformed + ', no sessionId ' + ing.skippedNoSid
     + ', other provider ' + ing.skippedProvider + ')');
   console.log('provider filter: ' + (provider || 'none (all)'));
-
-  // ORDER IS LOAD-BEARING: measure first-seen before groupMerged mutates canonicals.
-  const first = measure(groupFirstSeen(ing.all));
-  const merged = measure(groupMerged(ing.all));
 
   const listBad = process.argv.includes('--list-bad');
   const vFirst = reportPass('first-seen', 'index rebuild path — responseId first-seen wins, no field merge', first, listBad);
