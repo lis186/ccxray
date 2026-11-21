@@ -1,4 +1,5 @@
 node_modules/
+.agentflow/
 logs/
 .env
 .DS_Store

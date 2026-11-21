@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Dashboard keyboard hints wrap onto additional lines on narrow viewports so every shortcut remains visible (#282).
+
 ### Breaking (3.0.0)
 
 - **ccxray now listens on loopback by default; set `PROXY_HOST=0.0.0.0` to listen on all interfaces.** Behaviour change: the proxy + dashboard port binds `127.0.0.1`, plus `::1` on the same port when the host has IPv6 loopback, so `http://localhost:<port>` works whichever family `localhost` resolves to. `PROXY_HOST` selects a single other address (`0.0.0.0`, `::`, or one interface) and startup prints the bound address. If `::1` is unavailable it is skipped; if it is taken while `127.0.0.1` is free, the whole port counts as in use, so the agent-mode port scan and hub bind retry behave as before. The Docker image sets `PROXY_HOST=0.0.0.0`. An SSH tunnel that ends at `127.0.0.1` needs no change. ChatGPT login from Codex is accepted from loopback; clients on other hosts need `CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN=1`, which should only be enabled on a trusted network.
