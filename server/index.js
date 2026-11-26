@@ -208,6 +208,8 @@ if (globalFlags.hasPort) {
 }
 process.argv.splice(0, process.argv.length, ...globalFlags.argv);
 let hubMode = globalFlags.hubMode;
+// The hub's stdio is hub.log on the data disk; a full disk must not kill it.
+if (hubMode) require('./stdio-guard').ignoreStdioWriteErrors();
 if (hubMode && process.platform === 'win32') {
   console.error('\x1b[31mHub mode requires Unix sockets (macOS/Linux). On Windows, use --port for standalone mode.\x1b[0m');
   process.exit(1);
