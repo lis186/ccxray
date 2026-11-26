@@ -233,6 +233,16 @@ resolution and `spawn()` to verify the chosen executable and child environment
 agree. Windows-only launcher and process tests are marked skipped elsewhere;
 the Windows Stage 0 workflow runs them with the fake npm layout.
 
+`test/hub-stdio-enospc.e2e.test.js` points a `--hub-mode` server's stdout and
+stderr at a file whose writes REALLY fail with ENOSPC: `/dev/full` on Linux,
+and on macOS a 4 MB `hdiutil` disk image mounted under the test's temp dir,
+filled to 0 bytes free (the empty log is created before the fill). Only the
+log is on the full device; `CCXRAY_HOME` is a normal temp dir. Do not replace
+this with a monkeypatch: patching `fs.writeSync` does not reach Node's
+internal stdio stream, and a patched `_write` callback does not reproduce the
+crash. The test skips when neither device is available (e.g. Windows), and
+`after()` force-detaches the image.
+
 For tests that spawn the CLI, pass it in the child env instead of mutating the
 parent process:
 
